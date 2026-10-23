@@ -4,6 +4,8 @@
 
 图像通过 posix-ipc + mmap 只读共享内存传输，控制消息走 UDS 上的长度前缀 JSON RPC。全部依赖在镜像内安装。
 
+将整个项目复制到 x86_64 Ubuntu 22.04 后，请按 [从零构建与运行教程](docs/ubuntu22-amd64-from-scratch.md) 安装 Docker、原生构建 amd64 镜像并执行目标机验收。
+
 ## 启动
 
 需要 Docker Engine 与 Docker Compose 2.24.4 或更新版本。在项目根目录运行：
