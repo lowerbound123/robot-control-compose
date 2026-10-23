@@ -39,7 +39,9 @@ def main():
     project = 'rc-smoke-' + uuid.uuid4().hex[:8]
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
-    environment = {**os.environ, 'RC_MCP_PORT':str(port), 'TERM':'xterm-256color',
+    # Ghostty over SSH may retain TERM but lose COLORTERM. Image IDs must still
+    # survive Textual's color encoding inside the actual Compose environment.
+    environment = {**os.environ, 'RC_MCP_PORT':str(port), 'TERM':'xterm-ghostty', 'COLORTERM':'',
                    'ROBOT_CONTROL_MCP_TOKEN':'', 'ROS_DOMAIN_ID':'94'}
     with tempfile.TemporaryDirectory(prefix='rc-compose-smoke-') as temporary:
         root = Path(temporary)
@@ -73,6 +75,23 @@ def main():
             run('up','-d','--no-build','robot-control')
             assert wait(lambda:health().get('state')=='paused')
             assert health()['consumed']==0
+            try:
+                color_check = run('exec', '-T', 'robot-control', 'python3', '-c', '''
+from types import SimpleNamespace
+from textual.strip import Strip
+from robot_control.graphics import GraphicsSupport, kitty_placeholder_lines
+from robot_control.tui import RobotControlApp
+app = RobotControlApp(SimpleNamespace(config={}), start_controller=False,
+                      graphics=GraphicsSupport('kitty'))
+row = kitty_placeholder_lines(0x123456, (1, 1))[0]
+rendered = Strip([row], 1).render(app.console)
+assert '\\x1b[38;2;18;52;86m' in rendered, (app.console.color_system, repr(rendered))
+print('Compose Kitty placeholder RGB image ID preserved: PASS')
+''')
+                print(color_check.strip(), flush=True)
+            except subprocess.CalledProcessError as exc:
+                print(exc.stdout, file=sys.stderr, flush=True)
+                raise
             terminal, slave = pty.openpty()
             attached = subprocess.Popen([*compose,'attach','--sig-proxy=false','robot-control'],
                 cwd=ROOT,env=environment,stdin=slave,stdout=slave,stderr=slave)

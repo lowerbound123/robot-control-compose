@@ -332,6 +332,7 @@ docker system df
 | `exec format error` 或架构提示 | 用第 4 步检查三个镜像均为 `linux/amd64`；重新原生构建/拉取 |
 | `4000` 端口被占用 | 修改 `.env` 的 `RC_MCP_PORT`，重新创建默认栈；真机 host-network 模式则修改 `configs/rc.acone.json` 中的 MCP 端口 |
 | policy 不 healthy | 查看 policy 日志，确认整个 `policy/` 目录被复制且 manifest 为 schema 2 |
+| Ghostty 中 camera 为 connected、snapshot 正常但预览为空 | 使用 kitty 协议，确认主容器有 `COLORTERM=truecolor`。缺少真彩色标识会让 Textual 降色并改变图像 ID；更新 Compose 后需重新创建主容器，单纯 restart 不会更新环境变量 |
 | 主控制器 fault | 先看控制器日志；确认配置路径、policy host、ROS 反馈和相机数据，排查后显式重载 |
 | 断连后旧读者无法确认 | 停止整个对应 Compose 栈再重建，借助 IPC 命名空间销毁回收冻结帧；不单独重启 policy 来绕过证明 |
 | 保存配置或快照后宿主无法编辑 | 停止服务后查看目标文件所有权，对具体文件使用 sudo 编辑或 chown |
