@@ -1,10 +1,12 @@
 # robot-control-compose
 
-独立的 Docker 机器人控制框架。主容器为 Ubuntu 22.04 / ROS 2 Humble / Python 3.10，policy 为 Python 3.14。仅部署 hold；多个 policy 可在同一容器同一执行进程中运行，也可映射到不同容器。
+独立的 Docker 机器人控制框架。主容器为 Ubuntu 22.04 / ROS 2 Humble / Python 3.10，hold 为 Python 3.14。Qwen single / two-stage 共用一个 Python 3.11 CUDA 镜像、分别运行独立容器。其他 policy 可按 host 选择同容器或独立容器。
 
 图像通过 posix-ipc + mmap 只读共享内存传输，控制消息走 UDS 上的长度前缀 JSON RPC。全部依赖在镜像内安装。
 
 将整个项目复制到 x86_64 Ubuntu 22.04 后，请按 [从零构建与运行教程](docs/ubuntu22-amd64-from-scratch.md) 安装 Docker、原生构建 amd64 镜像并执行目标机验收。
+
+Qwen 的 GPU 配置、模型挂载、共享镜像构建和切换方法见 [Qwen 部署教程](docs/qwen35-policy.md)。默认启动不包含 Qwen 服务，不需要 GPU 或模型权重。
 
 ## 启动
 
@@ -37,7 +39,7 @@ docker compose -f compose.yaml -f compose.acone.yaml up -d
 
 配置 schema_version 为 2。manifest 的 `policy_host` 对应 RC 配置 `policy_hosts` 中的名称，例如 `"hold": {"socket": "/run/robot-control/hold.sock"}`。同一 host 下所有已加载 policy 共用一个执行进程，但模块包、context 和配置独立。辅助模块必须使用相对导入，资源路径使用 `__file__`，不要修改进程工作目录。
 
-新增策略保留 initialize / policy / reset_context / release 四个同步入口；主框架只检查文件存在，语法由对应 host 的 Python 3.14 预检。热更新遵守 hot_reloadable 叶路径白名单，冷更新重建运行组。链 A/B/A 复用 A 的上下文，同一轮全链使用同一份图像。
+新增策略保留 initialize / policy / reset_context / release 四个同步入口；主框架只检查文件存在，语法由对应 host 的 Python 预检。热更新遵守 hot_reloadable 叶路径白名单，冷更新重建运行组。链 A/B/A 复用 A 的上下文，同一轮全链使用同一份图像。
 
 policy 回调中的图像是借用的只读视图，不得保留到调用结束之后；需要长期保留时显式 copy。任何硬超时、崩溃或视图逃逸会终止该 host 的整个执行进程，等待手动 switch / 链应用后再 resume。断连不代表读者已退出；无法确认清理时需整体 down，重建 IPC 域后重新启动。
 

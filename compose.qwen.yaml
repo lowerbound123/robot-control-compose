@@ -1,0 +1,63 @@
+x-qwen: &qwen
+  image: robot-control-compose-qwen35:local
+  platform: linux/amd64
+  pull_policy: never
+  ipc: service:ipc-anchor
+  depends_on:
+    ipc-anchor:
+      condition: service_started
+  environment:
+    HF_HOME: /data/huggingface
+    HF_HUB_OFFLINE: ${QWEN_HF_HUB_OFFLINE:-0}
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  volumes:
+    - rpc:/run/robot-control
+    - ./policy:/workspace/policy:ro
+    - ${QWEN_MODELS_DIR:-./models}:/models:ro
+    - ${QWEN_HF_CACHE_DIR:-./cache/huggingface}:/data/huggingface
+  stop_grace_period: 45s
+
+services:
+  policy-qwen35-single:
+    <<: *qwen
+    # Build this service once; both services use precisely the same image tag.
+    build:
+      context: .
+      dockerfile: docker/qwen35.Dockerfile
+      target: runtime
+    command: ["--host-id", "qwen35-single", "--socket", "/run/robot-control/qwen35-single.sock", "--policy-root", "/workspace/policy"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "qwen35-single", "--socket", "/run/robot-control/qwen35-single.sock", "--policy-root", "/workspace/policy"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${QWEN_SINGLE_GPU:-0}"]
+              capabilities: [gpu]
+
+  policy-qwen35-twostage:
+    <<: *qwen
+    command: ["--host-id", "qwen35-twostage", "--socket", "/run/robot-control/qwen35-twostage.sock", "--policy-root", "/workspace/policy"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "qwen35-twostage", "--socket", "/run/robot-control/qwen35-twostage.sock", "--policy-root", "/workspace/policy"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${QWEN_TWOSTAGE_GPU:-0}"]
+              capabilities: [gpu]
+
+  robot-control:
+    depends_on:
+      policy-qwen35-single:
+        condition: service_healthy
+      policy-qwen35-twostage:
+        condition: service_healthy

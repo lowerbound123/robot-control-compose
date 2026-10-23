@@ -7,7 +7,12 @@
 .pytest_cache
 outputs
 snapshot
-vendor
+vendor/*
+!vendor/qwen35
+/models
+/cache
+/.env
+/.env.local
 ros_ws/build
 ros_ws/install
 ros_ws/log

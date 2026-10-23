@@ -338,3 +338,9 @@ docker system df
 | 保存配置或快照后宿主无法编辑 | 停止服务后查看目标文件所有权，对具体文件使用 sudo 编辑或 chown |
 
 进一步的多 policy 同容器/跨容器配置见 [policy-authoring.md](policy-authoring.md)。
+
+## 12. 启用 Qwen single / two-stage
+
+完成默认 hold 构建验收后，按 [Qwen Docker 部署教程](qwen35-policy.md) 安装 NVIDIA Container Toolkit、准备权重和 HF 缓存。两个策略只构建一个 Python 3.11 CUDA 镜像，分别运行独立容器；主框架和 hold 的环境保持不变。
+
+使用 `compose.qwen.yaml` 添加两个 host；与 `compose.acone.yaml` 或 `compose.ros-sim.yaml` 叠加时，后续启动、attach 和停止都保留同样的文件组合。默认 `docker compose up -d` 仍只启动 hold，不要求 GPU。

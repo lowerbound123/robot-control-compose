@@ -9,6 +9,10 @@ build/
 dist/
 outputs/
 snapshot/
+/models/
+/cache/
+/.env
+/.env.local
 ros_ws/build/
 ros_ws/install/
 ros_ws/log/

@@ -1,6 +1,6 @@
 # Docker 迁移验收记录
 
-验收日期：2026-10-23。环境：macOS ARM64 宿主、OrbStack Linux ARM64 Docker。实际业务镜像均为 Linux ARM64；本轮没有运行 x86_64 构建或真实机器人。
+验收日期：2026-10-23。环境：macOS ARM64 宿主、OrbStack Linux Docker。以下首先记录主框架/hold 的初次迁移验收（Linux ARM64）；新增 Qwen 的 amd64 镜像和验证见文末。未连接真实机器人。
 
 ## 镜像与依赖
 
@@ -72,3 +72,39 @@ docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml dow
 13 条已知 warning 来自 `textual-image` 的 Pillow `Image.getdata` 弃用提示，不影响当前测试结果。
 
 真机 ACOne 验收尚未执行：真实驱动启动、关节/夹爪方向与单位、限幅参数、网络发现、失联和急停应在硬件环境单独确认。本次 ROS 模拟器通过不替代真机验收。
+
+## Qwen single / two-stage 迁移（2026-10-23）
+
+两个策略使用同一个 Python 3.11 / CUDA 12.8 镜像、两个独立容器和 host。保留原 Qwen 算法及缓存约束，不新增双生成器串联或融合规则；默认 hold 启动无需 GPU。部署和重现命令见 [Qwen 教程](qwen35-policy.md)。
+
+已执行：
+
+- 最终主框架完整 Linux/Humble 回归：**471 passed，44 skipped，13 条已有 Pillow 弃用提示，161.09 秒**。通过正常 ROS entrypoint 启动测试。
+- 本机完整回归：**469 passed，46 skipped**，13 条已有 Pillow 弃用提示，122.60 秒。
+- 原有 Python 3.10/3.14 真实跨容器图像、链与独立 ROS 模拟器闭环：**6 passed**。
+- 默认 mock 和 ROS-sim Compose：真实 TUI attach、Kitty RGB 标识、resume/pause、快照、headless、原子保存、SIGTERM 停止和清理全部通过。
+- Qwen 原入口 + scheduler + 真实 UDS host 的初始化、无效模型配置拒绝、同路径重载、退出证明、重载后暂停与显式配置保存：**1 passed**。
+- 主框架与 hold 重新构建成功，两个镜像 `pip check` 均通过。
+- vendor 的 25 个源码哈希与来源清单一致；原项目当前 210 个基线文件未变化。Git 暂存树与独立导出均确认包含 Transformers 补丁。
+- 独立代码审阅发现并修复递归 `models/` 忽略规则漏掉 vendor 补丁的问题，改为只忽略顶层 `/models/` 和 `/cache/`。安装后的 wheel 资源由独立 `qwen_image_probe.py` 验证，避免仅测源码导入。
+
+Qwen 专项结果：
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 独立交付构建 | 从 Git 暂存树导出的干净目录构建 runtime/test 镜像成功，无相邻源码依赖 |
+| Qwen 镜像架构 | `linux/amd64`；在 ARM64 宿主通过仿真构建和执行 |
+| Python / NumPy / posix-ipc | `3.11.17`，标准 GIL / `2.2.6` / `1.3.2` |
+| Torch / torchvision / Transformers | `2.10.0+cu128` / `0.25.0+cu128` / `5.2.0` |
+| CUDA wheel / GPU | `torch.version.cuda == 12.8`；本机 `cuda_available == false` |
+| 安装后的包 | 无源码挂载的 runtime 进程从 site-packages 导入模型与 SDK，25 个 vendor 源码哈希、arx_acone schema、Transformers 补丁全部通过 |
+| Qwen runtime pip check | `No broken requirements found.` |
+| 模型镜像 CPU 数值和调度测试 | **42 passed，6.13 秒**，包括真实 tensor 预处理、配置反序列化、统计、输出映射和 two-stage cadence |
+| Python 3.10 → 两个 Python 3.11 容器 | **7 passed，7.29 秒** |
+| 双模型暂停链 Compose stop | 两容器镜像 ID 相同，各自模型只初始化/释放一次；链保持暂停无推理，RC 和两个 host 均正常退出，临时项目/卷清理完成 |
+
+跨容器专项使用完整 Qwen 生产镜像，仅在测试入口替换 CUDA/model backend，验证不同 host/runtime 身份、三路图像逐像素只读读取、RPC 无图像负载、后台持有自有副本、超时/崩溃/release 挂起的 host 隔离、初始化取消与真实 controller 重载回执。未确认释放的图像保持租约，收到退出证明后才复用帧槽。
+
+普通主框架套件中缺少 Torch 的 7 项和需要 Qwen Compose 的 7 项已分别在相应镜像及独立集成组执行。原有共享 host 的多实例、重复成员和链顺序测试仍保留。这些通过结果不表示真实 GPU 推理通过。
+
+硬件边界：本机没有 NVIDIA GPU 和 checkpoint。真实 checkpoint 推理、CUDA Graph、双模型显存与延迟、真实机器人动作效果仍待目标 x86 Ubuntu 22.04 机器验收，不以 CPU 替身或 ARM 宿主的 amd64 仿真结果替代。

@@ -2,7 +2,7 @@
 
 默认中文交流。独立项目，不从原 robot-control、deploydev 或训练仓库导入。
 
-- 主容器为 ROS 2 Humble / Python 3.10，policy 容器为 Python 3.14；不使用 Conda。
+- 主容器为 ROS 2 Humble / Python 3.10，hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
 - 同一 host 的全部 policy 共用一个执行进程，监督进程负责期限和整组清理。冷重载先确认旧执行进程树退出。
 - SDK 仅依赖 NumPy 与 posix-ipc，不引入 ROS/TUI/模型框架。
 - 只有控制线程发送动作并修改缓存；成功发送完整目标才消费。UI 不执行 socket I/O、推理或生命周期操作。

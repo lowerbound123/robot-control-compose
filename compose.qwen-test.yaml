@@ -1,0 +1,63 @@
+# Test-only overlay: real 3.11 image/UDS/shm; substitute only the heavy CUDA backend.
+# Use an isolated Compose project. Never apply this overlay to a robot deployment.
+services:
+  robot-control:
+    command: ["python3", "-m", "robot_control", "--headless", "--config", "/workspace/policy/rc.json"]
+    ports: !reset []
+    volumes: !override
+      - rpc:/run/robot-control
+      - qwen-fixtures:/workspace/policy
+
+  qwen-fixtures:
+    image: robot-control-compose-tests:local
+    build:
+      context: .
+      dockerfile: docker/rc.Dockerfile
+      target: test
+    command: ["python3", "/opt/app/tests/qwen_helpers.py", "/workspace/policy"]
+    volumes:
+      - qwen-fixtures:/workspace/policy
+
+  policy-qwen35-single:
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
+    depends_on:
+      qwen-fixtures:
+        condition: service_completed_successfully
+    volumes: !override
+      - rpc:/run/robot-control
+      - qwen-fixtures:/workspace/policy
+
+  policy-qwen35-twostage:
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
+    depends_on:
+      qwen-fixtures:
+        condition: service_completed_successfully
+    volumes: !override
+      - rpc:/run/robot-control
+      - qwen-fixtures:/workspace/policy
+
+  qwen-integration:
+    image: robot-control-compose-tests:local
+    ipc: service:ipc-anchor
+    depends_on:
+      policy-qwen35-single:
+        condition: service_healthy
+      policy-qwen35-twostage:
+        condition: service_healthy
+    environment:
+      RC_QWEN_DOCKER_TEST: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      PYTHONPATH: /opt/app/packages/qwen35-policy/src
+    command: ["python3", "-m", "pytest", "-p", "pytest_asyncio.plugin", "tests/test_qwen35_docker.py", "-q", "-rs"]
+    volumes:
+      - rpc:/run/robot-control
+      - qwen-fixtures:/workspace/policy
+
+volumes:
+  qwen-fixtures:

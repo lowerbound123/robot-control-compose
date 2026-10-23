@@ -1,0 +1,160 @@
+{
+  "source_commit": "617449fbbf0ca2a821ba25e1545c651037250c86",
+  "files": {
+    "lerobot/configs/policies.py": {
+      "source": "src/lerobot/configs/policies.py",
+      "source_sha256": "af4b59a572e403e301f65860f2509b5d95ef336104a041d94f1932d271deb71a",
+      "vendored_sha256": "9bf1780fd796f1b730946f829788817dfc170aebac612dcb95532dc6724d43a2",
+      "modified": true
+    },
+    "lerobot/configs/types.py": {
+      "source": "src/lerobot/configs/types.py",
+      "source_sha256": "1354e7d24b19d5d4970064104f76d8c85570c204bf2d09e2b4402f93a994ad99",
+      "vendored_sha256": "1354e7d24b19d5d4970064104f76d8c85570c204bf2d09e2b4402f93a994ad99",
+      "modified": false
+    },
+    "lerobot/policies/qwen3_5vla_ki/configuration_qwen3_5vla_ki.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki/configuration_qwen3_5vla_ki.py",
+      "source_sha256": "82bd885b3a59a2ca755beaf7a28951e89a9bea83a13c7e3a95a339034024b7b3",
+      "vendored_sha256": "154e3d8bb58481613884b5bcfd211161dcb1ae2b1db7bccabb7e0e646f05ee92",
+      "modified": true
+    },
+    "lerobot/policies/qwen3_5vla_ki_wan/configuration_qwen3_5vla_ki_wan.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki_wan/configuration_qwen3_5vla_ki_wan.py",
+      "source_sha256": "fac53d782807f37360fb26d4e72208875684dc704a7f5a2e1f7f68460b91ed42",
+      "vendored_sha256": "548aafd0f6c3c865c9dcdd5da8fda83415fd88b19cc47bea0e5413e0f4148a66",
+      "modified": true
+    },
+    "lerobot/policies/qwen3_5vla_ki/modeling_qwen3_5vla_ki.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki/modeling_qwen3_5vla_ki.py",
+      "source_sha256": "eef0b9a2e1b40f905bf5278928b926a2410a50aadc8438eb594c93ba1a503dc8",
+      "vendored_sha256": "ec240eb1d4a217159661551fa5ecc325c72e69f874aedcf3d73a31f53aa5c5b5",
+      "modified": true
+    },
+    "lerobot/policies/qwen3_5vla_ki/modeling_qwen3_5vla_ki_opt.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki/modeling_qwen3_5vla_ki_opt.py",
+      "source_sha256": "ccf08b70723b68ad988b64d66a6d9dec8b8fde0fb817d976f7c243d78a2ac19c",
+      "vendored_sha256": "ccf08b70723b68ad988b64d66a6d9dec8b8fde0fb817d976f7c243d78a2ac19c",
+      "modified": false
+    },
+    "lerobot/policies/qwen3_5vla_ki/action_tokens.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki/action_tokens.py",
+      "source_sha256": "1e3d62082f55ecb1dcf7a2080d282562fa28f488b65a1cde281947e3d0eb06ff",
+      "vendored_sha256": "1e3d62082f55ecb1dcf7a2080d282562fa28f488b65a1cde281947e3d0eb06ff",
+      "modified": false
+    },
+    "lerobot/policies/qwen3_5vla_ki_wan/modeling_qwen3_5vla_ki_wan_opt.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki_wan/modeling_qwen3_5vla_ki_wan_opt.py",
+      "source_sha256": "85e88ba3ff385ba2d670ca0f6ffa9a8a8736832ac33a07595705a84c94eb7b26",
+      "vendored_sha256": "85e88ba3ff385ba2d670ca0f6ffa9a8a8736832ac33a07595705a84c94eb7b26",
+      "modified": false
+    },
+    "lerobot/policies/qwen3_5vla_ki_wan/modeling_qwen3_5vla_ki_wan.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki_wan/modeling_qwen3_5vla_ki_wan.py",
+      "source_sha256": "f2a9bafc20a82c7a9f41cca3199bfd94cc196ba30e79288eeebefc757e66fcd6",
+      "vendored_sha256": "6f17f97ed9a87fbcc5352836e1f130438d9fc1190a53375d7612ad4fe1e75365",
+      "modified": true
+    },
+    "lerobot/policies/pretrained.py": {
+      "source": "src/lerobot/policies/pretrained.py",
+      "source_sha256": "4d5a42bd475c7beca2ec899b7fcf7a0d890edc4234d143e4397c9999edafc39e",
+      "vendored_sha256": "c4278b72a333400eab869d02e22602b7b1863a522d2c96acfe77a549d1365dbf",
+      "modified": true
+    },
+    "lerobot/policies/utils.py": {
+      "source": "src/lerobot/policies/utils.py",
+      "source_sha256": "f408fe51eaa835c51968ae70300d79a6d5941d8c86dc609de144288e544e655e",
+      "vendored_sha256": "f408fe51eaa835c51968ae70300d79a6d5941d8c86dc609de144288e544e655e",
+      "modified": false
+    },
+    "lerobot/utils/utils.py": {
+      "source": "src/lerobot/utils/utils.py",
+      "source_sha256": "9f66510cb1e5ea5635d9562c74cfee12876de642321ec307d1a73958c16dc9fc",
+      "vendored_sha256": "da8a097ceca078eecc88dfd84b10ca64dabd8490445fb4d3bbb154c528ed3a6e",
+      "modified": true
+    },
+    "lerobot/utils/hub.py": {
+      "source": "src/lerobot/utils/hub.py",
+      "source_sha256": "1981583e520bc73e221491459694d58ad1c1370537bf280968493b31c8e2c51f",
+      "vendored_sha256": "1981583e520bc73e221491459694d58ad1c1370537bf280968493b31c8e2c51f",
+      "modified": false
+    },
+    "lerobot/utils/constants.py": {
+      "source": "src/lerobot/utils/constants.py",
+      "source_sha256": "237bfdef02bd7b82f078c53098640db54f1bafb81727a8fb9afd2b02ddc92fb0",
+      "vendored_sha256": "237bfdef02bd7b82f078c53098640db54f1bafb81727a8fb9afd2b02ddc92fb0",
+      "modified": false
+    },
+    "lerobot/utils/loss_utils.py": {
+      "source": "src/lerobot/utils/loss_utils.py",
+      "source_sha256": "6f6367d632841de4e07f41d51389d49b09e677c2aabbd5d17df34514baf3afb2",
+      "vendored_sha256": "509924f11f4abb716259cb833b72199baffae459173043e656ddbb233a2088aa",
+      "modified": true
+    },
+    "lerobot/transforms/core.py": {
+      "source": "src/lerobot/transforms/core.py",
+      "source_sha256": "ef0633094a617f869f58294c86a1fac93d71af55b7de5daaed386cb9df31b10c",
+      "vendored_sha256": "7732ff20270a9861dbe64fd2dcc81de7f0e8a632a0640b4d4ad3997ff73216dc",
+      "modified": true
+    },
+    "lerobot/transforms/utils.py": {
+      "source": "src/lerobot/transforms/utils.py",
+      "source_sha256": "742fceb01a0cb4ebc5aac4b6030b6c978a5d9176a3359ee2deba6ced9906e617",
+      "vendored_sha256": "742fceb01a0cb4ebc5aac4b6030b6c978a5d9176a3359ee2deba6ced9906e617",
+      "modified": false
+    },
+    "lerobot/transforms/constants.py": {
+      "source": "src/lerobot/transforms/constants.py",
+      "source_sha256": "d57b18704eb071445c31e43c706e11226c47f0a0d5830c872f5a82e6f407b990",
+      "vendored_sha256": "d57b18704eb071445c31e43c706e11226c47f0a0d5830c872f5a82e6f407b990",
+      "modified": false
+    },
+    "lerobot/policies/qwen3_5vla_ki/transform_qwen3_5vla_ki.py": {
+      "source": "src/lerobot/policies/qwen3_5vla_ki/transform_qwen3_5vla_ki.py",
+      "source_sha256": "22f31c803fd04b5a752f7f6dd9a1fd9ac429b0ceb2db41809677ed24bb1067f0",
+      "vendored_sha256": "6ab1d3e72a0012972e1a5293a06ab0c0a8135ba2fa1e0e4d64f94ebd90b15e04",
+      "modified": true
+    },
+    "lerobot/dataset_schemas/__init__.py": {
+      "source": "src/lerobot/dataset_schemas/__init__.py",
+      "source_sha256": "75d8f8bb05900b1c421d2114966446b047f2d35fa7e868c27c55aec0d8a65548",
+      "vendored_sha256": "75d8f8bb05900b1c421d2114966446b047f2d35fa7e868c27c55aec0d8a65548",
+      "modified": false
+    },
+    "lerobot/dataset_schemas/schema.py": {
+      "source": "src/lerobot/dataset_schemas/schema.py",
+      "source_sha256": "fb6f241ef417aa53ed06c64ca91fcd82eab05bfa3fbf733cc974ada81ed3b521",
+      "vendored_sha256": "fb6f241ef417aa53ed06c64ca91fcd82eab05bfa3fbf733cc974ada81ed3b521",
+      "modified": false
+    },
+    "lerobot/dataset_schemas/registry.py": {
+      "source": "src/lerobot/dataset_schemas/registry.py",
+      "source_sha256": "34ce93d687d8ceb6532ecd3279cc01cfd8d8c6ec0968f272524d2d32fb7acbbc",
+      "vendored_sha256": "34ce93d687d8ceb6532ecd3279cc01cfd8d8c6ec0968f272524d2d32fb7acbbc",
+      "modified": false
+    },
+    "lerobot/dataset_schemas/presets.py": {
+      "source": "src/lerobot/dataset_schemas/presets.py",
+      "source_sha256": "e5ad4baa5816a2e17a27b614de9ac38114473309a027efa1fa267560ae2c7a79",
+      "vendored_sha256": "e5ad4baa5816a2e17a27b614de9ac38114473309a027efa1fa267560ae2c7a79",
+      "modified": false
+    },
+    "lerobot/dataset_schemas/configs/arx_acone.yaml": {
+      "source": "src/lerobot/dataset_schemas/configs/arx_acone.yaml",
+      "source_sha256": "d69bdf125cff4be0e25b7b5a04c021a3690e2b0f8d9558a02f7f981fef69fa84",
+      "vendored_sha256": "d69bdf125cff4be0e25b7b5a04c021a3690e2b0f8d9558a02f7f981fef69fa84",
+      "modified": false
+    },
+    "lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py": {
+      "source": "src/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py",
+      "source_sha256": "f4367e60c2d79c9e501a6163043df2cc9597ea78fbbfb17cdb909c5f3e0155e4",
+      "vendored_sha256": "f4367e60c2d79c9e501a6163043df2cc9597ea78fbbfb17cdb909c5f3e0155e4",
+      "modified": false
+    }
+  },
+  "adapter_sources": {
+    "deploydev/models/qwen35.py": "55cdb2829de0c146400ace6bd68f3ac3c9b84a94946486f632439e9bc808f282",
+    "deploydev/models/common.py": "f496f85558570905760d1f1744b1706e46226e30202112feaffbc174971dc4d4",
+    "tutorials/1.installation.md": "2d249f55adbf13b337639e77ae1e5e4f1a1bc40592b1697dec4876b0d8f9d815"
+  }
+}

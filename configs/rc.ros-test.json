@@ -122,6 +122,12 @@
   "policy_hosts": {
     "hold": {
       "socket": "/run/robot-control/hold.sock"
+    },
+    "qwen35-single": {
+      "socket": "/run/robot-control/qwen35-single.sock"
+    },
+    "qwen35-twostage": {
+      "socket": "/run/robot-control/qwen35-twostage.sock"
     }
   }
 }

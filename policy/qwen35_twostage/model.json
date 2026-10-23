@@ -1,0 +1,32 @@
+{
+  "model": {
+    "name": "qwen3_5_vla_ki_wan",
+    "checkpoint": "/models/qwen35/two_stage/pretrained_model",
+    "workflow": "two_stage",
+    "dtype": "bfloat16",
+    "action_mode": "delta",
+    "stats_key": "arx_acone",
+    "schema_key": "arx_acone",
+    "state_offsets": {},
+    "inference_backend": "optimized",
+    "action_loss_only": true,
+    "compile_model": false,
+    "compile_mode": "reduce-overhead",
+    "warmup_runs": 2,
+    "image_height": 224,
+    "image_width": 224,
+    "subtask_refresh_chunks": 3,
+    "subtask_max_new_tokens": 128
+  },
+  "runtime": {
+    "instruction": "Prepare the red liquid in the flask, place the funnel into the lower-right hole, and press the two buttons to the left of the knob to start the device"
+  },
+  "execution": {
+    "chunk_size": 50,
+    "request_when_remaining": 30,
+    "inference_timeout_s": 60
+  },
+  "actions": {
+    "processor": "qwen35_single_grippers"
+  }
+}

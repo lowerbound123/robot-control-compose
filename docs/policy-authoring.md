@@ -38,7 +38,7 @@ def release(context):
     pass
 ```
 
-RC 只检查 manifest 与入口存在。host 使用其 Python 3.14 对入口做 AST/编译预检和四函数检查，预检不 import 或执行顶层代码；辅助模块与依赖在实际加载时检查。各实例是独立模块包，拥有独立 context、配置、推理队列。不要修改全局 `sys.path` 或 `os.chdir()`，同 host 的第三方依赖由一个解释器共享。
+RC 只检查 manifest 与入口存在。host 使用其镜像内的 Python（hold 为 3.14，Qwen 为 3.11）对入口做 AST/编译预检和四函数检查，预检不 import 或执行顶层代码；辅助模块与依赖在实际加载时检查。各实例是独立模块包，拥有独立 context、配置、推理队列。不要修改全局 `sys.path` 或 `os.chdir()`，同 host 的第三方依赖由一个解释器共享。
 
 已有 SDK 的 `runtime`、`observe`、TUI 命令、外部资源与热更新接口继续可用。只对 manifest `hot_reloadable` 中允许的叶路径做热更新，其他字段冷重载。`runtime.pause(reason)` 只能在当前推理回调线程调用，成功结果才会携带暂停请求。
 
@@ -90,7 +90,9 @@ services:
         condition: service_healthy
 ```
 
-使用 `docker compose -f compose.yaml -f compose.policies.yaml up -d`。B 可以使用另外构建的镜像安装不同依赖；保持相同 RPC/图像协议和 `posix-ipc==1.3.2`，标准 GIL Python 3.14。不要共用 socket 路径或修改 IPC anchor。跨 host 的调用顺序仍由 RC 编排。`compose.test.yaml` 提供了实际验证的双 host 拓扑。
+使用 `docker compose -f compose.yaml -f compose.policies.yaml up -d`。B 可以使用另外构建的镜像安装不同依赖；保持相同 RPC/图像协议和 `posix-ipc==1.3.2`，Python 版本由对应镜像锁定。不要共用 socket 路径或修改 IPC anchor。跨 host 的调用顺序仍由 RC 编排。`compose.test.yaml` 提供了实际验证的双 host 拓扑。
+
+复用环境不必共用运行进程：Qwen 的两个服务引用同一个 `robot-control-compose-qwen35:local` 镜像，各自使用独立 host 和 UDS。镜像只构建一次，模型、context、动作缓存和故障监督各自独立。配置见 `compose.qwen.yaml`，部署步骤见 [Qwen 教程](qwen35-policy.md)。主框架只路由 host，不负责安装包；依赖变化需重新构建相应镜像并重新创建容器。
 
 ## 图像与租约
 

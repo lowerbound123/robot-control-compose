@@ -1,0 +1,2 @@
+# No ROS/TUI/main framework in the model test image.
+pytest>=8,<10
