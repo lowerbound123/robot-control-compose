@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot-control"
+version = "0.7.0"
+description = "Terminal robot control with isolated policy workers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26,<3",
+  "Pillow>=10.3.0",
+  "textual>=1.0,<9",
+  "textual-image[textual]==0.8.5",
+  "rc-policy-sdk>=0.7.0",
+  "scipy>=1.10",
+  "mcp>=2.3,<3",
+  "starlette>=0.46,<2",
+  "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.28,<1", "httpx2>=2,<3"]
+
+[project.scripts]
+robot-control = "robot_control.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "packages/policy-sdk/src"]
+asyncio_mode = "auto"

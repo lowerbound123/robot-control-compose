@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "id": "hold",
+  "execution": {
+    "mode": "sync",
+    "call_every_actions": 2,
+    "control_mode": "qpos"
+  },
+  "params": {
+    "chunk_size": 50
+  },
+  "hot_reloadable": [
+    "execution.mode",
+    "execution.call_every_actions",
+    "params.chunk_size"
+  ],
+  "policy_host": "hold"
+}

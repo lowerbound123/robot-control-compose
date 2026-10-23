@@ -1,0 +1,24 @@
+"""Return an absolute qpos chunk that holds the measured pose."""
+
+import numpy as np
+
+
+def initialize(config):
+    return {"config": config, "calls": 0}
+
+
+def policy(context, state, action_chunk, images, config):
+    # The worker updates this same config object in place on accepted hot patches.
+    chunk_size = context["config"]["params"]["chunk_size"]
+    qpos = np.asarray(state["qpos"], dtype=np.float64).reshape(14)
+    context["calls"] += 1
+    return np.repeat(qpos[None, :], chunk_size, axis=0)
+
+
+def reset_context(context):
+    context["calls"] = 0
+
+
+def release(context):
+    if context is not None:
+        context["released"] = True

@@ -1,0 +1,6 @@
+services:
+  robot-control:
+    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.ros-test.json", "--mcp", "0.0.0.0:4000"]
+    depends_on:
+      ros-sim:
+        condition: service_started

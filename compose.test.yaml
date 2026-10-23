@@ -1,0 +1,41 @@
+services:
+  policy-hold:
+    volumes:
+      - ./tests/fixtures/docker_policies:/workspace/policy:ro
+  policy-second:
+    image: robot-control-compose-policy:local
+    ipc: service:ipc-anchor
+    command: ["--host-id", "second", "--socket", "/run/robot-control/second.sock", "--policy-root", "/workspace/policy"]
+    depends_on:
+      ipc-anchor:
+        condition: service_started
+    volumes:
+      - rpc:/run/robot-control
+      - ./tests/fixtures/docker_policies:/workspace/policy:ro
+    healthcheck:
+      test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "second", "--socket", "/run/robot-control/second.sock", "--policy-root", "/workspace/policy"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 45s
+  integration:
+    image: robot-control-compose-tests:local
+    build:
+      context: .
+      dockerfile: docker/rc.Dockerfile
+      target: test
+    ipc: service:ipc-anchor
+    depends_on:
+      policy-hold:
+        condition: service_healthy
+      policy-second:
+        condition: service_healthy
+    environment:
+      RC_DOCKER_TEST: "1"
+      ROS_DOMAIN_ID: "93"
+      ROS_LOCALHOST_ONLY: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+    command: ["python3", "-m", "pytest", "-p", "pytest_asyncio.plugin", "tests/test_docker_integration.py", "tests/test_ros_integration.py", "-q", "-rs"]
+    volumes:
+      - rpc:/run/robot-control
+      - ./tests/fixtures/docker_policies:/workspace/policy:ro

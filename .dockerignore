@@ -1,0 +1,13 @@
+.git
+.codex
+.venv
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+.pytest_cache
+outputs
+snapshot
+vendor
+ros_ws/build
+ros_ws/install
+ros_ws/log

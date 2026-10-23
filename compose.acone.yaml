@@ -1,0 +1,8 @@
+services:
+  robot-control:
+    network_mode: host
+    ports: !reset []
+    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.acone.json"]
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      ROS_LOCALHOST_ONLY: "0"

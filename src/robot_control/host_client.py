@@ -1,0 +1,164 @@
+"""Multiplexed UDS connection. A queued operation is never replayed."""
+import queue
+import socket
+import threading
+import time
+import uuid
+import weakref
+
+from rc_policy_sdk.wire import encode_message, receive_message, send_message
+
+
+class HostClient:
+    _clients = weakref.WeakValueDictionary()
+    _registry_lock = threading.Lock()
+
+    @classmethod
+    def get(cls, socket_path, host_id):
+        key = (str(socket_path), host_id)
+        with cls._registry_lock:
+            client = cls._clients.get(key)
+            if client is None or client.closed:
+                client = cls(str(socket_path), host_id)
+                cls._clients[key] = client
+            return client
+
+    def __init__(self, path, host_id):
+        self.path, self.host_id = path, host_id
+        self.owner_id = uuid.uuid4().hex
+        self.members = {}
+        self.condition = threading.Condition(threading.RLock())
+        self.outbox = queue.Queue(32)
+        self.results = {}
+        self.serial = 0
+        self.closed = False
+        self.failure = None
+        self.connection = socket.socket(socket.AF_UNIX)
+        try:
+            self.connection.settimeout(3)
+            self.connection.connect(path)
+            info = self._hello(self.connection)
+            self.instance_id = info['host_instance_id']
+            self.connection.settimeout(None)
+        except BaseException:
+            self.connection.close(); raise
+        self.threads = [threading.Thread(target=self._read, name='host-reader', daemon=True),
+                        threading.Thread(target=self._write, name='host-writer', daemon=True)]
+        for thread in self.threads: thread.start()
+
+    def _hello(self, connection):
+        send_message(connection, {'type':'hello','rpc_id':0,'owner_id':self.owner_id,
+            'protocol_version':1,'image_protocol_version':1})
+        response = receive_message(connection)
+        if response.get('error'): raise RuntimeError(response['error'])
+        if response.get('type') != 'rpc_result' or not isinstance(response.get('result'), dict):
+            raise RuntimeError('incompatible legacy host protocol; upgrade rc-policy-sdk')
+        info = response['result']
+        if info.get('host_id') != self.host_id or info.get('protocol_version') != 1 or info.get('image_protocol_version') != 1:
+            raise RuntimeError('policy host identity/protocol mismatch')
+        return info
+
+    def register(self, member):
+        with self.condition: self.members[member.session_id] = member
+
+    def enqueue(self, message):
+        framed = encode_message(message)
+        with self.condition:
+            if self.closed or self.failure: raise RuntimeError(self.failure or 'host disconnected')
+            try: self.outbox.put_nowait(framed)
+            except queue.Full as exc: raise RuntimeError('host request queue is full') from exc
+
+    def request(self, kind, *, timeout, **payload):
+        with self.condition:
+            self.serial += 1
+            identity = self.serial
+            self.enqueue({'type':kind, 'rpc_id':identity, **payload})
+            deadline = time.monotonic() + timeout
+            while identity not in self.results:
+                if self.failure or self.closed: raise RuntimeError(self.failure or 'host disconnected')
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: raise TimeoutError(f'host {kind} timeout')
+                self.condition.wait(min(.05, remaining))
+            result = self.results.pop(identity)
+        if result.get('error'): raise RuntimeError(result['error'])
+        return result.get('result')
+
+    def preflight(self, policy_id, timeout=10):
+        return self.request('preflight', timeout=timeout, policy_id=policy_id)
+
+    def _fail(self, message):
+        with self.condition:
+            self.failure = message
+            members = list(self.members.values())
+            self.condition.notify_all()
+        for member in members: member._record_failure(message)
+
+    def _write(self):
+        try:
+            while True:
+                framed = self.outbox.get()
+                if framed is None: return
+                self.connection.sendall(framed)
+        except OSError as exc: self._fail(f'host write failed: {exc}')
+
+    def _read(self):
+        try:
+            while True:
+                message = receive_message(self.connection)
+                kind = message.get('type')
+                if kind == 'rpc_result':
+                    with self.condition:
+                        self.results[message['rpc_id']] = message
+                        self.condition.notify_all()
+                    continue
+                if message.get('host_instance_id') != self.instance_id:
+                    raise ValueError('stale host instance')
+                with self.condition: members = list(self.members.values())
+                if kind == 'policy_event':
+                    member = self.members.get(message['session_id'])
+                    if member: member._receive(message)
+                elif kind == 'runtime_stopped':
+                    for member in members: member._confirm_closed(message)
+                elif kind == 'host_fault':
+                    for member in members:
+                        if member.runtime_id == message['runtime_id']: member._record_failure(message['error'])
+                elif kind == 'log':
+                    for member in members:
+                        if member.runtime_id == message['runtime_id']: member._log(message['message'])
+                else: raise ValueError(f'unexpected host message: {kind}')
+        except (OSError, EOFError, ValueError) as exc:
+            if not self.closed: self._fail(f'host disconnected: {exc}')
+
+    def stop_group(self, runtime_id, sessions, timeout):
+        payload = dict(runtime_id=runtime_id, sessions=sessions, release_timeout=timeout)
+        try:
+            proof = self.request('stop', timeout=timeout + 8, **payload)
+        except (OSError, RuntimeError, TimeoutError):
+            # Cleanup only: a fresh connection may retrieve an existing proof
+            # or revoke this owner before a delayed load. Never replay user work.
+            with socket.socket(socket.AF_UNIX) as rescue:
+                rescue.settimeout(timeout + 8); rescue.connect(self.path)
+                info = self._hello(rescue)
+                if info['host_instance_id'] != self.instance_id:
+                    raise RuntimeError('host restarted; old readers cannot be confirmed')
+                send_message(rescue, {'type':'stop', 'rpc_id':1, **payload})
+                result = receive_message(rescue)
+                if result.get('error'): raise RuntimeError(result['error'])
+                proof = result['result']
+        if not proof.get('cleanup_confirmed') or proof.get('host_instance_id') != self.instance_id:
+            raise RuntimeError('missing runtime exit proof')
+        for member in list(self.members.values()): member._confirm_closed(proof)
+        self.disconnect()
+        return proof['forced']
+
+    def disconnect(self):
+        with self.condition:
+            self.closed = True
+            self.condition.notify_all()
+        try: self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+        try: self.outbox.put_nowait(None)
+        except queue.Full: pass
+        self.connection.close()
+        for thread in self.threads:
+            if thread is not threading.current_thread(): thread.join(1)

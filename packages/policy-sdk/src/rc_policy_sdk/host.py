@@ -1,0 +1,370 @@
+"""UDS supervisor. User code lives exclusively in its shared runtime child."""
+import argparse
+import ast
+from collections import OrderedDict
+import fcntl
+import json
+import math
+import os
+from pathlib import Path
+import queue
+import re
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+from .lifecycle import become_subreaper, descendant_snapshot, process_birth
+from .supervisor import _cleanup
+from .wire import encode_message, receive_message, send_message
+
+PROTOCOL_VERSION = 1
+IMAGE_PROTOCOL_VERSION = 1
+
+
+class Peer:
+    def __init__(self, connection):
+        self.connection = connection
+        self.outbox = queue.Queue(64)
+        self.owner = None
+        threading.Thread(target=self._write, daemon=True).start()
+
+    def send(self, message):
+        try: self.outbox.put_nowait(encode_message(message))
+        except queue.Full:
+            self.close()
+            raise ConnectionError('host response queue is full')
+
+    def _write(self):
+        try:
+            while True:
+                packet = self.outbox.get()
+                if packet is None: return
+                self.connection.sendall(packet)
+        except OSError: self.close()
+
+    def close(self):
+        try: self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+        try: self.outbox.put_nowait(None)
+        except queue.Full: pass
+
+
+class PolicyHost:
+    def __init__(self, root, host_id):
+        self.root = Path(root).resolve()
+        self.host_id = host_id
+        self.instance_id = uuid.uuid4().hex
+        self.condition = threading.Condition(threading.RLock())
+        self.stop_lock = threading.Lock()
+        self.write_lock = threading.Lock()
+        self.process = None
+        self.runtime = None
+        self.runtime_outbox = None
+        self.runtime_id = None
+        self.owner = None
+        self.known_children = {}
+        self.sessions = OrderedDict()
+        self.stopped = OrderedDict()
+        self.revoked_owners = set()
+        self.closing = False
+        self.shutting_down = False
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def preflight(self, policy_id):
+        if not isinstance(policy_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', policy_id):
+            raise ValueError('invalid policy ID')
+        # RC identifies policies by manifest ID, not by directory basename.
+        matches = []
+        for manifest in self.root.glob('*/policy.json'):
+            try:
+                config = json.loads(manifest.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if isinstance(config, dict) and config.get('id') == policy_id:
+                matches.append(manifest.parent.resolve())
+        if len(matches) > 1: raise ValueError('ambiguous policy ID: ' + policy_id)
+        directory = matches[0] if matches else (self.root / policy_id).resolve()
+        if directory.parent != self.root:
+            raise ValueError('policy directory escapes the configured root')
+        source = (directory / 'main.py').read_text(encoding='utf-8')
+        tree = ast.parse(source, filename=str(directory / 'main.py'))
+        compile(tree, str(directory / 'main.py'), 'exec')
+        names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+        required = {'initialize', 'policy', 'reset_context', 'release'}
+        if required - names: raise ValueError('main.py missing callbacks: ' + ', '.join(sorted(required - names)))
+        return {'valid': True, 'python': sys.version.split()[0], 'directory': str(directory)}
+
+    def _send_runtime(self, message):
+        # A blocked runtime must never block the supervisor's watchdog or stop
+        # RPC. Ownership transfers into this bounded queue, not into sendall.
+        try: self.runtime_outbox.put_nowait(encode_message(message))
+        except queue.Full as exc: raise RuntimeError('runtime request queue is full') from exc
+
+    def _write_runtime(self, connection, outbox, runtime_id):
+        try:
+            while True:
+                framed = outbox.get()
+                if framed is None: return
+                connection.sendall(framed)
+        except OSError as exc:
+            with self.condition:
+                active = self.runtime_id == runtime_id and not self.closing
+            if active: self.stop(runtime_id, timeout=0, reason=f'runtime write failed: {exc}')
+
+    def _start(self, owner):
+        parent, child = socket.socketpair()
+        runtime_id = uuid.uuid4().hex
+        try:
+            process = subprocess.Popen([sys.executable, '-m', 'rc_policy_sdk.host_runtime', '--fd', str(child.fileno())],
+                pass_fds=(child.fileno(),), start_new_session=True, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except BaseException:
+            parent.close(); raise
+        finally: child.close()
+        self.known_children = {}
+        self.runtime_outbox = queue.Queue(32)
+        self.process, self.runtime, self.runtime_id, self.owner = process, parent, runtime_id, owner
+        threading.Thread(target=self._write_runtime, args=(parent, self.runtime_outbox, runtime_id), daemon=True).start()
+        threading.Thread(target=self._read_runtime, args=(parent, runtime_id), daemon=True).start()
+        threading.Thread(target=self._logs, args=(process, runtime_id), daemon=True).start()
+
+    def _emit(self, peer, message):
+        try: peer.send({'host_instance_id': self.instance_id, **message})
+        except (OSError, ValueError): pass
+
+    def _broadcast(self, message):
+        peers = {record['peer'] for record in self.sessions.values()}
+        for peer in peers: self._emit(peer, {'runtime_id': self.runtime_id, **message})
+
+    def _logs(self, process, runtime_id):
+        try:
+            for line in iter(lambda: process.stdout.readline(8192), ''):
+                with self.condition:
+                    if runtime_id == self.runtime_id:
+                        self._broadcast({'type': 'log', 'message': line.rstrip()[:8192]})
+        finally: process.stdout.close()
+
+    def _read_runtime(self, connection, runtime_id):
+        try:
+            while True:
+                packet = receive_message(connection)
+                with self.condition:
+                    if runtime_id != self.runtime_id: return
+                    record = self.sessions.get(packet['session_id'])
+                    if record is None: raise ValueError('unknown runtime session')
+                    event = packet['event']; kind = event['type']
+                    deadlines = record['deadlines']
+                    if kind == 'ready':
+                        self.known_children.update(descendant_snapshot(self.process.pid))
+                        deadlines.pop('initialize', None)
+                    if kind in ('result', 'error'): deadlines.pop('infer', None)
+                    if kind in ('observed', 'observation_error'): deadlines.pop('observe', None)
+                    if kind == 'ack' or (kind == 'error' and event.get('operation_id') is not None):
+                        deadlines.pop('operation', None)
+                    if kind == 'command_started':
+                        call = record['commands'].get(event['command_id'])
+                        if call and call['timeout'] != -1:
+                            deadlines['command:' + str(event['command_id'])] = event['started_at'] + call['timeout']
+                    if kind in ('command_result', 'command_error', 'command_cancelled'):
+                        key = 'command:' + str(event['command_id'])
+                        deadline = deadlines.pop(key, None)
+                        record['commands'].pop(event['command_id'], None)
+                        if deadline is not None and event.get('finished_at', time.monotonic()) > deadline:
+                            kind = 'fatal'; event = {'type': 'fatal', 'error': 'policy command timeout'}
+                    if kind == 'closed':
+                        record['closed'] = True
+                        record['release_error'] = event.get('release_error')
+                    self._emit(record['peer'], {'type': 'policy_event', 'runtime_id': runtime_id,
+                        'session_id': packet['session_id'], 'event': event})
+                    self.condition.notify_all()
+                if kind == 'fatal':
+                    self.stop(runtime_id, timeout=0, reason=event.get('error', 'policy fatal error'))
+                    return
+        except (OSError, EOFError, ValueError) as exc:
+            with self.condition:
+                active = runtime_id == self.runtime_id and not self.closing
+            if active: self.stop(runtime_id, timeout=0, reason=f'runtime disconnected: {exc}')
+
+    def _watch(self):
+        while not self.shutting_down:
+            time.sleep(.02)
+            with self.condition:
+                if self.process is None or self.closing: continue
+                self.known_children.update(descendant_snapshot(self.process.pid))
+                expired = next((key for r in self.sessions.values() for key, deadline in r['deadlines'].items()
+                                if time.monotonic() >= deadline), None)
+                reason = (f'policy {expired} timeout' if expired else
+                          'policy runtime exited' if self.process.poll() is not None else None)
+                runtime_id = self.runtime_id
+            if reason: self.stop(runtime_id, timeout=0, reason=reason)
+
+    def dispatch(self, peer, message):
+        kind = message.get('type')
+        if kind == 'hello':
+            if message.get('protocol_version') != PROTOCOL_VERSION or message.get('image_protocol_version') != IMAGE_PROTOCOL_VERSION:
+                raise ValueError('incompatible RPC/image protocol')
+            peer.owner = message.get('owner_id')
+            return {'host_id': self.host_id, 'host_instance_id': self.instance_id,
+                    'protocol_version': PROTOCOL_VERSION, 'image_protocol_version': IMAGE_PROTOCOL_VERSION,
+                    'python': sys.version.split()[0]}
+        if not peer.owner: raise ValueError('hello required')
+        if kind == 'ping': return {'healthy': not self.shutting_down}
+        if kind == 'preflight': return self.preflight(message['policy_id'])
+        if kind == 'stop':
+            if self.owner is not None and peer.owner != self.owner: raise ValueError('host owned by another RC')
+            with self.condition:
+                self.revoked_owners.add(peer.owner)
+                runtime_id = message.get('runtime_id') or (self.runtime_id if self.owner == peer.owner else None)
+                if runtime_id is None:
+                    return {'runtime_id':None, 'host_instance_id':self.instance_id, 'cleanup_confirmed':True, 'forced':False}
+            return self.stop(runtime_id, order=message.get('sessions'), timeout=message['release_timeout'])
+        with self.condition:
+            if self.closing or self.shutting_down: raise RuntimeError('host is closing')
+            if self.owner is not None and self.owner != peer.owner: raise ValueError('host owned by another RC')
+            if kind == 'load':
+                if peer.owner in self.revoked_owners: raise RuntimeError('RC owner revoked; create a new session')
+                directory = self.preflight(message['policy_id'])['directory']
+                if self.process is None: self._start(peer.owner)
+                sid = message['session_id']
+                if sid in self.sessions or any(r['policy_id'] == message['policy_id'] for r in self.sessions.values()):
+                    raise ValueError('policy already loaded in this runtime')
+                self.sessions[sid] = dict(peer=peer, policy_id=message['policy_id'],
+                    closed=False, release_error=None, timeouts=message['timeouts'], commands={},
+                    deadlines={'initialize': time.monotonic() + message['timeouts']['initialize']})
+                self._send_runtime({'type': 'load', 'session_id': sid, 'directory': directory, 'event': message['event']})
+                return {'runtime_id': self.runtime_id, 'pid': self.process.pid}
+            if kind != 'dispatch' or message.get('runtime_id') != self.runtime_id:
+                raise ValueError('unknown or stale runtime request')
+            record = self.sessions[message['session_id']]
+            if record['closed']: raise RuntimeError('policy session closed')
+            event = message['event']; event_kind = event['type']
+            if event_kind in ('infer', 'observe', 'update_config', 'reset_context'):
+                key = event_kind if event_kind in ('infer', 'observe') else 'operation'
+                timeout = message.get('operation_timeout_s', record['timeouts']['inference'])
+                if isinstance(timeout, bool) or not isinstance(timeout, (int,float)) or not math.isfinite(timeout) or timeout <= 0:
+                    raise ValueError('invalid operation timeout')
+                record['deadlines'][key] = time.monotonic() + timeout
+            if event_kind == 'policy_command':
+                record['commands'][event['command_id']] = {'timeout': message['command_timeout']}
+            self._send_runtime({'type': 'dispatch', 'session_id': message['session_id'], 'event': event})
+
+    def stop(self, runtime_id, order=None, timeout=30, reason=None):
+        with self.stop_lock:
+            with self.condition:
+                if runtime_id in self.stopped: return self.stopped[runtime_id]
+                if runtime_id != self.runtime_id or self.process is None:
+                    raise RuntimeError('old runtime exit cannot be confirmed by this host')
+                self.closing = True
+                process = self.process
+                self.known_children.update(descendant_snapshot(process.pid))
+                forced = reason is not None
+                if reason: self._broadcast({'type': 'host_fault', 'error': reason})
+                ordered = list(dict.fromkeys((order or []) + list(reversed(self.sessions))))
+                deadline = time.monotonic() + max(0, min(float(timeout), 600))
+            try:
+                try:
+                    for sid in ordered:
+                        with self.condition:
+                            if sid not in self.sessions: continue
+                            record = self.sessions[sid]
+                            if not record['closed'] and time.monotonic() < deadline:
+                                self._send_runtime({'type': 'dispatch', 'session_id': sid, 'event': {'type': 'shutdown'}})
+                            while not record['closed'] and process.poll() is None and time.monotonic() < deadline:
+                                self.condition.wait(.02)
+                            forced |= not record['closed'] or bool(record['release_error'])
+                    if not forced:
+                        self._send_runtime({'type': 'exit'})
+                        process.wait(timeout=1)
+                except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+                    # Backpressure/disconnection cannot bypass OS-level cleanup.
+                    forced = True
+                cleaned = _cleanup(process, self.known_children)
+                with self.condition:
+                    if not cleaned: raise RuntimeError('runtime descendants remain; image readers unconfirmed')
+                    result = {'runtime_id': runtime_id, 'host_instance_id': self.instance_id,
+                              'cleanup_confirmed': True, 'forced': bool(forced), 'error': reason}
+                    self.stopped[runtime_id] = result
+                    while len(self.stopped) > 64: self.stopped.popitem(last=False)
+                    self._broadcast({'type': 'runtime_stopped', **result})
+                    try: self.runtime.shutdown(socket.SHUT_RDWR)
+                    except OSError: pass
+                    self.runtime.close()
+                    try: self.runtime_outbox.put_nowait(None)
+                    except queue.Full: pass
+                    self.process = self.runtime = self.runtime_id = self.owner = None
+                    self.sessions.clear()
+                    return result
+            finally:
+                with self.condition:
+                    self.closing = False
+                    self.condition.notify_all()
+
+    def serve_peer(self, connection):
+        peer = Peer(connection)
+        try:
+            while True:
+                message = receive_message(connection)
+                try:
+                    result = self.dispatch(peer, message)
+                    if 'rpc_id' in message:
+                        peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'result': result})
+                except Exception as exc:
+                    if 'rpc_id' in message:
+                        peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'error': str(exc)})
+                    else:
+                        with self.condition: runtime_id = self.runtime_id
+                        if runtime_id: self.stop(runtime_id, timeout=0, reason=f'RPC rejected: {exc}')
+        except (OSError, EOFError, ValueError): pass
+        finally:
+            peer.close(); connection.close()
+            with self.condition:
+                owned = self.owner == peer.owner and any(r['peer'] is peer for r in self.sessions.values())
+                runtime_id = self.runtime_id
+            if owned and runtime_id:
+                self.stop(runtime_id, timeout=2, reason='RC connection lost')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--socket', required=True)
+    parser.add_argument('--policy-root', required=True)
+    parser.add_argument('--host-id', required=True)
+    parser.add_argument('--healthcheck', action='store_true')
+    args = parser.parse_args()
+    if args.healthcheck:
+        with socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(2); connection.connect(args.socket)
+            send_message(connection, {'type':'hello','rpc_id':1,'owner_id':uuid.uuid4().hex,
+                'protocol_version':PROTOCOL_VERSION,'image_protocol_version':IMAGE_PROTOCOL_VERSION})
+            answer = receive_message(connection)
+            if answer.get('error') or answer['result']['host_id'] != args.host_id: raise SystemExit(1)
+        return
+    become_subreaper()
+    path = Path(args.socket); path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        path.unlink(missing_ok=True)
+        host = PolicyHost(args.policy_root, args.host_id)
+        stop = threading.Event()
+        for signum in (signal.SIGINT, signal.SIGTERM): signal.signal(signum, lambda *_: stop.set())
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path)); os.chmod(path, 0o600); listener.listen(16); listener.settimeout(.2)
+            try:
+                while not stop.is_set():
+                    try: connection, _ = listener.accept()
+                    except socket.timeout: continue
+                    threading.Thread(target=host.serve_peer, args=(connection,), daemon=True).start()
+            finally:
+                host.shutting_down = True
+                try:
+                    if host.runtime_id and host.stop(host.runtime_id, timeout=2)['forced']:
+                        raise SystemExit(1)
+                finally:
+                    path.unlink(missing_ok=True)
+
+
+if __name__ == '__main__': main()

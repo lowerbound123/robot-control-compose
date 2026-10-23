@@ -1,0 +1,67 @@
+services:
+  ipc-anchor:
+    image: busybox:1.37.0
+    command: ["sleep", "infinity"]
+    ipc: shareable
+    shm_size: ${RC_SHM_SIZE:-512m}
+    stop_grace_period: 5s
+
+  policy-hold:
+    image: robot-control-compose-policy:local
+    build:
+      context: .
+      dockerfile: docker/policy.Dockerfile
+      target: runtime
+    ipc: service:ipc-anchor
+    depends_on:
+      ipc-anchor:
+        condition: service_started
+    volumes:
+      - rpc:/run/robot-control
+      - ./policy:/workspace/policy:ro
+    healthcheck:
+      test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "hold", "--socket", "/run/robot-control/hold.sock", "--policy-root", "/workspace/policy"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 45s
+
+  robot-control:
+    image: robot-control-compose-rc:local
+    build:
+      context: .
+      dockerfile: docker/rc.Dockerfile
+      target: runtime
+    ipc: service:ipc-anchor
+    depends_on:
+      policy-hold:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    environment:
+      TERM: ${TERM:-xterm-256color}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
+      ROS_LOCALHOST_ONLY: ${ROS_LOCALHOST_ONLY:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      ROBOT_CONTROL_MCP_TOKEN: ${ROBOT_CONTROL_MCP_TOKEN:-}
+    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.mock.json", "--mcp", "0.0.0.0:4000"]
+    ports:
+      - "127.0.0.1:${RC_MCP_PORT:-4000}:4000"
+    volumes:
+      - rpc:/run/robot-control
+      - ./configs:/workspace/configs
+      - ./policy:/workspace/policy
+      - ./outputs:/workspace/outputs
+      - ./snapshot:/data/snapshot
+    stop_grace_period: 90s
+
+  ros-sim:
+    image: robot-control-compose-rc:local
+    profiles: [ros-sim]
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
+      ROS_LOCALHOST_ONLY: "0"
+    command: ["python3", "-m", "robot_control_test_sim.simulator", "--namespace", "/robot_control_test"]
+
+volumes:
+  rpc:

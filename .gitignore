@@ -1,0 +1,14 @@
+.codex/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+outputs/
+snapshot/
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
