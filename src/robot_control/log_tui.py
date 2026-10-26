@@ -9,6 +9,7 @@ from queue import Empty, Full, Queue
 import threading
 
 from rich.cells import get_character_cell_size
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.geometry import Size
@@ -16,15 +17,15 @@ from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
-from .cli import format_event
-from .structured_log import COPY_LABEL, COPY_WIDTH, FormattedRecord, format_record, preview_record
+from .log_format import event_metadata, level_label
+from .structured_log import COPY_LABEL, COPY_WIDTH, FormattedRecord, clean_text, format_record, preview_record
 
 
 @dataclass
 class LogRecord:
     identity: int
     message: str
-    label: str
+    label: str | Text
     style: str
     formatted: FormattedRecord
     expanded: bool = False
@@ -140,9 +141,17 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._copy_pending = None
 
     def write_event(self, event):
-        level = str(event.get('level', 'INFO')).upper()
-        style = {'ERROR': 'red', 'WARNING': 'yellow', 'WARN': 'yellow'}.get(level, '')
-        label = format_event({**event, 'message': ''})
+        timestamp, level, source = (clean_text(value).replace('\n', ' ') for value in event_metadata(event))
+        style = {'ERROR': 'red', 'CRITICAL': 'bold red', 'FATAL': 'bold red', 'WARNING': 'yellow', 'WARN': 'yellow'}.get(level, '')
+        level_style = {'INFO': 'bold green', 'DEBUG': 'dim', 'WARN': 'bold yellow',
+                       'WARNING': 'bold yellow', 'ERROR': 'bold red', 'CRITICAL': 'bold reverse red',
+                       'FATAL': 'bold reverse red', 'TRACE': 'dim'}.get(level, 'bold')
+        label = Text()
+        if timestamp:
+            label.append(f'[{timestamp}] ', style='dim')
+        label.append(f'[{level_label(level)}] ', style=level_style)
+        label.append(f'[{source}] ', style='bold magenta' if source == 'MCP' else
+                     'bold blue' if source.startswith('policy:') else 'bold cyan')
         return self.write(str(event.get('message', '')), label=label, style=style)
 
     def write_events(self, events):
@@ -389,7 +398,14 @@ drag cross rows and scroll without invoking the fold/copy click actions.
                 lower = start.offset if start.record == record.identity else row.start
                 upper = end.offset if end.record == record.identity else row.end
                 if upper > row.start and lower < row.end:
-                    content.stylize(self.screen.get_component_rich_style('screen--selection'),
+                    selection_style = self.screen.get_component_rich_style('screen--selection')
+                    if self.screen.get_component_styles('screen--selection').color.a == 0:
+                        # A transparent foreground means retain the glyph color.
+                        # The full Rich style otherwise blends it into the blue
+                        # background, hiding text. Keep the resolved background.
+                        selection_style = self.screen.get_component_rich_style(
+                            'screen--selection', partial=True) + Style(bgcolor=selection_style.bgcolor)
+                    content.stylize(selection_style,
                                     max(0, lower - row.start), min(row.end, upper) - row.start)
         marker = ('▾ ' if record.expanded else '▸ ') if row.header and record.formatted.parsed else '  '
         text = Text(marker, style=self.rich_style)

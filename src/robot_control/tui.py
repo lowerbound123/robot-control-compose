@@ -132,7 +132,8 @@ class RobotControlApp(App):
             yield StructuredLog(id="output", max_records=10000)
             yield PolicyMonitorSidebar()
         yield MonitorPanel(self.settings["monitor"])
-        yield CameraPanel(self.graphics, self._write_graphics, self._camera_failed)
+        yield CameraPanel(self.graphics, self._write_graphics, self._camera_failed,
+                          height_limit=self._camera_height_limit)
         with Vertical(id='command-area'):
             yield PolicyManagerPanel()
             yield Static("Starting…", id="status")
@@ -258,6 +259,13 @@ class RobotControlApp(App):
     def _monitor_source(self):
         return self.controller.monitor_snapshot()
 
+    def _camera_height_limit(self):
+        monitor = self.query_one(MonitorPanel)
+        fixed = self.query_one('#command-area').outer_size.height
+        if monitor.display:
+            fixed += monitor.outer_size.height
+        return max(4, self.screen.content_size.height - fixed - 2)
+
     def _write_graphics(self, text):
         if self._driver is not None:
             self._driver.write(text)
@@ -301,6 +309,7 @@ class RobotControlApp(App):
         if not self._ui_active or not self.is_running or self.preview.closed:
             return
         camera = self.query_one(CameraPanel)
+        camera.constrain_height()
         result = self.preview.poll(camera.sizes() if camera.display else {})
         if result["render_error"]:
             self._camera_failed(result["render_error"])

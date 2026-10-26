@@ -19,6 +19,7 @@ from pathlib import Path
 from rc_policy_sdk.images import ImagePool
 
 from .external import ExternalResources
+from .log_format import format_log_time
 from .buffer import ActionBuffer
 from .config import PolicyRegistry, atomic_json, changed_config, dotted_get, load_rc, validate_entry
 from .process import PolicyProcess
@@ -111,7 +112,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         self._log_lock = threading.Lock()
 
     def _emit(self, message, level="info", *, record_history=True):
-        entry = {"time": time.time(), "level": level, "message": str(message)}
+        entry = {"time": format_log_time(time.time()), "level": level, "message": str(message)}
         if record_history:
             with self._event_lock:
                 self._event_seq += 1
@@ -141,7 +142,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                         pass
                     self._log_stream = None
                     try:
-                        self.events.put_nowait({"time": time.time(), "level": "error", "message": f"日志文件写入失败：{exc}"})
+                        self.events.put_nowait({"time": format_log_time(time.time()), "level": "error", "message": f"日志文件写入失败：{exc}"})
                     except queue.Full:
                         pass
 

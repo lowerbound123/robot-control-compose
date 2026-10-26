@@ -5,6 +5,7 @@ from random import randint
 from rich.control import Control
 from rich.segment import Segment
 from rich.text import Text
+from textual import events
 from textual.containers import Horizontal, HorizontalScroll, Vertical
 from textual.strip import Strip
 from textual.widget import Widget
@@ -18,8 +19,8 @@ _IMAGE_IDS = count(randint(1, 2**24 - 1))
 
 class MonitorPanel(HorizontalScroll):
     DEFAULT_CSS = """
-    MonitorPanel { display: none; height: 7; border: solid $accent; overflow-y: hidden; }
-    #monitor-values { width: 147; height: 4; }
+    MonitorPanel { display: none; height: 7; border: solid $accent; overflow-x: auto; overflow-y: hidden; }
+    #monitor-values { width: 119; height: 4; }
     """
 
     def __init__(self, settings):
@@ -41,12 +42,17 @@ class MonitorPanel(HorizontalScroll):
             content.append(" " * 7)
             for side in ("L", "R"):
                 for name in names:
-                    content.append(f"{side}.{name: <8}"[:10].ljust(10), style="bold")
+                    content.append(f"{side}.{name}".ljust(8), style="bold")
             content.append("\n" + row.ljust(7))
             for value, red in zip(rows[row]["text"], rows[row]["red"]):
-                if len(value) > 10:
-                    value = f"{float(value):.3e}"
-                content.append(value.rjust(10), style="red" if red else "")
+                if len(value) > 8:
+                    # Sign + three-digit exponent can consume six cells.
+                    number = float(value)
+                    for precision in (2, 1, 0):
+                        value = f"{number:.{precision}e}"
+                        if len(value) <= 8:
+                            break
+                content.append(value.rjust(8), style="red" if red else "")
             if row == "qpos":
                 content.append("\n")
         self.query_one("#monitor-values", Static).update(content)
@@ -180,10 +186,56 @@ class CameraPanel(Horizontal):
     .camera-state { height: 1; text-align: center; }
     """
 
-    def __init__(self, support, write_protocol, on_error):
+    def __init__(self, support, write_protocol, on_error, *, height_limit=None):
         super().__init__(id="camera-panel")
         self.support, self.write_protocol, self.on_error = support, write_protocol, on_error
-        self.border_title = f"camera · {support.protocol} · {CAMERA_PREVIEW_HZ} Hz"
+        self.height_limit = height_limit
+        self._requested_height = None
+        self._drag_origin = None
+        self.border_title = f"camera · {support.protocol} · {CAMERA_PREVIEW_HZ} Hz · 拖动上边框调整高度"
+
+    def constrain_height(self):
+        if self._requested_height is None or not self.display:
+            return
+        maximum = self.height_limit() if self.height_limit else self.screen.content_size.height
+        height = max(4, min(self._requested_height, maximum))
+        if self.styles.height is None or self.styles.height.value != height:
+            self.styles.height = height
+
+    def on_mouse_down(self, event: events.MouseDown):
+        if event.button != 1 or event.screen_y != self.region.y:
+            return
+        event.stop().prevent_default()
+        self._drag_origin = (event.screen_y, self.region.height)
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove):
+        if self._drag_origin is None:
+            return
+        event.stop().prevent_default()
+        y, height = self._drag_origin
+        self._requested_height = height + y - event.screen_y
+        self.constrain_height()
+
+    def on_mouse_up(self, event: events.MouseUp):
+        if event.button == 1 and self._drag_origin is not None:
+            self.on_mouse_move(event)
+            self._drag_origin = None
+            self.release_mouse()
+
+    def on_mouse_release(self):
+        self._drag_origin = None
+
+    def on_hide(self):
+        self._drag_origin = None
+        if self.app.mouse_captured is self:
+            self.release_mouse()
+
+    def on_unmount(self):
+        self.on_hide()
+
+    def on_resize(self):
+        self.constrain_height()
 
     def compose(self):
         for camera in CAMERAS:

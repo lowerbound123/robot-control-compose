@@ -35,6 +35,8 @@
 在项目根目录运行：
 
 ```bash
+# 在宿主以普通用户生成本机身份和默认目录
+./scripts/setup-user.sh
 # 生产和测试镜像
 docker compose build
 docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml build integration
@@ -64,6 +66,8 @@ docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml dow
 ```
 
 `compose_smoke.py` 不启动第二个业务控制器：每次创建唯一临时项目，使用临时配置/policy/outputs/snapshot，先对现有 TUI attach，再停止 TUI，最后运行 headless。没有操作宿主真实机器人配置，也不遗留容器或卷。
+
+该脚本还验证容器 UID/GID 与运行脚本的宿主用户一致、HOME 可写、镜像内代码可读、旧 root lock 的内部卷初始化，以及新快照 `0700` / 原子配置 `0600` 归该用户所有且可直接读写。请用普通用户执行。`tests/test_compose_permissions.py` 是宿主侧检查，实际展开十种 Compose 配置组合并验证 `.env` 保留、重复执行和多行值；镜像内完整套件按环境跳过该组。
 
 ## 跳过项与边界
 

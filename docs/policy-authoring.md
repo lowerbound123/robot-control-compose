@@ -69,15 +69,27 @@ RC 只检查 manifest 与入口存在。host 使用其镜像内的 Python（hold
 ```yaml
 services:
   policy-second:
+    user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
+    environment:
+      HOME: /tmp/robot-control
+      XDG_CACHE_HOME: /tmp/robot-control/.cache
+    tmpfs:
+      - /tmp/robot-control:uid=${RC_UID},gid=${RC_GID},mode=0700
     image: robot-control-compose-policy:local
     ipc: service:ipc-anchor
     depends_on:
+      rpc-init:
+        condition: service_completed_successfully
       ipc-anchor:
         condition: service_started
     command: ["--host-id", "second", "--socket", "/run/robot-control/second.sock", "--policy-root", "/workspace/policy"]
     volumes:
       - rpc:/run/robot-control
-      - ./policy:/workspace/policy:ro
+      - type: bind
+        source: ./policy
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
     healthcheck:
       test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "second", "--socket", "/run/robot-control/second.sock", "--policy-root", "/workspace/policy"]
       interval: 2s
@@ -91,6 +103,8 @@ services:
 ```
 
 使用 `docker compose -f compose.yaml -f compose.policies.yaml up -d`。B 可以使用另外构建的镜像安装不同依赖；保持相同 RPC/图像协议和 `posix-ipc==1.3.2`，Python 版本由对应镜像锁定。不要共用 socket 路径或修改 IPC anchor。跨 host 的调用顺序仍由 RC 编排。`compose.test.yaml` 提供了实际验证的双 host 拓扑。
+
+新增 host 必须沿用同一组 `RC_UID`/`RC_GID` 并等待 `rpc-init` 完成。socket 和共享内存保留私有访问权限，不能只把 RC 改为普通用户而让 host 继续以 root 运行。上面的 HOME/cache 配置保证任意数字 UID 都有可写目录，不依赖镜像内同名账户；自定义宿主输出挂载也应预先由该用户创建。
 
 复用环境不必共用运行进程：Qwen 的两个服务引用同一个 `robot-control-compose-qwen35:local` 镜像，各自使用独立 host 和 UDS。镜像只构建一次，模型、context、动作缓存和故障监督各自独立。配置见 `compose.qwen.yaml`，部署步骤见 [Qwen 教程](qwen35-policy.md)。主框架只路由 host，不负责安装包；依赖变化需重新构建相应镜像并重新创建容器。
 

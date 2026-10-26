@@ -34,7 +34,9 @@ nvidia-smi
 
 ## 2. 配置 GPU、模型与缓存
 
-在项目根目录创建 `models`、`cache/huggingface`。将 `.env.qwen.example` 中的变量合并到已有 `.env`；保留已有 ROS、MCP 等配置：
+先以普通用户运行 `./scripts/setup-user.sh`，准备本机 UID/GID 和默认的 `models`、`cache/huggingface`。将 `.env.qwen.example` 中的变量合并到已有 `.env`；保留已有 UID/GID、ROS、MCP 等配置：
+
+两个 Qwen host 与 RC 使用相同的 `RC_UID`/`RC_GID`。自定义 `QWEN_MODELS_DIR` 必须已存在且可读，`QWEN_HF_CACHE_DIR` 必须已存在且该用户可写；请在启动前创建。Compose 不再自动创建缺少的宿主目录。容器的临时 HOME/cache 可写，HF 缓存继续持久化到上述宿主目录。
 
 ```dotenv
 QWEN_SINGLE_GPU=0
@@ -77,7 +79,7 @@ checkpoint 的 `vlm_model_name_or_path` 指向的基础模型也必须可见。�
 以下命令均在项目根目录执行：
 
 ```bash
-mkdir -p models cache/huggingface
+./scripts/setup-user.sh
 docker compose -f compose.yaml -f compose.qwen.yaml build \
   robot-control policy-hold policy-qwen35-single
 ```

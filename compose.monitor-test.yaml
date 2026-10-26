@@ -3,16 +3,28 @@ services:
   policy-hold:
     volumes: !override
       - rpc:/run/robot-control
-      - ./tests/fixtures/monitor_policies:/workspace/policy:ro
+      - type: bind
+        source: ./tests/fixtures/monitor_policies
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
   policy-second:
     image: robot-control-compose-llm-direction:local
     volumes: !override
       - rpc:/run/robot-control
-      - ./tests/fixtures/monitor_policies:/workspace/policy:ro
+      - type: bind
+        source: ./tests/fixtures/monitor_policies
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
   integration:
     environment:
       RC_MONITOR_DOCKER_TEST: "1"
     command: ["python3", "-m", "pytest", "-p", "pytest_asyncio.plugin", "tests/test_policy_monitor_docker.py", "-q", "-rs"]
     volumes: !override
       - rpc:/run/robot-control
-      - ./tests/fixtures/monitor_policies:/workspace/policy:ro
+      - type: bind
+        source: ./tests/fixtures/monitor_policies
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}

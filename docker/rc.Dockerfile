@@ -19,7 +19,10 @@ COPY configs configs
 COPY rc.json ./
 COPY policy policy
 COPY docker/rc-entrypoint.sh /usr/local/bin/rc-entrypoint
-RUN chmod +x /usr/local/bin/rc-entrypoint
+# Source checkouts can have owner-only modes. Image assets must be readable by
+# the numeric runtime UID; this never changes host bind mounts or saved data.
+RUN chmod 0755 /usr/local/bin/rc-entrypoint && \
+    chmod -R a+rX /opt/app /opt/rc_ros_ws/install
 WORKDIR /data
 ENTRYPOINT ["/usr/local/bin/rc-entrypoint"]
 CMD ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.mock.json"]
@@ -32,5 +35,6 @@ COPY packages/qwen35-policy /opt/app/packages/qwen35-policy
 COPY packages/llm-direction-policy /opt/app/packages/llm-direction-policy
 COPY vendor/qwen35 /opt/app/vendor/qwen35
 COPY scripts /opt/app/scripts
+RUN chmod -R a+rX /opt/app
 WORKDIR /opt/app
 CMD ["python3", "-m", "pytest", "tests/test_docker_integration.py", "-q", "-rs"]

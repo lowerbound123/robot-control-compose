@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from rich.text import Text
 
 from robot_control.structured_log import format_record, parse_json_message
 
@@ -65,3 +66,14 @@ def test_json_markup_and_escape_sequences_are_never_interpreted():
     assert '[bold]' in result.document
     assert '\x1b' not in result.document
     assert result.copy_text == raw
+
+
+@pytest.mark.parametrize('raw', ['MCP state:\r\n{"x":1}', 'plain\r\ntext'])
+def test_collapsed_header_and_pending_preview_flatten_windows_line_endings(raw):
+    from robot_control.structured_log import preview_record
+    preview = preview_record(raw, Text('[INFO] ', style='green'), '', 100)
+    assert '\n' not in preview.rows[0].text.plain and '\r' not in preview.rows[0].text.plain
+    if raw.startswith('MCP'):
+        folded = format_record(raw, label=Text('[INFO] ', style='green'), width=100)
+        assert '\n' not in folded.rows[0].text.plain
+        assert folded.copy_text == '{"x":1}'

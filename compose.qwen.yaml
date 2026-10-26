@@ -1,20 +1,38 @@
 x-qwen: &qwen
+  user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
+  tmpfs:
+    - /tmp/robot-control:uid=${RC_UID},gid=${RC_GID},mode=0700
   image: robot-control-compose-qwen35:local
   platform: linux/amd64
   pull_policy: never
   ipc: service:ipc-anchor
   depends_on:
+    rpc-init:
+      condition: service_completed_successfully
     ipc-anchor:
       condition: service_started
   environment:
+    HOME: /tmp/robot-control
+    XDG_CACHE_HOME: /tmp/robot-control/.cache
     HF_HOME: /data/huggingface
     HF_HUB_OFFLINE: ${QWEN_HF_HUB_OFFLINE:-0}
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
   volumes:
     - rpc:/run/robot-control
-    - ./policy:/workspace/policy:ro
-    - ${QWEN_MODELS_DIR:-./models}:/models:ro
-    - ${QWEN_HF_CACHE_DIR:-./cache/huggingface}:/data/huggingface
+    - type: bind
+      source: ./policy
+      target: /workspace/policy
+      read_only: true
+      bind: {create_host_path: false}
+    - type: bind
+      source: ${QWEN_MODELS_DIR:-./models}
+      target: /models
+      read_only: true
+      bind: {create_host_path: false}
+    - type: bind
+      source: ${QWEN_HF_CACHE_DIR:-./cache/huggingface}
+      target: /data/huggingface
+      bind: {create_host_path: false}
   stop_grace_period: 45s
 
 services:

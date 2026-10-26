@@ -11,6 +11,7 @@ import threading
 import time
 
 from .terminal_commands import TerminalCommandRouter
+from .log_format import event_metadata, level_label
 
 
 def make_controller(config_path):
@@ -20,9 +21,9 @@ def make_controller(config_path):
 
 
 def format_event(event: dict) -> str:
-    timestamp = event.get("time", "")
+    timestamp, level, source = event_metadata(event)
     prefix = f"[{timestamp}] " if timestamp else ""
-    return f"{prefix}[{event.get('level', 'INFO')}] {event.get('message', '')}"
+    return f"{prefix}[{level_label(level)}] [{source}] {event.get('message', '')}"
 
 
 def drain_events(controller, stream) -> bool:

@@ -88,8 +88,7 @@ ls -a
 准备本机配置和持久化目录：
 
 ```bash
-test -f .env || cp .env.example .env
-mkdir -p outputs snapshot
+./scripts/setup-user.sh
 export DOCKER_DEFAULT_PLATFORM=linux/amd64
 
 docker compose config --quiet
@@ -100,12 +99,15 @@ docker compose config --quiet
 | 配置项 | 默认值 / 含义 |
 | --- | --- |
 | `configs/rc.mock.json` | mock 机器人，启动 hold 后暂停 |
+| `RC_UID` / `RC_GID` | 脚本写入本机普通用户身份；所有业务容器保持一致 |
 | `RC_SHM_SIZE` | `512m`，共享内存容量 |
 | `RC_MCP_PORT` | `4000`，只绑定宿主 `127.0.0.1` |
 | `ROS_DOMAIN_ID` | `83`，用于后续 ROS 模拟器 |
 | `ROBOT_CONTROL_MCP_TOKEN` | 默认留空；设置后 HTTP 请求需 Bearer token |
 
-此时不用修改 `policy_host`、UDS 路径或共享内存配置。默认 hold 的配置在 `policy/hold/policy.json`。
+脚本保留 `.env` 的其他设置，不执行其内容；未有 `.env` 时从示例生成。以日常打开项目的普通用户运行，不要加 sudo。脚本只创建缺少的默认目录，不修改已有数据的所有者或权限。复制到另一台机器后重新运行脚本，避免沿用原机器的 UID/GID。使用自定义 Qwen 模型或缓存路径时，应另外以该用户创建对应目录。
+
+此时不用修改 `policy_host`、UDS 路径或共享内存配置。默认 hold 的配置在 `policy/hold/policy.json`。缺少 UID/GID 时 Compose 会要求先运行脚本；缺少宿主挂载目录时启动会报错，避免 Docker 自动生成 root 所有的目录。
 
 ## 4. 原生构建 amd64 镜像
 
@@ -167,7 +169,7 @@ docker compose up -d --no-build
 docker compose ps
 ```
 
-应看到 `ipc-anchor` 和 `robot-control` 在运行，`policy-hold` 为 `healthy`。主控制器启动后保持暂停。
+应看到 `ipc-anchor` 和 `robot-control` 在运行，`policy-hold` 为 `healthy`；`docker compose ps -a` 中 `rpc-init` 应为正常退出（0）。主控制器启动后保持暂停。
 
 检查 HTTP 健康状态：
 
@@ -209,7 +211,9 @@ exit
 docker compose down
 ```
 
-`outputs/`、`snapshot/` 和保存过的配置都在宿主项目目录中，正常 `down` 不删除这些内容。容器默认以 root 写文件，宿主文件可能显示 root 所有者；需要手工编辑时，可在停止服务后对需要编辑的具体文件调整所有权。
+`outputs/`、`snapshot/` 和保存过的配置都在宿主项目目录中，正常 `down` 不删除这些内容。RC 与各 policy 使用 `.env` 中相同的 UID/GID，新的快照目录、原子保存后的配置及输出文件都归该宿主用户所有。快照目录仍使用 `0700`、原子配置仍使用 `0600`，所有者可以直接打开和修改，无须设置 `777`。
+
+仅 `rpc-init` 短暂使用 root 初始化内部通信卷，它没有挂载宿主数据目录。各业务容器有自身可写的 `/tmp/robot-control` HOME 和 XDG 缓存，随容器停止清空；需要长期保留的结果应写到已挂载的 outputs 等目录。Qwen 的 HF 缓存单独保存在宿主 `cache/huggingface` 或配置的路径中。
 
 ## 7. 使用 headless 命令行
 
@@ -310,9 +314,12 @@ ROS_DOMAIN_ID=0 docker compose -f compose.yaml -f compose.acone.yaml down
 
 ```bash
 docker compose down
+./scripts/setup-user.sh
 docker compose --progress plain build robot-control policy-hold
-docker compose up -d --no-build
+docker compose up -d --no-build --force-recreate
 ```
+
+从旧版升级身份设置时必须重新创建容器，单纯 restart 不生效。所有启停命令保留当前使用的 Qwen、LLM、ROS 或真机 `-f` 组合；LLM 同时保留 `.env` 与 `.env.llm`。新设置不会迁移旧数据权限。
 
 如果当前运行的是 ROS 模拟器或真机，停止时使用相应的文件组合，重新启动时也使用该组合。policy 目录与配置是挂载的；源码修改仍需显式重载，已经运行的模块不会自动替换。冷重载成功后需要再次 `resume`。
 
@@ -331,6 +338,8 @@ docker system df
 | 拉取镜像、apt、pip 超时 | 根据失败阶段检查目标机对应网络/代理；保留构建日志，修复网络后重跑同一 build 命令 |
 | `exec format error` 或架构提示 | 用第 4 步检查三个镜像均为 `linux/amd64`；重新原生构建/拉取 |
 | `4000` 端口被占用 | 修改 `.env` 的 `RC_MCP_PORT`，重新创建默认栈；真机 host-network 模式则修改 `configs/rc.acone.json` 中的 MCP 端口 |
+| 提示先运行 setup-user.sh 或挂载目录不存在 | 以普通用户运行 `./scripts/setup-user.sh`；自定义模型/缓存路径需另行创建；不要依赖 Docker 自动创建宿主目录 |
+| 新文件仍归 root 或出现 socket/shared-memory Permission denied | 停止整个栈后检查所有业务服务的 UID/GID 相同，并重新创建容器；不要只修改 RC 或只 restart |
 | policy 不 healthy | 查看 policy 日志，确认整个 `policy/` 目录被复制且 manifest 为 schema 2 |
 | Ghostty 中 camera 为 connected、snapshot 正常但预览为空 | 使用 kitty 协议，确认主容器有 `COLORTERM=truecolor`。缺少真彩色标识会让 Textual 降色并改变图像 ID；更新 Compose 后需重新创建主容器，单纯 restart 不会更新环境变量 |
 | 主控制器 fault | 先看控制器日志；确认配置路径、policy host、ROS 反馈和相机数据，排查后显式重载 |
@@ -344,3 +353,8 @@ docker system df
 完成默认 hold 构建验收后，按 [Qwen Docker 部署教程](qwen35-policy.md) 安装 NVIDIA Container Toolkit、准备权重和 HF 缓存。两个策略只构建一个 Python 3.11 CUDA 镜像，分别运行独立容器；主框架和 hold 的环境保持不变。
 
 使用 `compose.qwen.yaml` 添加两个 host；与 `compose.acone.yaml` 或 `compose.ros-sim.yaml` 叠加时，后续启动、attach 和停止都保留同样的文件组合。默认 `docker compose up -d` 仍只启动 hold，不要求 GPU。
+
+
+## TUI 面板与日志调整（2026-10-26）
+
+按住 camera 上边框上下拖动可调整高度（最小4行），窗口缩小时保留日志和命令区。monitor 每列为8字符，内容全部显示时自动隐藏横向滚动条。日志按 UTC+8 显示日期与毫秒，界面省略时区后缀；保存的 ISO 8601 时间仍含 `+08:00`。TUI 分别为时间、四字符级别标签和 RC/MCP/policy 来源着色。JSONL 的 time 字段同步改为字符串，外部日志消费者需按 ISO 8601 解析。更新后重新构建并创建 robot-control 容器。细节见 [日志说明](structured-logs.md)。

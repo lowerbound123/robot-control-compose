@@ -1,12 +1,43 @@
+x-runtime: &runtime
+  user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
+  tmpfs:
+    - /tmp/robot-control:uid=${RC_UID},gid=${RC_GID},mode=0700
+
+x-runtime-environment: &runtime-environment
+  HOME: /tmp/robot-control
+  XDG_CACHE_HOME: /tmp/robot-control/.cache
+
 services:
+  # Only this short-lived service is root. It has no host bind mounts.
+  rpc-init:
+    image: busybox:1.37.0
+    user: "0:0"
+    environment:
+      RC_UID: ${RC_UID:?Run ./scripts/setup-user.sh first}
+      RC_GID: ${RC_GID:?Run ./scripts/setup-user.sh first}
+    command:
+      - sh
+      - -ec
+      - |
+        case "$$RC_UID" in ''|*[!0-9]*) echo 'RC_UID must be numeric' >&2; exit 1;; esac
+        case "$$RC_GID" in ''|*[!0-9]*) echo 'RC_GID must be numeric' >&2; exit 1;; esac
+        [ "$$RC_UID" -gt 0 ] || { echo 'RC_UID must not be root; run setup-user.sh without sudo' >&2; exit 1; }
+        chown -hR "$$RC_UID:$$RC_GID" /run/robot-control
+        chmod 0700 /run/robot-control
+    volumes:
+      - rpc:/run/robot-control
+    restart: "no"
+
   ipc-anchor:
     image: busybox:1.37.0
+    user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
     command: ["sleep", "infinity"]
     ipc: shareable
     shm_size: ${RC_SHM_SIZE:-512m}
     stop_grace_period: 5s
 
   policy-hold:
+    <<: *runtime
     image: robot-control-compose-policy:local
     build:
       context: .
@@ -14,11 +45,18 @@ services:
       target: runtime
     ipc: service:ipc-anchor
     depends_on:
+      rpc-init:
+        condition: service_completed_successfully
       ipc-anchor:
         condition: service_started
+    environment: *runtime-environment
     volumes:
       - rpc:/run/robot-control
-      - ./policy:/workspace/policy:ro
+      - type: bind
+        source: ./policy
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
     healthcheck:
       test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "hold", "--socket", "/run/robot-control/hold.sock", "--policy-root", "/workspace/policy"]
       interval: 2s
@@ -27,6 +65,7 @@ services:
     stop_grace_period: 45s
 
   robot-control:
+    <<: *runtime
     image: robot-control-compose-rc:local
     build:
       context: .
@@ -39,6 +78,7 @@ services:
     stdin_open: true
     tty: true
     environment:
+      <<: *runtime-environment
       TERM: ${TERM:-xterm-256color}
       # Kitty Unicode placeholders encode image IDs in exact 24-bit RGB colors.
       COLORTERM: ${COLORTERM:-truecolor}
@@ -51,16 +91,30 @@ services:
       - "127.0.0.1:${RC_MCP_PORT:-4000}:4000"
     volumes:
       - rpc:/run/robot-control
-      - ./configs:/workspace/configs
-      - ./policy:/workspace/policy
-      - ./outputs:/workspace/outputs
-      - ./snapshot:/data/snapshot
+      - type: bind
+        source: ./configs
+        target: /workspace/configs
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./policy
+        target: /workspace/policy
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./outputs
+        target: /workspace/outputs
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./snapshot
+        target: /data/snapshot
+        bind: {create_host_path: false}
     stop_grace_period: 90s
 
   ros-sim:
+    <<: *runtime
     image: robot-control-compose-rc:local
     profiles: [ros-sim]
     environment:
+      <<: *runtime-environment
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
       ROS_LOCALHOST_ONLY: "0"
     command: ["python3", "-m", "robot_control_test_sim.simulator", "--namespace", "/robot_control_test"]

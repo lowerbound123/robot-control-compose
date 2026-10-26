@@ -1,17 +1,36 @@
+x-test-runtime: &test-runtime
+  user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
+  tmpfs:
+    - /tmp/robot-control:uid=${RC_UID},gid=${RC_GID},mode=0700
+
 services:
   policy-hold:
     volumes:
-      - ./tests/fixtures/docker_policies:/workspace/policy:ro
+      - type: bind
+        source: ./tests/fixtures/docker_policies
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
   policy-second:
+    <<: *test-runtime
     image: robot-control-compose-policy:local
     ipc: service:ipc-anchor
     command: ["--host-id", "second", "--socket", "/run/robot-control/second.sock", "--policy-root", "/workspace/policy"]
     depends_on:
+      rpc-init:
+        condition: service_completed_successfully
       ipc-anchor:
         condition: service_started
     volumes:
       - rpc:/run/robot-control
-      - ./tests/fixtures/docker_policies:/workspace/policy:ro
+      - type: bind
+        source: ./tests/fixtures/docker_policies
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
+    environment:
+      HOME: /tmp/robot-control
+      XDG_CACHE_HOME: /tmp/robot-control/.cache
     healthcheck:
       test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "second", "--socket", "/run/robot-control/second.sock", "--policy-root", "/workspace/policy"]
       interval: 2s
@@ -19,6 +38,7 @@ services:
       retries: 20
     stop_grace_period: 45s
   integration:
+    <<: *test-runtime
     image: robot-control-compose-tests:local
     build:
       context: .
@@ -31,6 +51,8 @@ services:
       policy-second:
         condition: service_healthy
     environment:
+      HOME: /tmp/robot-control
+      XDG_CACHE_HOME: /tmp/robot-control/.cache
       RC_DOCKER_TEST: "1"
       ROS_DOMAIN_ID: "93"
       ROS_LOCALHOST_ONLY: "1"
@@ -38,4 +60,8 @@ services:
     command: ["python3", "-m", "pytest", "-p", "pytest_asyncio.plugin", "tests/test_docker_integration.py", "tests/test_ros_integration.py", "-q", "-rs"]
     volumes:
       - rpc:/run/robot-control
-      - ./tests/fixtures/docker_policies:/workspace/policy:ro
+      - type: bind
+        source: ./tests/fixtures/docker_policies
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}

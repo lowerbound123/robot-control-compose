@@ -1,6 +1,9 @@
 # Optional CPU-only API policy; default mock + hold remains unchanged.
 services:
   policy-llm-direction:
+    user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
+    tmpfs:
+      - /tmp/robot-control:uid=${RC_UID},gid=${RC_GID},mode=0700
     image: robot-control-compose-llm-direction:local
     build:
       context: .
@@ -10,15 +13,23 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      rpc-init:
+        condition: service_completed_successfully
       ipc-anchor:
         condition: service_started
     environment:
+      HOME: /tmp/robot-control
+      XDG_CACHE_HOME: /tmp/robot-control/.cache
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
     volumes:
       - rpc:/run/robot-control
-      - ./policy:/workspace/policy:ro
+      - type: bind
+        source: ./policy
+        target: /workspace/policy
+        read_only: true
+        bind: {create_host_path: false}
     healthcheck:
       test: ["CMD", "python", "-m", "rc_policy_sdk.host", "--healthcheck", "--host-id", "llm-direction", "--socket", "/run/robot-control/llm-direction.sock", "--policy-root", "/workspace/policy"]
       interval: 2s

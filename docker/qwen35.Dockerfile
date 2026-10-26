@@ -21,7 +21,8 @@ RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
 COPY scripts/install_qwen35_patches.py /opt/qwen35/scripts/install_qwen35_patches.py
 COPY vendor/qwen35/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py /opt/qwen35/vendor/qwen35/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
 RUN python /opt/qwen35/scripts/install_qwen35_patches.py && \
-    python /opt/qwen35/scripts/install_qwen35_patches.py --check
+    python /opt/qwen35/scripts/install_qwen35_patches.py --check && \
+    chmod -R a+rX /opt/qwen35
 WORKDIR /workspace
 ENTRYPOINT ["python", "-m", "rc_policy_sdk.host"]
 
@@ -33,6 +34,7 @@ COPY policy /opt/app/policy
 COPY vendor/qwen35 /opt/app/vendor/qwen35
 COPY scripts /opt/app/scripts
 COPY packages/qwen35-policy /opt/app/packages/qwen35-policy
+RUN chmod -R a+rX /opt/app
 WORKDIR /opt/app
 ENTRYPOINT ["python", "-m", "pytest"]
 CMD ["-q", "tests/test_qwen35_backend.py", "tests/test_qwen35_configuration.py", "tests/test_qwen35_runtime.py"]

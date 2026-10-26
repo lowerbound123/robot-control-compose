@@ -1,7 +1,16 @@
 # Isolated test project only; local HTTP model substitute, no real credentials.
+x-test-runtime: &test-runtime
+  user: "${RC_UID:?Run ./scripts/setup-user.sh first}:${RC_GID:?Run ./scripts/setup-user.sh first}"
+  tmpfs:
+    - /tmp/robot-control:uid=${RC_UID},gid=${RC_GID},mode=0700
+
 services:
   llm-model:
+    <<: *test-runtime
     image: robot-control-compose-tests:local
+    environment:
+      HOME: /tmp/robot-control
+      XDG_CACHE_HOME: /tmp/robot-control/.cache
     command: ["python3", "/opt/app/tests/llm_model_server.py"]
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=1).read()"]
@@ -9,8 +18,16 @@ services:
       timeout: 2s
       retries: 20
   llm-fixtures:
+    # One-shot test data initialization; no host files are changed.
+    user: "0:0"
     image: robot-control-compose-tests:local
-    command: ["python3", "/opt/app/tests/llm_compose_fixtures.py", "/workspace/policy"]
+    environment:
+      RC_UID: ${RC_UID}
+      RC_GID: ${RC_GID}
+    command:
+      - sh
+      - -ec
+      - python3 /opt/app/tests/llm_compose_fixtures.py /workspace/policy; chown -hR "$$RC_UID:$$RC_GID" /workspace/policy
     volumes:
       - llm-fixtures:/workspace/policy
   policy-llm-direction:
@@ -36,12 +53,15 @@ services:
       - rpc:/run/robot-control
       - llm-fixtures:/workspace/policy
   llm-integration:
+    <<: *test-runtime
     image: robot-control-compose-tests:local
     ipc: service:ipc-anchor
     depends_on:
       policy-llm-direction:
         condition: service_healthy
     environment:
+      HOME: /tmp/robot-control
+      XDG_CACHE_HOME: /tmp/robot-control/.cache
       RC_LLM_DOCKER_TEST: "1"
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
     command: ["python3", "-m", "pytest", "-p", "pytest_asyncio.plugin", "tests/test_llm_docker.py", "-q", "-rs"]

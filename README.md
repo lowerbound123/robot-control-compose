@@ -13,10 +13,15 @@ Qwen 的 GPU 配置、模型挂载、共享镜像构建和切换方法见 [Qwen 
 需要 Docker Engine 与 Docker Compose 2.24.4 或更新版本。在项目根目录运行：
 
 ```bash
+./scripts/setup-user.sh
 docker compose build
 docker compose up -d
 docker compose attach robot-control
 ```
+
+`setup-user.sh` 用当前普通用户的 UID/GID 更新本机 `.env`，保留原内容、在末尾维护生效的身份设置，并创建默认的 outputs、snapshot、models 和 HF 缓存目录。不要用 sudo 运行此脚本。RC、hold、LLM、Qwen 及 ROS 模拟器统一使用这个身份，新快照和配置可由该宿主用户直接读取、编辑；不需要放宽为 777。每台部署机器都应运行一次，不能照搬其他机器的 UID/GID。
+
+首次从旧版升级时，先用当前部署的完整 `-f` 组合执行 `docker compose down`，再运行脚本并重新构建镜像，最后用相同组合 `up -d --force-recreate`。仅 `restart` 不会应用新的用户身份。初始化服务 `rpc-init` 只调整 Docker 内部通信卷（包括旧 lock 文件）的所有者，完成后退出；不会修改现有快照、配置或 outputs 的权限。各业务容器的 HOME 位于独立、可写的临时目录，HF 模型缓存仍保存在宿主目录。
 
 启动后保持暂停。输入 `resume` 开始保持当前位置，`pause` 暂停，`exit` 清理并退出 RC。随后 `docker compose down` 停止监督服务和 IPC 容器。不要使用 exec 启动第二个控制器。
 

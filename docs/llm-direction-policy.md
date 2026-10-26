@@ -83,11 +83,13 @@ Decisions 使用单题 226 个联合选项（左右手 15×15，再加完成）�
 独立 Python 3.11 CPU 镜像不需要 GPU，不依赖 Qwen 的 CUDA 环境。Linux amd64 镜像可以在 x86 Ubuntu 22.04 上本机构建；在其他架构构建时可显式添加 `--platform linux/amd64`。
 
 ```bash
-cp .env.llm.example .env.llm
+./scripts/setup-user.sh
+test -f .env.llm || cp .env.llm.example .env.llm
 # 用本地编辑器填写所选供应商的密钥；不要提交 .env.llm。
-docker compose --env-file .env.llm -f compose.yaml -f compose.llm.yaml build policy-llm-direction
-docker compose --env-file .env.llm -f compose.yaml -f compose.llm.yaml up -d
-docker compose --env-file .env.llm -f compose.yaml -f compose.llm.yaml attach robot-control
+# 两个 env-file 都保留：.env 提供本机 UID/GID 与 ROS/MCP 配置。
+docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml build policy-llm-direction
+docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml up -d
+docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml attach robot-control
 ```
 
 首次启动整个项目可在 `up` 增加 `--build`，同时构建主框架与 hold。启动仍为 mock + hold，保持暂停。TUI 中输入：
@@ -104,13 +106,13 @@ pause
 ROS 模拟器组合：
 
 ```bash
-docker compose --env-file .env.llm --profile ros-sim -f compose.yaml -f compose.llm.yaml -f compose.ros-sim.yaml up -d
+docker compose --env-file .env --env-file .env.llm --profile ros-sim -f compose.yaml -f compose.llm.yaml -f compose.ros-sim.yaml up -d
 ```
 
 真实 ACOne 的 Linux host-network 组合：
 
 ```bash
-ROS_DOMAIN_ID=0 docker compose --env-file .env.llm -f compose.yaml -f compose.llm.yaml -f compose.acone.yaml up -d
+ROS_DOMAIN_ID=0 docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml -f compose.acone.yaml up -d
 ```
 
 之后的 attach、logs、stop、down 使用同一组文件和环境参数。机器人网络配置沿用 [Ubuntu 部署教程](ubuntu22-amd64-from-scratch.md)。自定义 API 在宿主机时可用 `http://host.docker.internal:端口/v1`，覆盖文件已提供 Linux host-gateway 映射；服务需要监听容器可访问的宿主地址。容器内的 `127.0.0.1` 指向容器自身。
@@ -139,8 +141,8 @@ resume
 暂停、MCP 接管、配置冷重载和退出都会使旧动作失效。HTTP 请求可能仍需等返回或超时，迟到结果不能恢复动作。用户 `resume` 才允许下一次模型决策；硬超时或 worker 故障后先重新加载 policy。
 
 ```bash
-docker compose --env-file .env.llm -f compose.yaml -f compose.llm.yaml stop
-docker compose --env-file .env.llm -f compose.yaml -f compose.llm.yaml down
+docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml stop
+docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml down
 ```
 
 更新密钥需要重建容器环境；先正常 stop，再 `up -d --force-recreate`。更新依赖或适配包后先 build，再 up。正常停止先让 RC 结束回调与释放 policy，host 负责必要的进程树清理。失去释放证明的帧不能提前复用；全栈停止后 IPC namespace 最终销毁。输出、配置和快照绑定目录继续保留。

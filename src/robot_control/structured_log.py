@@ -137,35 +137,44 @@ def _rows(text: Text, offset: int, width: int, *, header=False, fold=False):
         start, first = end, False
 
 
+def _log_text(label, message, style, *, single_line=False):
+    text = Text(style=style)
+    text.append_text(label if isinstance(label, Text) else Text(clean_text(label)))
+    message = clean_text(message)
+    text.append(message.replace('\n', ' ') if single_line else message)
+    return text
+
+
 def format_record(message: str, *, label="", style="", width=80, expanded=False,
                   parsed: ParsedJson | None = None) -> FormattedRecord:
     width = max(1, width - 2)  # gutter for fold marker
     parsed = parsed if parsed is not None else parse_json_message(message)
     rows = []
     if parsed is not None:
-        header = clean_text(label + parsed.prefix + parsed.compact + parsed.suffix).replace("\n", " ")
-        rows.extend(_rows(Text(header, style=style), 0, max(1, width - COPY_WIDTH), header=True, fold=True))
-        document = header
+        header = _log_text(label, parsed.prefix + parsed.compact + parsed.suffix, style, single_line=True)
+        rows.extend(_rows(header, 0, max(1, width - COPY_WIDTH), header=True, fold=True))
+        document = header.plain
         if expanded:
             body = clean_text(parsed.pretty)
             if parsed.suffix.strip():
                 body += "\n" + clean_text(parsed.suffix.strip())
-            offset = len(header) + 1
+            offset = len(header.plain) + 1
             document += "\n" + body
             for line in body.split("\n"):
                 rows.extend(_rows(_styled_json(line), offset, width))
                 offset += len(line) + 1
         return FormattedRecord(document, tuple(rows), parsed.raw, parsed)
-    document = clean_text(label + message)
+    text = _log_text(label, message, style)
+    document = text.plain
     offset = 0
     for index, line in enumerate(document.split("\n")):
-        rows.extend(_rows(Text(line, style=style), offset, width, header=index == 0))
+        rows.extend(_rows(text[offset:offset + len(line)], offset, width, header=index == 0))
         offset += len(line) + 1
     return FormattedRecord(document, tuple(rows), message, None)
 
 
-def preview_record(message: str, label: str, style: str, width: int) -> FormattedRecord:
+def preview_record(message: str, label: str | Text, style: str, width: int) -> FormattedRecord:
     # Bounded UI work before background formatting; keep the original for copying.
-    preview = clean_text((label + message)[:512]).replace("\n", " ")
-    rows = tuple(_rows(Text(preview, style=style), 0, max(1, width - 2 - COPY_WIDTH), header=True, fold=True))
-    return FormattedRecord(preview, rows, message, None)
+    preview = _log_text(label, message[:512], style, single_line=True)[:512]
+    rows = tuple(_rows(preview, 0, max(1, width - 2 - COPY_WIDTH), header=True, fold=True))
+    return FormattedRecord(preview.plain, rows, message, None)
