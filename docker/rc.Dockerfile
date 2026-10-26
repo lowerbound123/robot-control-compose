@@ -29,6 +29,7 @@ COPY requirements/test.lock /tmp/test.lock
 RUN python3 -m pip install --no-cache-dir -r /tmp/test.lock
 COPY tests /opt/app/tests
 COPY packages/qwen35-policy /opt/app/packages/qwen35-policy
+COPY packages/llm-direction-policy /opt/app/packages/llm-direction-policy
 COPY vendor/qwen35 /opt/app/vendor/qwen35
 COPY scripts /opt/app/scripts
 WORKDIR /opt/app

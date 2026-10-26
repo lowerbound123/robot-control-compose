@@ -19,6 +19,8 @@ import uuid
 
 from .lifecycle import become_subreaper, descendant_snapshot, process_birth
 from .supervisor import _cleanup
+from .outbox import PriorityOutbox
+from .monitor import MONITOR_IDENTITY
 from .wire import encode_message, receive_message, send_message
 
 PROTOCOL_VERSION = 1
@@ -28,11 +30,13 @@ IMAGE_PROTOCOL_VERSION = 1
 class Peer:
     def __init__(self, connection):
         self.connection = connection
-        self.outbox = queue.Queue(64)
+        self.outbox = PriorityOutbox(64)
         self.owner = None
         threading.Thread(target=self._write, daemon=True).start()
 
     def send(self, message):
+        if message.get('event', {}).get('type') in ('monitor_result', 'monitor_error'):
+            return self.outbox.put_monitor(message['session_id'], encode_message(message))
         try: self.outbox.put_nowait(encode_message(message))
         except queue.Full:
             self.close()
@@ -101,6 +105,10 @@ class PolicyHost:
     def _send_runtime(self, message):
         # A blocked runtime must never block the supervisor's watchdog or stop
         # RPC. Ownership transfers into this bounded queue, not into sendall.
+        if message.get('event', {}).get('type') == 'monitor':
+            if not self.runtime_outbox.put_monitor(message['session_id'], encode_message(message)):
+                raise RuntimeError('monitor request already queued')
+            return
         try: self.runtime_outbox.put_nowait(encode_message(message))
         except queue.Full as exc: raise RuntimeError('runtime request queue is full') from exc
 
@@ -126,7 +134,7 @@ class PolicyHost:
             parent.close(); raise
         finally: child.close()
         self.known_children = {}
-        self.runtime_outbox = queue.Queue(32)
+        self.runtime_outbox = PriorityOutbox(32)
         self.process, self.runtime, self.runtime_id, self.owner = process, parent, runtime_id, owner
         threading.Thread(target=self._write_runtime, args=(parent, self.runtime_outbox, runtime_id), daemon=True).start()
         threading.Thread(target=self._read_runtime, args=(parent, runtime_id), daemon=True).start()
@@ -313,6 +321,12 @@ class PolicyHost:
                     if 'rpc_id' in message:
                         peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'result': result})
                 except Exception as exc:
+                    if message.get('type') == 'dispatch' and message.get('event', {}).get('type') == 'monitor':
+                        event = message['event']
+                        self._emit(peer, {'type': 'policy_event', 'runtime_id': message.get('runtime_id'),
+                            'session_id': message.get('session_id'), 'event': {'type': 'monitor_error',
+                            **{key: event.get(key) for key in MONITOR_IDENTITY}, 'error': str(exc)[:1024]}})
+                        continue
                     if 'rpc_id' in message:
                         peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'error': str(exc)})
                     else:

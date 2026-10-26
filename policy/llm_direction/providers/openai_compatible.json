@@ -1,0 +1,8 @@
+{
+  "type": "openai_compatible",
+  "model": "YOUR_VISION_MODEL",
+  "base_url": "http://host.docker.internal:8000/v1",
+  "api_key_env": "LLM_API_KEY",
+  "output_format": "json_object",
+  "timeout_s": 30
+}

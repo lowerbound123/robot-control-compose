@@ -1,0 +1,18 @@
+# Test-only override: Python 3.10 RC -> Python 3.14 / Python 3.11 hosts.
+services:
+  policy-hold:
+    volumes: !override
+      - rpc:/run/robot-control
+      - ./tests/fixtures/monitor_policies:/workspace/policy:ro
+  policy-second:
+    image: robot-control-compose-llm-direction:local
+    volumes: !override
+      - rpc:/run/robot-control
+      - ./tests/fixtures/monitor_policies:/workspace/policy:ro
+  integration:
+    environment:
+      RC_MONITOR_DOCKER_TEST: "1"
+    command: ["python3", "-m", "pytest", "-p", "pytest_asyncio.plugin", "tests/test_policy_monitor_docker.py", "-q", "-rs"]
+    volumes: !override
+      - rpc:/run/robot-control
+      - ./tests/fixtures/monitor_policies:/workspace/policy:ro

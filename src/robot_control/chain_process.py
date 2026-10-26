@@ -83,6 +83,10 @@ class ChainProcess:
         with self._condition:
             return any(worker.supports_observe for worker in self._workers.values())
 
+    def monitor_members(self):
+        with self._condition:
+            return dict(self._workers) if self._ready else {}
+
     def start(self, cancel_event=None):
         deadline = time.monotonic() + self.init_timeout_s
         with self._lifecycle_lock:

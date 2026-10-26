@@ -12,6 +12,7 @@ import types
 
 from .commands import command_specs, resolve_handlers
 from .command_runtime import CommandExecutor
+from .monitor import MonitorExecutor, monitor_callback
 from .control import RUNTIME_TOOLS, runtime_tools
 
 from .actions import CONTROL_MODES, normalize_actions
@@ -63,6 +64,7 @@ def run_session(connection, policy_dir, namespace):
     module = None
     context = None
     commands = None
+    monitor = None
     config = None
     message = {}
     try:
@@ -81,11 +83,12 @@ def run_session(connection, policy_dir, namespace):
         handlers = resolve_handlers(module, specs)
         context = invoke(module.initialize, (config,), PolicyRuntime(channel, message))
         commands = CommandExecutor(channel, context, specs, handlers, config.get("execution", {}).get("tui_command_workers", 4))
+        monitor = MonitorExecutor(channel, context, monitor_callback(module))
+        channel.on_monitor = lambda request: monitor.submit(request, version)
+        channel.on_monitor_gate = monitor.pause
         channel.on_command = lambda request: commands.submit(request, version)
         channel.on_command_gate = commands.pause
         channel.on_command_resume = commands.resume
-        channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True,
-                      "tui_command_effects": ["reload_policy"], "runtime_tools": list(RUNTIME_TOOLS)})
         def observe(message):
             try:
                 if message.get('config_version') != version:
@@ -102,6 +105,8 @@ def run_session(connection, policy_dir, namespace):
         supported=callable(getattr(module,'observe',None))
         if callable(getattr(module,'wants_observations',None)):
             supported=supported and module.wants_observations(context)
+        channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
+                      "tui_command_effects": ["reload_policy"], "runtime_tools": list(RUNTIME_TOOLS)})
         channel.send({'type':'capabilities','observe':supported})
         while True:
             message = channel.commands.get()
@@ -130,6 +135,7 @@ def run_session(connection, policy_dir, namespace):
                 elif kind == "update_config":
                     if type(message.get("config_version")) is not int or message["config_version"] <= version:
                         raise ValueError("config version must increase")
+                    monitor.barrier()
                     commands.barrier()
                     channel.barrier()
                     if callable(getattr(module,'validate_config',None)):
@@ -139,12 +145,15 @@ def run_session(connection, policy_dir, namespace):
                     apply_patch(config, message["patch"])
                     version = message["config_version"]
                     commands.resume()
+                    monitor.resume()
                     channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version})
                 elif kind == "reset_context":
+                    monitor.barrier()
                     commands.barrier()
                     channel.barrier()
                     module.reset_context(context)
                     commands.resume()
+                    monitor.resume()
                     channel.send({"type": "ack", "operation_id": message["operation_id"]})
                 else:
                     raise ValueError(f"unknown worker message type: {kind}")
@@ -152,6 +161,8 @@ def run_session(connection, policy_dir, namespace):
                 channel.send({"type": "fatal", **_identity(message), "images_released": False, "error": str(exc)})
                 break
             except Exception as exc:
+                if kind in ("update_config", "reset_context"):
+                    monitor.resume()
                 channel.send({"type": "error", "images_released": True, **_identity(message), "operation_id": message.get("operation_id"), "error": f"{type(exc).__name__}: {exc}"})
     except Shutdown:
         pass
@@ -167,6 +178,8 @@ def run_session(connection, policy_dir, namespace):
         release_error = None
         # Supervisor escalates if release hangs. Signals cannot call release twice.
         try:
+            if monitor is not None:
+                monitor.close()
             if commands is not None:
                 commands.close()
             if channel is not None:
@@ -185,6 +198,8 @@ def run_session(connection, policy_dir, namespace):
         except OSError:
             pass
         connection.close()
+        if channel is not None:
+            channel.sender.close()
         for name in list(sys.modules):
             if name == namespace or name.startswith(namespace + "."):
                 sys.modules.pop(name, None)

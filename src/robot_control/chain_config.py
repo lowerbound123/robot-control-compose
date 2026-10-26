@@ -21,7 +21,7 @@ def chain_commands(members):
         identity = member.config["id"]
         for name, spec in command_specs(member.config).items():
             alias = f"{identity}-{name}"
-            if alias in BUILTIN_COMMANDS or alias in exact:
+            if alias in BUILTIN_COMMANDS or alias.startswith("monitor-") or alias in exact:
                 raise ValueError(f"chain command alias collision: {alias}")
             exact[alias] = (identity, name, spec)
             specs[name] = copy.deepcopy(spec)

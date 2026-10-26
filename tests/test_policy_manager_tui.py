@@ -3,7 +3,8 @@ import copy
 import time
 
 import pytest
-from textual.widgets import OptionList, RichLog
+from textual.widgets import OptionList
+from robot_control.log_tui import StructuredLog
 
 from robot_control.terminal_commands import TerminalCommandRouter
 from robot_control.tui import CommandInput, RobotControlApp
@@ -108,7 +109,7 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
         await pilot.pause(.1)
         assert controller.actions[-1] == ('apply', ['B', 'A'])
         assert panel.policies == ['B','A'] and panel.display
-        assert app.query_one(RichLog).lines
+        assert app.query_one(StructuredLog).records
         await pilot.press('delete', 'delete')
         assert panel.policies == []
         count = len(controller.actions)

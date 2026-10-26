@@ -111,3 +111,11 @@ policy 的数组通过只读 fd、`mmap.ACCESS_READ` 和 `np.frombuffer` 获得�
 如果断连或 ACK 丢失，RC 仅允许重新连接请求清理证明，不重放初始化、推理或命令。若 host 已换实例或退出无法确认，相关帧保持冻结；停止整个 Compose 栈并重建 IPC anchor 后恢复。业务容器不要配置自动重启以绕过此边界。
 
 正常停止先让 RC release 并清理运行组，再停止 policy host，最后停止 anchor。默认 RC/host 停止宽限分别为 90/45 秒，release 默认 30 秒（同 host 共用一次组期限）。增加 host 数量或 release 期限时相应增加 RC 宽限；超出宽限 Docker 最终会 KILL，最后通过销毁 IPC 命名空间回收未确认资源。强制清理返回非零退出码。
+
+## LLM 离散动作 policy
+
+新增 `llm_direction`：三路图像 + task，经 DeepSeek、自定义 OpenAI 兼容接口、OpenAI Decisions 或 Responses 决策，输出标准 epos 动作块。支持双手各选方向/开闭夹爪/noop，完成后暂停；参数、环境和链式使用见 [使用教程](llm-direction-policy.md)。
+
+## 可选信息监控
+
+SDK 0.8 支持 `monitor(context) -> dict[str, float | int | str]`，与推理并行、仅在面板开启时调用。必须提供快速、只读、线程安全的标量快照；生命周期操作会等待读取完成。完整契约和示例见 [Policy 信息监控](policy-monitor.md)。`monitor-` 是保留的本地命令前缀。

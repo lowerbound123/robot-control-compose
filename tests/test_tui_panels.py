@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from textual.widgets import RichLog
+from robot_control.log_tui import StructuredLog
 
 from test_controller import setup_controller as setup_controller, ready, until
 
@@ -65,7 +65,7 @@ async def test_panels_toggle_layout_monitor_and_live_camera(setup_controller):
         command.value = "camera unexpected"
         await pilot.press("enter")
         assert app.is_running and not camera.display
-        assert app.query_one(RichLog).lines
+        assert app.query_one(StructuredLog).records
         command.value = "exit"
         await pilot.press("enter")
         await asyncio.to_thread(until, controller.done.is_set)

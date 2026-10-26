@@ -3,7 +3,7 @@ import io
 import threading
 
 import pytest
-from textual.widgets import RichLog
+from robot_control.log_tui import StructuredLog
 
 from test_controller import setup_controller as setup_controller, until
 from test_mcp_local import local_service as local_service, local_call
@@ -36,7 +36,7 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
         assert command.value == line
         command.value = 'mcp state {"broken":'
         await pilot.press("enter")
-        assert app.is_running and app.query_one(RichLog).lines
+        assert app.is_running and app.query_one(StructuredLog).records
         command.value = "help mcp"
         await pilot.press("enter")
         assert any("mcp send_command" in event["message"] for event in controller.read_events()["events"])

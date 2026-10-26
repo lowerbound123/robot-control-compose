@@ -6,6 +6,7 @@ import time
 import uuid
 import weakref
 
+from rc_policy_sdk.outbox import PriorityOutbox
 from rc_policy_sdk.wire import encode_message, receive_message, send_message
 
 
@@ -28,7 +29,7 @@ class HostClient:
         self.owner_id = uuid.uuid4().hex
         self.members = {}
         self.condition = threading.Condition(threading.RLock())
-        self.outbox = queue.Queue(32)
+        self.outbox = PriorityOutbox(32)
         self.results = {}
         self.serial = 0
         self.closed = False
@@ -67,6 +68,15 @@ class HostClient:
             if self.closed or self.failure: raise RuntimeError(self.failure or 'host disconnected')
             try: self.outbox.put_nowait(framed)
             except queue.Full as exc: raise RuntimeError('host request queue is full') from exc
+
+    def enqueue_monitor(self, message):
+        framed = encode_message(message)
+        with self.condition:
+            if self.closed or self.failure:
+                raise RuntimeError(self.failure or 'host disconnected')
+            if message['session_id'] not in self.members:
+                raise ValueError('unknown monitor session')
+            return self.outbox.put_monitor(message['session_id'], framed)
 
     def request(self, kind, *, timeout, **payload):
         with self.condition:

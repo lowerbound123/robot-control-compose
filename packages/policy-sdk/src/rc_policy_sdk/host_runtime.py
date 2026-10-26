@@ -4,19 +4,24 @@ import socket
 import threading
 
 from .lifecycle import become_subreaper, cleanup_worker_children
-from .wire import receive_message, send_message
+from .wire import receive_message
+from .outbox import PrioritySender
 from .worker import run_session
 
 
 def run(fd):
     become_subreaper()
     upstream = socket.socket(fileno=fd)
-    send_lock = threading.Lock()
+    output = PrioritySender(upstream)
     sessions = {}
+    senders = {}
 
     def emit(session_id, message):
-        with send_lock:
-            send_message(upstream, {'session_id': session_id, 'event': message})
+        packet = {'session_id': session_id, 'event': message}
+        if message.get('type') in ('monitor_result', 'monitor_error'):
+            output.send_monitor(packet, session_id)
+        else:
+            output.send(packet)
 
     def forward(session_id, connection):
         try:
@@ -38,13 +43,17 @@ def run(fd):
                     raise ValueError('duplicate session')
                 dispatch, worker = socket.socketpair()
                 sessions[identity] = dispatch
+                senders[identity] = PrioritySender(dispatch)
                 thread = threading.Thread(target=run_session,
                     args=(worker, message['directory'], 'rc_policy_' + identity), daemon=True)
                 thread.start()
                 threading.Thread(target=forward, args=(identity, dispatch), daemon=True).start()
-                send_message(dispatch, message['event'])
+                senders[identity].send(message['event'])
             else:
-                send_message(sessions[identity], message['event'])
+                if message['event'].get('type') == 'monitor':
+                    senders[identity].send_monitor(message['event'])
+                else:
+                    senders[identity].send(message['event'])
     except (EOFError, OSError):
         pass
     finally:
@@ -53,6 +62,9 @@ def run(fd):
             except OSError: pass
             connection.close()
         upstream.close()
+        output.close()
+        for sender in senders.values():
+            sender.close()
         cleanup_worker_children()
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rc-policy-sdk"
-version = "0.7.0"
+version = "0.8.0"
 description = "Isolated robot-control policy worker and shared image transport"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24,<3", "posix-ipc==1.3.2"]

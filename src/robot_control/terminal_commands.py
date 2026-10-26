@@ -22,6 +22,7 @@ MCP_HELP = "\n".join([
     "调用在后台执行；wait=true 不阻塞终端，等待超时不取消动作；图像只显示元数据。",
 ])
 PANEL_HELP = "camera [on|off]；monitor [on|off]：TUI 面板开关；不带参数切换，启动时均关闭。"
+POLICY_MONITOR_HELP = "monitor-<policy_id> [on|off]：已加载 policy 的监控开关；不带参数切换；默认关闭；仅支持 TUI。"
 MANAGE_HELP = 'manage-policy [apply|save|close]：本地 TUI 链编排；进入时暂停，apply 后暂停，save 只保存草稿。'
 SNAPSHOT_HELP = "snapshot：后台保存三路原始相机 PNG 和完整 state 到当前工作目录 snapshot/<时间戳>/；支持本地 TUI/headless。"
 
@@ -109,12 +110,15 @@ class TerminalCommandRouter:
         if words == ['help', 'manage-policy']:
             self.controller._emit(MANAGE_HELP)
             return
-        if words and words[0] in ("camera", "monitor"):
+        if words and (words[0] in ("camera", "monitor") or words[0].startswith("monitor-")):
             if len(words) > 2 or (len(words) == 2 and words[1] not in ("on", "off")):
                 raise ValueError(f"用法：{words[0]} [on|off]")
             if self.panel_handler is None:
                 raise ValueError(f"{words[0]} 仅支持本地 TUI")
             return self.panel_handler(words[0], None if len(words) == 1 else words[1] == "on")
+        if len(words) == 2 and words[0] == "help" and words[1].startswith("monitor-"):
+            self.controller._emit(POLICY_MONITOR_HELP)
+            return
         if len(words) == 2 and words[0] == "help" and words[1] in ("camera", "monitor"):
             self.controller._emit(PANEL_HELP)
             return
@@ -124,7 +128,7 @@ class TerminalCommandRouter:
         if not words or words[0] != "mcp":
             identity = self.controller.submit(line)
             if words == ["help"]:
-                self.controller._emit(MCP_HELP + "\n" + PANEL_HELP + "\n" + MANAGE_HELP + "\n" + SNAPSHOT_HELP)
+                self.controller._emit(MCP_HELP + "\n" + PANEL_HELP + "\n" + POLICY_MONITOR_HELP + "\n" + MANAGE_HELP + "\n" + SNAPSHOT_HELP)
             return identity
         name, arguments = parse_mcp_command(line)
         with self._lock:

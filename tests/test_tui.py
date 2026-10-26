@@ -2,7 +2,8 @@ import queue
 import threading
 
 import pytest
-from textual.widgets import RichLog, Static
+from textual.widgets import Static
+from robot_control.log_tui import StructuredLog
 
 from robot_control.tui import CommandInput, RobotControlApp
 
@@ -93,7 +94,7 @@ async def test_exit_command_and_events_remain_visible_until_done():
         assert controller.commands == ["quit"]
         assert app.is_running
         assert controller.events.empty()
-        assert app.query_one(RichLog).lines
+        assert app.query_one(StructuredLog).records
         assert "hold" in str(app.query_one("#status", Static).content)
         controller.done.set()
         await pilot.pause(0.08)
@@ -123,6 +124,6 @@ async def test_policy_commands_refresh_completion_and_submission_errors():
         command_input.value = "new-command"
         await pilot.press("enter")
         assert app.is_running
-        assert app.query_one(RichLog).lines
+        assert app.query_one(StructuredLog).records
         controller.done.set()
         await pilot.pause(.08)

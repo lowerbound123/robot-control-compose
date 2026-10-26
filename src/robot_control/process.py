@@ -13,7 +13,11 @@ from rc_policy_sdk.wire import encode_message
 from .host_client import HostClient
 
 
-class PolicyProcess:
+from .monitor_client import MonitorClient
+from rc_policy_sdk.outbox import PriorityOutbox
+
+
+class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, policy_hosts=None,
                  init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None):
         if not isinstance(config, dict) or not isinstance(config.get('policy_host'), str) or not config['policy_host']:
@@ -40,6 +44,7 @@ class PolicyProcess:
         self._failure = None
         self._responses, self._command_responses, self._observation_responses = deque(), deque(), deque()
         self._acks, self._command_calls = {}, {}
+        self._init_monitor()
         self.resources = None
         self.command_specs = command_specs(config)
         self.supports_commands = self.supports_observe = False
@@ -106,6 +111,9 @@ class PolicyProcess:
     @property
     def has_command_results(self): return bool(self._command_responses)
 
+    def _enqueue_monitor(self, event):
+        return self.host.enqueue_monitor(dict(type="dispatch", runtime_id=self.runtime_id, session_id=self.session_id, event=event))
+
     def _enqueue(self, event):
         packet = dict(type='dispatch', runtime_id=self.runtime_id, session_id=self.session_id, event=event)
         if event['type'] in ('infer','observe','update_config','reset_context'):
@@ -119,6 +127,8 @@ class PolicyProcess:
             self.runtime_id = packet['runtime_id']
             message = packet['event']; kind = message['type']
             if kind == 'ready':
+                self.supports_monitor = message.get('monitor') is True
+                self.supports_observe = message.get('observe') is True
                 self.runtime_tools = runtime_tools(message.get('runtime_tools', []))
                 mode = self.config.get('execution', {}).get('control_mode', 'qpos')
                 if mode not in message.get('action_modes', ['qpos']):
@@ -132,6 +142,8 @@ class PolicyProcess:
             elif kind == 'capabilities': self.supports_observe = message.get('observe', False)
             elif kind in ('observed','observation_error'):
                 self._observation_responses.append(message); self._observation = None
+            elif kind in ('monitor_result', 'monitor_error'):
+                self._receive_monitor(message)
             elif kind.startswith('command_'): self._receive_command(message)
             elif kind == 'ack' or (kind == 'error' and message.get('operation_id') is not None):
                 self._acks[message['operation_id']] = message

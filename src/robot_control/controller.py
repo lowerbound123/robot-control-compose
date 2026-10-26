@@ -42,6 +42,9 @@ HELP = "\n".join([
 ])
 
 
+from .policy_monitors import PolicyMonitors
+
+
 class RobotController(PolicyCommandSupport, ChainManagement):
     def __init__(self, config_path, *, robot=None, process_factory=PolicyProcess):
         self.config_path = Path(config_path).resolve()
@@ -72,6 +75,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         self._request_serial = 0
         self._inflight = None
         self._worker = None
+        self.policy_monitors = PolicyMonitors(self._policy_monitor_source)
         self._identity = None
         self._connected = False
         self._motion = None
@@ -403,6 +407,12 @@ class RobotController(PolicyCommandSupport, ChainManagement):
             }
             return payload, {camera: images[camera] for camera in CAMERAS}
 
+    def _policy_monitor_source(self):
+        with self._lock:
+            worker = self._worker
+            members = worker.monitor_members() if worker is not None and hasattr(worker, 'monitor_members') else {}
+            return members, self._operation is not None or self._stop.is_set()
+
     def monitor_snapshot(self):
         """Read feedback and confirmed output under the controller lock."""
         with self._lock:
@@ -433,6 +443,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         if kind in ("switch", "reset_context", "hot_patch", "unload", "shutdown"):
             self._gate_policy_commands(payload.get("worker", payload.get("old_worker", self._worker)))
         self._job_serial += 1
+        self.policy_monitors.invalidate()
         job = {"id": self._job_serial, "kind": kind, "cancel": threading.Event(),
                "public_id": self._dispatch_id, **payload}
         if self._stop.is_set() and kind != "shutdown":
@@ -1141,6 +1152,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
             raise ValueError("未知命令或参数，请输入 help")
 
     def _finish_shutdown(self):
+        self.policy_monitors.close(wait=False)
         self._clear_finished_lease()
         if self._observe_inflight:
             self._observe_inflight[1].release()

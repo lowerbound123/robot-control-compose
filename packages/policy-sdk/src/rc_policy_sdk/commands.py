@@ -21,7 +21,7 @@ def command_specs(config):
         raise ValueError("tui_commands must be an object")
     result = {}
     for name, entry in raw.items():
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) or name in BUILTIN_COMMANDS:
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) or name in BUILTIN_COMMANDS or name.startswith("monitor-"):
             raise ValueError(f"invalid or reserved TUI command name: {name}")
         if not isinstance(entry, dict) or set(entry) - {"handler", "args", "help", "timeout_s", "effect"}:
             raise ValueError(f"invalid command declaration: {name}")

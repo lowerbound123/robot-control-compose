@@ -6,7 +6,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .wire import receive_message, send_message
+from .wire import receive_message
+from .outbox import PrioritySender
 
 
 class WorkerChannel:
@@ -15,6 +16,9 @@ class WorkerChannel:
         self.commands = queue.Queue()
         self.observations = ThreadPoolExecutor(max_workers=1, thread_name_prefix='policy-observe')
         self.on_observe = None
+        self.on_monitor = None
+        self.on_monitor_gate = None
+        self.sender = PrioritySender(connection)
         self.on_command = None
         self.on_command_gate = None
         self.on_command_resume = None
@@ -28,8 +32,10 @@ class WorkerChannel:
         self.reader.start()
 
     def send(self, message):
-        with self._send_lock:
-            send_message(self.connection, message)
+        self.sender.send(message)
+
+    def send_monitor(self, message):
+        return self.sender.send_monitor(message)
 
     def _read(self):
         try:
@@ -48,12 +54,17 @@ class WorkerChannel:
                 elif message.get('type') == 'command_resume':
                     if self.on_command_resume:
                         self.on_command_resume()
+                elif message.get('type') == 'monitor':
+                    if self.on_monitor:
+                        self.on_monitor(message)
                 elif message.get('type') == 'observe':
                     if self.on_observe:
                         self.observations.submit(self.on_observe, message)
                 else:
                     if message.get("type") in ("update_config", "reset_context", "shutdown") and self.on_command_gate:
                         self.on_command_gate()
+                    if message.get("type") in ("update_config", "reset_context", "shutdown") and self.on_monitor_gate:
+                        self.on_monitor_gate()
                     self.commands.put(message)
         except (EOFError, OSError):
             with self._condition:

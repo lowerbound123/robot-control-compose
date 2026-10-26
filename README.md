@@ -56,3 +56,15 @@ docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml dow
 ```
 
 厂商资源来源及消息副本关系见 [vendor/README.md](vendor/README.md)。真实机器人未在本轮验收中连接；Linux host-network 配置保留供硬件部署使用。
+
+## LLM 离散动作 policy
+
+新增 `llm_direction`：三路图像 + task，经 DeepSeek、自定义 OpenAI 兼容接口、OpenAI Decisions 或 Responses 决策，输出标准 epos 动作块。支持双手各选方向/开闭夹爪/noop，完成后暂停；参数、环境和链式使用见 [使用教程](docs/llm-direction-policy.md)。
+
+### Policy 信息监控
+
+可选 `monitor(context)` 返回标量字典；`monitor-<policy_id> [on|off]` 在日志右侧打开独立面板。启用后目标 10 Hz、超时只影响显示。接口、线程安全示例和升级步骤见 [使用教程](docs/policy-monitor.md)。
+
+### 日志展开与复制
+
+TUI 支持 JSON 点击展开、鼠标选区、Ctrl+Shift+C 复制及多行粘贴转入命令框。详见 [日志使用说明](docs/structured-logs.md)。

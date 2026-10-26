@@ -13,6 +13,7 @@ vendor/*
 /cache
 /.env
 /.env.local
+/.env.llm
 ros_ws/build
 ros_ws/install
 ros_ws/log
