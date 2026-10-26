@@ -341,6 +341,7 @@ docker system df
 | 提示先运行 setup-user.sh 或挂载目录不存在 | 以普通用户运行 `./scripts/setup-user.sh`；自定义模型/缓存路径需另行创建；不要依赖 Docker 自动创建宿主目录 |
 | 新文件仍归 root 或出现 socket/shared-memory Permission denied | 停止整个栈后检查所有业务服务的 UID/GID 相同，并重新创建容器；不要只修改 RC 或只 restart |
 | policy 不 healthy | 查看 policy 日志，确认整个 `policy/` 目录被复制且 manifest 为 schema 2 |
+| `camera on` 报“相机协议初始化失败：division by zero” | 分离启动时 PTY 的行列数可能尚为 0。更新后重新构建并创建主容器；初始化会回退到 10×20 像素单元格并缓存，沿用配置的 Kitty/Sixel 协议，attach 后即可开启预览。所用终端仍需支持该协议；行列数正常时继续做能力检测 |
 | Ghostty 中 camera 为 connected、snapshot 正常但预览为空 | 使用 kitty 协议，确认主容器有 `COLORTERM=truecolor`。缺少真彩色标识会让 Textual 降色并改变图像 ID；更新 Compose 后需重新创建主容器，单纯 restart 不会更新环境变量 |
 | 主控制器 fault | 先看控制器日志；确认配置路径、policy host、ROS 反馈和相机数据，排查后显式重载 |
 | 断连后旧读者无法确认 | 停止整个对应 Compose 栈再重建，借助 IPC 命名空间销毁回收冻结帧；不单独重启 policy 来绕过证明 |

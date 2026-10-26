@@ -10,10 +10,13 @@ import sys
 from types import SimpleNamespace
 
 
+DEFAULT_CELL_SIZE = (10, 20)
+
+
 @dataclass(frozen=True)
 class GraphicsSupport:
     protocol: str
-    cell_size: tuple[int, int] = (10, 20)
+    cell_size: tuple[int, int] = DEFAULT_CELL_SIZE
     error: str | None = None
 
 
@@ -29,14 +32,28 @@ def probe_graphics(protocol):
     if not sys.__stdout__ or not sys.__stdout__.isatty():
         return GraphicsSupport(protocol, error="相机预览需要支持所选协议的交互终端")
     try:
-        from textual_image import widget  # initializes terminal cell-size cache
-        from textual_image._terminal import get_cell_size
+        from textual_image._terminal import CellSize, get_cell_size
+        terminal_size_available = True
+        try:
+            size = get_cell_size()
+        except ZeroDivisionError:
+            # 0.8.5 divides by PTY rows/columns before its own fallback. A
+            # detached container can report zero until a terminal attaches.
+            terminal_size_available = False
+            size = CellSize(0, 0)
+        if size.width <= 0 or size.height <= 0:
+            size = CellSize(*DEFAULT_CELL_SIZE)
+            # Prime the shared cache BEFORE widget's import-time probe. Later
+            # rendering must not query stdin once Textual owns it.
+            setattr(get_cell_size, "_result", size)
+        from textual_image import widget
         from textual_image.renderable import sixel, tgp
         # Explicit selection; never use widget.Image's automatic fallback.
         backend = {"kitty": tgp, "sixel": sixel}[protocol]
-        if not backend.query_terminal_support():
+        # An uninitialized PTY cannot answer capability queries either. Keep
+        # the configured protocol so a later attach can display the camera.
+        if terminal_size_available and not backend.query_terminal_support():
             raise RuntimeError(f"终端不支持配置的 {protocol} 图像协议")
-        size = get_cell_size()
         # Also validate both public widget interfaces on the selected release.
         assert widget.TGPImage and widget.SixelImage
         return GraphicsSupport(protocol, (size.width, size.height))
