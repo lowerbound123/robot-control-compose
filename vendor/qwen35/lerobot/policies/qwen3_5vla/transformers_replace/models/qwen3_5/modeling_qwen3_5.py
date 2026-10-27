@@ -371,8 +371,10 @@ def torch_chunk_gated_delta_rule(
     attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
     value = attn @ v_beta
     k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
+    # Allocate on the input device: a CPU zero tensor followed by .to(value)
+    # introduces a host-to-device copy that is not CUDA-graph capture safe.
     last_recurrent_state = (
-        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(value)
+        value.new_zeros((batch_size, num_heads, k_head_dim, v_head_dim))
         if initial_state is None
         else initial_state.to(value)
     )
@@ -416,9 +418,9 @@ def torch_recurrent_gated_delta_rule(
     scale = 1 / (query.shape[-1] ** 0.5)
     query = query * scale
 
-    core_attn_out = torch.zeros(batch_size, num_heads, sequence_length, v_head_dim).to(value)
+    core_attn_out = value.new_zeros((batch_size, num_heads, sequence_length, v_head_dim))
     last_recurrent_state = (
-        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(value)
+        value.new_zeros((batch_size, num_heads, k_head_dim, v_head_dim))
         if initial_state is None
         else initial_state.to(value)
     )

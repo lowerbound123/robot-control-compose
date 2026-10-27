@@ -148,8 +148,8 @@
     "lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py": {
       "source": "src/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py",
       "source_sha256": "f4367e60c2d79c9e501a6163043df2cc9597ea78fbbfb17cdb909c5f3e0155e4",
-      "vendored_sha256": "f4367e60c2d79c9e501a6163043df2cc9597ea78fbbfb17cdb909c5f3e0155e4",
-      "modified": false
+      "vendored_sha256": "80014be881351920dd9f97e3c6208b99b6ef13bc94ca0268220c2b5064c65d4f",
+      "modified": true
     }
   },
   "adapter_sources": {

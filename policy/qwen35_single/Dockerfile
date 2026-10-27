@@ -29,7 +29,7 @@ ENTRYPOINT ["python", "-m", "rc_policy_sdk.host"]
 FROM runtime AS test
 COPY --from=policy-deps /test-requirements.lock /tmp/test.lock
 RUN python -m pip install --no-cache-dir -r /tmp/test.lock && python -m pip check
-COPY tests/test_qwen35_backend.py tests/test_qwen35_configuration.py tests/test_qwen35_runtime.py /opt/app/tests/
+COPY tests/test_qwen35_backend.py tests/test_qwen35_configuration.py tests/test_qwen35_runtime.py tests/test_qwen35_cuda_graph.py /opt/app/tests/
 COPY policy /opt/app/policy
 COPY vendor/qwen35 /opt/app/vendor/qwen35
 COPY scripts /opt/app/scripts
@@ -37,4 +37,4 @@ COPY packages/qwen35-policy /opt/app/packages/qwen35-policy
 RUN chmod -R a+rX /opt/app
 WORKDIR /opt/app
 ENTRYPOINT ["python", "-m", "pytest"]
-CMD ["-q", "tests/test_qwen35_backend.py", "tests/test_qwen35_configuration.py", "tests/test_qwen35_runtime.py"]
+CMD ["-q", "tests/test_qwen35_backend.py", "tests/test_qwen35_configuration.py", "tests/test_qwen35_runtime.py", "tests/test_qwen35_cuda_graph.py"]

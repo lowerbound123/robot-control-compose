@@ -50,4 +50,26 @@ switch qwen35_twostage
 
 查看动态容器可按 `.setup/runtime.json` 的 deployment_id 筛选 `io.robot-control.deployment` 标签。运行记录在 `outputs/runtime`，不要仅依靠基础 project 的 ps 列表判断是否全部退出。
 
+## PyTorch 回退与 CUDA Graph
+
+未安装可选 `flash-linear-attention` / `causal-conv1d` 时，模型使用随镜像安装的 PyTorch 回退实现。该实现的临时状态和输出张量必须直接在输入设备上分配；先在 CPU 创建零张量再 `.to(value)` 会在 CUDA Graph 录制时触发 `operation not permitted when stream is capturing`，随后产生 capture invalidated 错误。2026-10-27 的本地补丁修正了 chunk/recurrent 两条路径的三处分配，保持原有浮点计算和输出格式。
+
+此补丁在 Qwen 镜像构建时安装到 Transformers；仅修改宿主源码或重启旧镜像不会生效。更新源码后执行 `./setup.sh --policies qwen35_single`，再在 RC 中 `switch qwen35_single`。两个 Qwen 共用镜像，该次构建也更新 twostage 使用的实现。`compile_model=false` 不会关闭优化后端自己创建的 CUDA Graph；跳过预热也会把相同错误延后到第一次推理。
+
+可以先在目标 GPU 上运行不需要模型权重、相机或机器人的独立检查：
+
+```bash
+docker build --platform linux/amd64 \
+  --build-context policy-deps=./policy/qwen35_single/dependencies \
+  -f policy/qwen35_single/Dockerfile --target test \
+  -t robot-control-compose-qwen35-graph-tests:local .
+docker run --rm --gpus all --platform linux/amd64 \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp -e USER=robot-control -e LOGNAME=robot-control -e HF_HUB_OFFLINE=1 \
+  --entrypoint python robot-control-compose-qwen35-graph-tests:local \
+  -c 'import torch,pytest; assert torch.cuda.is_available(), "CUDA unavailable"; raise SystemExit(pytest.main(["-q","-rs","-p","no:cacheprovider","tests/test_qwen35_cuda_graph.py"]))'
+```
+
+测试检查两条回退路径的设备分配、手算数值、实际图录制及修改输入后的重复回放。无 CUDA 的开发环境只执行设备/数值测试并明确跳过 GPU 用例；这不代表真实 CUDA Graph 验收。GPU 不支持 bfloat16 时会单独跳过该精度的用例，仍需选择与实际部署一致的精度验证。
+
 CPU 替身、镜像构建、跨容器共享内存、GPU 推理和真机动作是不同验收层次，参见 [验证说明](verification.md)。

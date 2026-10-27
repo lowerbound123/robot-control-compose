@@ -36,6 +36,12 @@ post-fusion gripper operation.
   The source patch is `src/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py`,
   the exact Qwen3.5 replacement selected by source `tutorials/1.installation.md`.
   The similarly named KI/FAST replacements are not substituted.
+- On 2026-10-27, the Qwen3.5 replacement's PyTorch chunk/recurrent delta-rule
+  fallbacks were adapted to allocate zero state/output tensors directly on the
+  input device. This removes CPU-to-device copies during CUDA Graph capture;
+  the float32 accumulation, returned dtype, recurrence and checkpoint format
+  are unchanged. The original source hash is retained in `SOURCE_MANIFEST.json`
+  alongside the updated vendored hash.
 
 ## Licenses and notices
 
@@ -53,9 +59,9 @@ Apache-licensed. No checkpoint/model weights are included.
 
 The deployment target is Linux NVIDIA CUDA 12.8, Python 3.11, torch 2.10.0,
 torchvision 0.25.0, Transformers 5.2.0, and Draccus 0.10.x. This Docker migration
-builds the shared model image with `docker/qwen35.Dockerfile` and
-`requirements/qwen35.lock`; dependencies and the patch are installed at image build
-time. It does not use Conda. Do not install a separate upstream `lerobot` into this
+builds the shared model image with each Qwen policy's `Dockerfile` and
+`dependencies/requirements.lock`; dependencies and the patch are installed at
+image build time. It does not use Conda. Do not install a separate upstream `lerobot` into this
 environment because this distribution owns the same Python namespace.
 
 The policy checkpoint directory must already contain `config.json`, `stats.json`,
@@ -71,11 +77,15 @@ config deserialization, output mapping, generation token trimming/cache cadence 
 patch installation. Model generation is replaced only at its heavy boundary. No
 checkpoint inference, CUDA graph execution, CUDA memory/latency measurement or
 robot acceptance result is claimed by these tests.
+The separate `tests/test_qwen35_cuda_graph.py` probe includes optional real
+CUDA capture/replay cases. A run which skips them does not establish GPU
+capture compatibility; no model weights or robot are used by that probe.
 
 ## Docker migration provenance
 
-Copied from the current `robot-control` workspace on 2026-10-23. All 25 source
-files covered by `SOURCE_MANIFEST.json` retain their recorded vendored hashes;
-licenses and the original source-commit identity remain unchanged. Container
+Copied from the current `robot-control` workspace on 2026-10-23. The initial
+migration retained all 25 recorded vendored file hashes. Later local adaptations
+are listed above and reflected in `SOURCE_MANIFEST.json`; licenses and the
+original source-commit identity remain unchanged. Container
 packaging and deployment documentation are maintained by `robot-control-compose`.
 The original checkout and the training repository are not runtime dependencies.
