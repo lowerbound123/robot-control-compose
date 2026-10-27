@@ -1,4 +1,5 @@
 """Production policy entry, real workers/chain/controller, local HTTP model only."""
+from project_templates import template_path, copy_templates
 import base64
 import copy
 import io
@@ -19,12 +20,12 @@ from rc_policy_sdk.images import ImagePool
 from robot_control.chain_process import ChainProcess
 from robot_control.config import PolicyRegistry
 from robot_control.controller import RobotController
-from robot_control.process import PolicyProcess
+from host_helpers import LocalPolicyProcess as PolicyProcess
 from robot_control.robots import MockRobot
 from llm_http_helpers import model_server, response_for
 
 ROOT = Path(__file__).resolve().parents[1]
-REMOTE = json.loads((ROOT / 'rc.json').read_text())['schema_version'] == 2
+REMOTE = True
 
 
 def wait(predicate, timeout=12):
@@ -44,34 +45,29 @@ def setup(tmp_path, monkeypatch):
     root = tmp_path / 'policy'
     root.mkdir()
     with model_server() as server:
-        config = json.loads((ROOT / 'policy/llm_direction/policy.json').read_text())
+        config = json.loads((template_path(ROOT / 'policy/llm_direction/policy.json')).read_text())
+        config['params']['provider'].pop('api_key_env', None)
         config['params'].update(task='move up then stop', chunk_size=3)
-        config['params']['provider'].update(base_url=server.url, api_key_env='LLM_TEST_KEY', timeout_s=4.)
-        for name in ('llm_direction', 'B'):
+        config['params']['provider'].update(base_url=server.url, api_key='local-test-only', timeout_s=4.)
+        for name in ('llm_direction', 'b'):
             folder = root / name
-            shutil.copytree(ROOT / 'policy/llm_direction', folder)
+            copy_templates(ROOT / 'policy/llm_direction', folder)
             cfg = {**copy.deepcopy(config), 'id': name}
             (folder / 'policy.json').write_text(json.dumps(cfg))
-        (root / 'B/main.py').write_text('''
+        (root / 'b/main.py').write_text('''
 def initialize(config): return None
 def policy(context, state, action_chunk, images, config): return action_chunk
 def reset_context(context): pass
 def release(context): pass
 ''')
+        (root / 'b/main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         (root / 'default_chain').mkdir()
         (root / 'default_chain/policy.json').write_text(json.dumps({
             'schema_version': config['schema_version'], 'id': 'default_chain', 'kind': 'chain',
-            'policies': ['llm_direction', 'B', 'llm_direction']}))
+            'policies': ['llm_direction', 'b', 'llm_direction']}))
         host = None
         kwargs = {}
-        if REMOTE:
-            from test_host_transport import Host
-            host = Host(root, 'llm-direction')
-            kwargs['policy_hosts'] = {'llm-direction': {'socket': host.socket}}
-            factory = PolicyProcess
-        else:
-            def factory(*args, **options):
-                return PolicyProcess(*args, python_command=[sys.executable], **options)
+        factory = PolicyProcess
         def worker(timeout=3):
             return factory(root / 'llm_direction', copy.deepcopy(config), init_timeout_s=8,
                            inference_timeout_s=timeout, release_timeout_s=1, **kwargs)
@@ -143,24 +139,6 @@ def test_native_aba_uses_one_llm_call_and_two_workers(setup, frames):
         worker.close()
 
 
-@pytest.mark.skipif(REMOTE, reason='Conda launcher alone filters inherited environment')
-def test_original_launcher_passes_only_declared_credential(setup):
-    _, _, _, _, _, create = setup
-    worker = create()
-    _, environment = worker._command_and_environment('/tmp/not-started.sock')
-    assert environment['LLM_TEST_KEY'] == 'local-test-only'
-    assert 'UNRELATED_SECRET' not in environment
-
-
-@pytest.mark.skipif(REMOTE, reason='Conda launcher alone filters inherited environment')
-@pytest.mark.parametrize('name', ['PYTHONHOME', 'PYTHONPATH', 'CONDA_PREFIX', 'ROS_DOMAIN_ID', 'LD_PRELOAD'])
-def test_launcher_rejects_reserved_names_before_starting_conda(setup, monkeypatch, name):
-    _, _, _, _, _, create = setup
-    worker = create()
-    worker.config['params']['provider']['api_key_env'] = name
-    monkeypatch.setenv(name, 'must-not-affect-the-worker')
-    with pytest.raises(ValueError, match='reserved'):
-        worker._command_and_environment('/tmp/not-started.sock')
 
 
 @pytest.mark.parametrize('hard_timeout', [False, True])
@@ -207,7 +185,7 @@ def test_long_http_call_pins_images_until_callback_or_exit_proof(setup, frames, 
 
 def make_controller(setup, tmp_path, monkeypatch):
     _, root, _, factory, kwargs, _ = setup
-    config = json.loads((ROOT / ('configs/rc.mock.json' if REMOTE else 'rc.json')).read_text())
+    config = json.loads((template_path(ROOT / ('configs/rc.mock.json' if REMOTE else 'rc.json'))).read_text())
     config.update(policy_directory=str(root), startup_policy='llm_direction',
                   outputs_directory=str(tmp_path / 'outputs'), frequency_hz=50, **kwargs)
     config['robot'] = {'backend': 'mock'}
@@ -216,8 +194,6 @@ def make_controller(setup, tmp_path, monkeypatch):
     path = tmp_path / 'rc.json'
     path.write_text(json.dumps(config))
     controller = RobotController(path, robot=MockRobot(), process_factory=factory)
-    if not REMOTE:
-        monkeypatch.setattr(controller, '_check_environment', lambda *args: None)
     controller.start()
     wait(lambda: controller.status()['state'] == 'paused' and controller._worker is not None)
     return controller
@@ -264,3 +240,33 @@ def test_late_http_decision_cannot_override_pause_take_or_reload(setup, tmp_path
         gate.set()
         controller.submit('exit')
         assert controller.done.wait(15)
+
+
+def test_two_llm_chain_members_keep_distinct_config_keys_in_separate_hosts(setup, frames):
+    server, root, config, factory, kwargs, _ = setup
+    _, _, request = frames
+    first = copy.deepcopy(config)
+    first['params'].update(chunk_size=1)
+    first['params']['provider']['api_key'] = 'first-policy-key'
+    second = copy.deepcopy(config)
+    second['id'] = 'b'
+    second['params']['request_when_remaining'] = 2
+    second['params']['provider']['api_key'] = 'second-policy-key'
+    (root / 'llm_direction/policy.json').write_text(json.dumps(first))
+    (root / 'b/policy.json').write_text(json.dumps(second))
+    (root / 'b/main.py').write_text((root / 'llm_direction/main.py').read_text())
+    (root / 'b/main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    chain_path = root / 'default_chain/policy.json'
+    chain = json.loads(chain_path.read_text()); chain['policies'] = ['llm_direction', 'b']
+    chain_path.write_text(json.dumps(chain))
+    record = PolicyRegistry(root).get('default_chain')
+    worker = ChainProcess(record, process_factory=factory, init_timeout_s=10,
+                          inference_timeout_s=4, release_timeout_s=1, **kwargs)
+    try:
+        worker.start(); worker.submit(request)
+        result = wait(worker.poll)
+        assert result['type'] == 'result', result
+        assert [r['authorization'] for r in server.requests] == [
+            'Bearer first-policy-key', 'Bearer second-policy-key']
+    finally:
+        worker.close()

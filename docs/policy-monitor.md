@@ -74,25 +74,6 @@ help monitor-my_policy
 
 需要升级主端以及所有启用的 policy 镜像中的 SDK。无需新增依赖、服务、GPU 或 API 密钥。默认 hold 部署：
 
-```bash
-docker compose build robot-control policy-hold
-docker compose up -d --force-recreate
-docker compose attach robot-control
-```
+## 镜像更新与验证
 
-使用 Qwen 或 LLM 时，在原部署的全部 `-f` 参数下执行 `build` 和 `up -d --force-recreate`，覆盖所有启用的主端和 policy 服务。更新后仍按原流程加载策略、显式 `resume`；打开监控本身不会恢复运动或加载模型。添加回调后需要冷重载，健康检查不加载策略。
-
-## 验证
-
-本地测试为 `tests/test_policy_monitor_*.py`、`tests/test_policy_monitors.py`，包括真实 worker、生命周期、软超时、迟到结果和 Textual 布局。
-
-以下仅创建测试项目：Python 3.10 主端连接 Python 3.14 hold 镜像和 Python 3.11 LLM 镜像，策略为标量/图像测试夹具，不调用模型 API。
-
-```bash
-docker compose -p rc-monitor-test -f compose.yaml -f compose.llm.yaml -f compose.test.yaml build robot-control policy-hold policy-llm-direction integration
-docker compose -p rc-monitor-test -f compose.yaml -f compose.test.yaml -f compose.monitor-test.yaml up -d policy-hold policy-second
-docker compose -p rc-monitor-test -f compose.yaml -f compose.test.yaml -f compose.monitor-test.yaml run --rm --no-deps integration
-docker compose -p rc-monitor-test -f compose.yaml -f compose.test.yaml -f compose.monitor-test.yaml down -v
-```
-
-实际验证结果和未执行项目记录在 [验证记录](policy-monitor-verification.md)。
+运行 `./setup.sh --policies <id>` 准备对应镜像，再通过 switch 创建新容器。monitor 只读活动实例快照，切换时会失效旧代次，不执行 Docker/socket I/O。动态生命周期验证见 [verification.md](verification.md)。

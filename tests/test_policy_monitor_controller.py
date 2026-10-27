@@ -13,7 +13,9 @@ def test_sampling_ignores_control_frequency_and_tracks_lifecycle(setup_controlle
     for name in ("first", "second"):
         record = controller.registry.get(name)
         (record.directory / "main.py").write_text(SOURCE)
+        (record.directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         record.config["params"]["root"] = str(record.directory)
+        controller.registry.save(name)
     controller.config["frequency_hz"] = 1
     controller.process_factory = lambda *args, **kw: PolicyProcess(*args, python_command=[sys.executable], **kw)
     controller.start()
@@ -36,12 +38,12 @@ def test_sampling_ignores_control_frequency_and_tracks_lifecycle(setup_controlle
     controller.submit("pause")
     wait_until(lambda: controller.status()["state"] == "paused")
     old = controller._worker
-    changed = controller.submit("switch first --no-reset")
+    changed = controller.submit("switch first")
     wait_until(lambda: controller.get_operation(changed)["status"] == "succeeded", 6)
     assert controller._worker is not old
     wait_until(lambda: hub.snapshot().get("first", {}).get("values"))
     assert list(hub.snapshot()) == ["first"]
-    changed = controller.submit("switch second --no-reset")
+    changed = controller.submit("switch second")
     wait_until(lambda: controller.get_operation(changed)["status"] == "succeeded", 6)
     wait_until(lambda: not hub.snapshot())
     controller.submit("exit")

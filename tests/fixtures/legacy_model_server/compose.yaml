@@ -1,0 +1,3 @@
+services:
+  policy:
+    image: robot-control-compose-policy:local

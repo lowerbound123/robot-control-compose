@@ -28,7 +28,7 @@ def server(monkeypatch):
 
 def settings(server, provider='deepseek', format=None, timeout=2.):
     return {'type': provider, 'model': 'test-vision', 'base_url': server.url,
-            'api_key_env': 'LLM_TEST_KEY', 'timeout_s': timeout,
+            'api_key': 'private-test-key-never-log', 'timeout_s': timeout,
             'output_format': format or {'deepseek': 'json_object', 'openai': 'json_schema',
                                        'openai_decisions': 'choice', 'openai_compatible': 'json_object'}[provider]}
 
@@ -129,8 +129,8 @@ def test_errors_pause_without_retry_fallback_or_response_leak(server, failure, c
     np.testing.assert_allclose(output[0], baseline(), atol=1e-7)
 
 
-def test_initialization_requires_env_key_and_never_contacts_server(server, monkeypatch):
-    monkeypatch.delenv('LLM_TEST_KEY')
-    with pytest.raises(ValueError, match='LLM_TEST_KEY'):
-        ProviderClient(settings(server))
+def test_initialization_requires_config_key_and_never_contacts_server(server, monkeypatch):
+    monkeypatch.setenv('LLM_TEST_KEY', 'ignored-global-key')
+    with pytest.raises(ValueError, match='api_key'):
+        ProviderClient({**settings(server), 'api_key': ''})
     assert not server.requests

@@ -1,4 +1,8 @@
+FROM docker:28.5.1-cli AS docker-cli
+FROM docker/compose-bin:v2.39.1 AS compose-cli
 FROM ros:humble-ros-base-jammy@sha256:566b87e6dfc48392189a9c32e594e84060fa9948de93b04e536f39475a1f6963 AS runtime
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=compose-cli /docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-dev python3-colcon-common-extensions build-essential \
@@ -16,7 +20,7 @@ COPY ros_ws/src /opt/rc_ros_ws/src
 RUN . /opt/ros/humble/setup.sh && cd /opt/rc_ros_ws && \
     colcon build --merge-install --packages-select arx5_arm_msg robot_control_test_msgs robot_control_test_sim
 COPY configs configs
-COPY rc.json ./
+COPY rc.json.example ./
 COPY policy policy
 COPY docker/rc-entrypoint.sh /usr/local/bin/rc-entrypoint
 # Source checkouts can have owner-only modes. Image assets must be readable by
@@ -30,6 +34,7 @@ CMD ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.mock.j
 FROM runtime AS test
 COPY requirements/test.lock /tmp/test.lock
 RUN python3 -m pip install --no-cache-dir -r /tmp/test.lock
+COPY setup.sh .env.example /opt/app/
 COPY tests /opt/app/tests
 COPY packages/qwen35-policy /opt/app/packages/qwen35-policy
 COPY packages/llm-direction-policy /opt/app/packages/llm-direction-policy
@@ -37,4 +42,4 @@ COPY vendor/qwen35 /opt/app/vendor/qwen35
 COPY scripts /opt/app/scripts
 RUN chmod -R a+rX /opt/app
 WORKDIR /opt/app
-CMD ["python3", "-m", "pytest", "tests/test_docker_integration.py", "-q", "-rs"]
+CMD ["python3", "-m", "pytest", "-q", "-rs"]

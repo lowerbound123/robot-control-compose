@@ -1,0 +1,8 @@
+{
+  "type": "openai",
+  "model": "gpt-6-luna",
+  "base_url": "https://api.openai.com/v1",
+  "output_format": "json_schema",
+  "timeout_s": 30,
+  "api_key": ""
+}

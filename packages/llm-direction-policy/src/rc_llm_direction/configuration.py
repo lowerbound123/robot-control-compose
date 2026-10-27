@@ -1,7 +1,6 @@
-"""Cold policy settings. Credentials are environment-variable names only."""
+"""Cold policy settings. Credentials are explicit policy configuration values."""
 import copy
 import math
-import re
 from urllib.parse import urlsplit
 
 
@@ -16,7 +15,7 @@ DEFAULT_PARAMS = {
     'translation_m': .05, 'rotation_rad': .1, 'gripper_open': -3.4, 'gripper_close': 0.,
     'image_max_side': 1024, 'jpeg_quality': 85,
     'provider': {'type': 'deepseek', 'model': 'deepseek-flash',
-                 'base_url': 'https://api.deepseek.com', 'api_key_env': 'DEEPSEEK_API_KEY',
+                 'base_url': 'https://api.deepseek.com', 'api_key': '',
                  'output_format': 'json_object', 'timeout_s': 30.},
 }
 PROVIDERS = ('deepseek', 'openai_compatible', 'openai_decisions', 'openai')
@@ -51,16 +50,13 @@ def validate_config(config):
         _number(params[name], name, positive=name in ('translation_m', 'rotation_rad'))
     provider = params['provider']
     if not isinstance(provider, dict) or set(provider) != set(DEFAULT_PARAMS['provider']):
-        raise ValueError('provider must contain type, model, base_url, api_key_env, output_format, timeout_s')
+        raise ValueError('provider must contain type, model, base_url, api_key, output_format, timeout_s')
     if provider['type'] not in PROVIDERS:
         raise ValueError('unknown LLM provider type')
     if not isinstance(provider['model'], str) or not provider['model'].strip():
         raise ValueError('provider.model must be nonempty')
-    if (not isinstance(provider['api_key_env'], str)
-            or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', provider['api_key_env'])):
-        raise ValueError('api_key_env must name an environment variable, never a literal key')
-    if provider['api_key_env'].startswith(('PYTHON', 'CONDA', 'ROS_', 'RMW_', 'AMENT_', 'COLCON_', 'LD_', 'DYLD_')):
-        raise ValueError('api_key_env uses a reserved interpreter or robotics environment name')
+    if not isinstance(provider['api_key'], str):
+        raise ValueError('provider.api_key must be a string')
     try:
         url = urlsplit(provider['base_url'])
         valid_url = (url.scheme in ('http', 'https') and bool(url.hostname)

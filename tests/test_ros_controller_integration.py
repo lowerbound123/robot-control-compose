@@ -1,4 +1,5 @@
 """Opt-in full RC / production Conda policy / genuine ROS simulator acceptance."""
+from project_templates import template_path, copy_templates
 import importlib.util
 import json
 import os
@@ -81,7 +82,7 @@ def ros_rc(tmp_path, monkeypatch):
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
     namespace = "/robot_control_test/rc_" + uuid.uuid4().hex[:8]
     policies = tmp_path / "policy"
-    shutil.copytree(ROOT / "policy", policies)
+    copy_templates(ROOT / "policy", policies)
     manifest_path = policies / "delayed_hold" / "policy.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["params"]["delay_s"] = 0.8
@@ -112,7 +113,7 @@ def policy(context, state, action_chunk, images, config):
     hold_config = json.loads(hold_manifest.read_text())
     hold_config["params"]["proof_path"] = str(proof)
     hold_manifest.write_text(json.dumps(hold_config))
-    config = json.loads((ROOT / "configs" / "rc.ros-test.json").read_text())
+    config = json.loads((template_path(ROOT / "configs" / "rc.ros-test.json")).read_text())
     robot_config = config["robot"]
     robot_config["namespace"] = namespace
     for key in ("feedback_left_topic", "feedback_right_topic", "command_left_topic", "command_right_topic"):
@@ -205,7 +206,7 @@ def test_actual_ros_rc_policy_images_pose_switch_and_exit(ros_rc, tmp_path, mode
     assert controller.status()["consumed"] == pose_consumed
 
     old = ros_rc.workers[-1]
-    controller.submit("switch delayed_hold --no-reset")
+    controller.submit("switch delayed_hold")
     until(lambda: controller.status()["policy"] == "delayed_hold" and controller.status()["state"] == "paused", controller)
     ros_rc.remember_worker()
     with pytest.raises(ProcessLookupError):

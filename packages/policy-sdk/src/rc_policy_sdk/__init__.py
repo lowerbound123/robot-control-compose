@@ -1,7 +1,14 @@
-"""Lightweight policy runtime; has no ROS or user-interface dependencies."""
+"""Lightweight SDK; importing discovery/configuration never loads array libraries."""
+from importlib import import_module
 
-from .images import ImageLease, ImagePool, map_images
-from .actions import ActionChunk, normalize_actions
-from .chain import PolicyChain
+_EXPORTS = {'ImageLease':'images', 'ImagePool':'images', 'map_images':'images',
+            'ActionChunk':'actions', 'normalize_actions':'actions', 'PolicyChain':'chain'}
+__all__ = list(_EXPORTS)
 
-__all__ = ["ImageLease", "ImagePool", "map_images", "ActionChunk", "normalize_actions", "PolicyChain"]
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module('.'+_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value

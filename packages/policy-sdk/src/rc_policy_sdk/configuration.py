@@ -2,7 +2,7 @@
 
 from .wire import encode_message
 
-IMMUTABLE_FIELDS = {"schema_version", "id", "policy_host", "hot_reloadable", "tui_commands"}
+IMMUTABLE_FIELDS = {"schema_version", "id", "hot_reloadable", "tui_commands", "kind", "timeouts"}
 
 
 def prepare_patch(config, patch):

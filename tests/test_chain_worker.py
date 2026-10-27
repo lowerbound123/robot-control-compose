@@ -112,8 +112,9 @@ def test_real_worker_chain_initialization_reset_and_cleanup(tmp_path, fail_init)
     directory = tmp_path / "policy"
     directory.mkdir()
     (directory / "main.py").write_text(LIFECYCLE_POLICY)
+    (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     events = tmp_path / "events.jsonl"
-    config = {"policy_host": "test", "hot_reloadable": ["params.value"],
+    config = { "hot_reloadable": ["params.value"],
               "params": {"events": str(events), "fail_init": fail_init, "value": 2}}
     worker = PolicyProcess(directory, config, python_command=[sys.executable],
                            init_timeout_s=3, inference_timeout_s=3, release_timeout_s=1)

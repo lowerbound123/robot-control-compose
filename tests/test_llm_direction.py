@@ -89,7 +89,7 @@ def test_configuration_fails_before_opening_client(patch):
 def test_credential_name_cannot_override_interpreter_environment(name):
     config = manifest()
     config['params']['provider']['api_key_env'] = name
-    with pytest.raises(ValueError, match='reserved'):
+    with pytest.raises(ValueError, match='api_key'):
         validate_config(config)
 
 

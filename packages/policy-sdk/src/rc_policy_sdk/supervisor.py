@@ -46,7 +46,7 @@ def _cleanup(worker, known=None):
             remaining = {pid for pid, birth in records.items() if process_birth(pid) == birth}
             if remaining:
                 print(f"policy supervisor could not reap descendants: {sorted(remaining)}", file=sys.stderr, flush=True)
-            return not remaining
+            return not remaining and worker.poll() is not None and not descendant_snapshot(os.getpid())
         time.sleep(.02)
 
 

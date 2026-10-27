@@ -1,3 +1,4 @@
+from project_templates import template_path, copy_templates
 import importlib.util
 import json
 from pathlib import Path
@@ -17,14 +18,14 @@ def test_independent_entries_bind_workflow_and_use_registered_reload(identity, w
     spec = importlib.util.spec_from_file_location(identity, directory / 'main.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    config = json.loads((directory / 'policy.json').read_text())
+    config = json.loads(template_path(directory / 'policy.json').read_text())
     from robot_control.config import validate_policy
     from rc_policy_sdk.commands import command_specs, resolve_handlers
     validate_policy(config)
     commands = command_specs(config)
     assert commands['switch-model']['effect'] == 'reload_policy'
     handler = resolve_handlers(module, commands)['switch-model']
-    own_model = json.loads((directory / 'model.json').read_text())
+    own_model = json.loads(template_path(directory / 'model.json').read_text())
     assert own_model['model']['workflow'] == workflow
     assert own_model['model']['checkpoint']
     path, value = model_config
@@ -48,13 +49,13 @@ def test_independent_entries_bind_workflow_and_use_registered_reload(identity, w
     assert [name for name, _ in backend.events].count('close') == 1
 
 
-def test_entry_discovery_does_not_import_model_framework():
+def test_entry_discovery_does_not_import_model_framework(tmp_path):
     from robot_control.config import PolicyRegistry
     import subprocess
     import sys
-    registry = PolicyRegistry(ROOT / 'policy')
+    registry = PolicyRegistry(copy_templates(ROOT / 'policy', tmp_path / 'policy'))
     for identity in ('qwen35_single', 'qwen35_twostage'):
-        assert registry.get(identity).config['policy_host'] == identity.replace('_', '-')
+        assert registry.get(identity).config['id'] == identity
         assert 'conda_env' not in registry.get(identity).config
     script = 'import sys; import rc_qwen35_policy; assert not ({"torch", "transformers", "rclpy"} & sys.modules.keys())'
     result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,

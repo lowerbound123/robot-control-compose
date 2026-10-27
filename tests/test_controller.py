@@ -78,8 +78,9 @@ def setup_controller(tmp_path):
         directory = tmp_path / "policy" / identity
         directory.mkdir(parents=True)
         (directory / "main.py").write_text("\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"]))
-        (directory / "policy.json").write_text(json.dumps({"schema_version": 2, "id": identity, "policy_host": "test-policy", "execution": {"mode": "sync", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"value": 1}, "hot_reloadable": ["params.value", "execution.mode"]}))
-    config = {"schema_version": 2, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first", "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [0.1]*14}, "reset_qpos": [0]*14, "outputs_directory": "outputs", "timeouts": {"initialize_s": 2, "inference_s": 2, "release_s": 1}}
+        (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+        (directory / "policy.json").write_text(json.dumps({"schema_version": 3, "id": identity,  "execution": {"mode": "sync", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"value": 1}, "hot_reloadable": ["params.value", "execution.mode"]}))
+    config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first", "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [0.1]*14}, "reset_qpos": [0]*14, "outputs_directory": "outputs", "timeouts": {"initialize_s": 2, "inference_s": 2, "release_s": 1}}
     path = tmp_path / "rc.json"
     path.write_text(json.dumps(config))
     robot = MockRobot()
@@ -322,25 +323,3 @@ def test_start_log_failure_cleans_without_waiting_for_unstarted_loop(setup_contr
         controller.start()
     assert controller.done.is_set() and controller.exit_code == 1
     assert robot.closed and images._closed and images._bytes == 0
-
-
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_exit_cancels_conda_probe_that_ignores_term(setup_controller):
-    import os
-    import sys
-    from robot_control.process import PolicyProcess
-    controller, robot, directory = setup_controller
-    ready(controller)
-    pid_file = directory / "probe.pid"
-    probe = directory / "conda"
-    probe.write_text(f"#!{sys.executable}\nimport os, signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\nwhile True: time.sleep(1)\n")
-    probe.chmod(0o755)
-    controller.config["conda_executable"] = str(probe)
-    controller.config["timeouts"]["initialize_s"] = 20
-    controller.process_factory = PolicyProcess
-    controller.submit("switch second")
-    until(pid_file.exists, timeout=10)
-    controller.submit("exit")
-    assert controller.done.wait(7)
-    with pytest.raises(ProcessLookupError):
-        os.kill(int(pid_file.read_text()), 0)

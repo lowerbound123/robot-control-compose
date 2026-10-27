@@ -43,7 +43,7 @@ def initialize(config,*,runtime):
     return context
 ''')
     old=controller._worker
-    controller.submit('switch model_server --no-reset')
+    controller.submit('switch model_server')
     until(lambda:controller.status()['policy']=='model_server' and controller.status()['state']=='paused',controller)
     worker=ros_rc.remember_worker()
     assert not old.alive
@@ -65,7 +65,7 @@ def initialize(config,*,runtime):
     controller.submit('resume')
     until(lambda:controller.status()['consumed']>count+3,controller)
     # Ready model unload is tied to bridge release when switching away.
-    controller.submit('switch hold --no-reset')
+    controller.submit('switch hold')
     until(lambda:controller.status()['policy']=='hold' and controller.status()['state']=='paused',controller)
     ros_rc.remember_worker()
     assert not worker.alive

@@ -27,7 +27,7 @@ class _MemberResources:
 
 class ChainProcess:
     def __init__(self, record, *, process_factory=PolicyProcess, init_timeout_s=600,
-                 inference_timeout_s=60, release_timeout_s=30, policy_hosts=None, on_log=None):
+                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None):
         self.record = record
         self.config = copy.deepcopy(record.config)
         self.config_version = record.version
@@ -39,7 +39,8 @@ class ChainProcess:
         self.init_timeout_s = init_timeout_s
         self.inference_timeout_s = inference_timeout_s
         self.release_timeout_s = release_timeout_s
-        self._factory, self._hosts, self._log = process_factory, policy_hosts, on_log
+        self._factory, self._endpoints, self._log = process_factory, endpoints or {}, on_log
+        self._exit_authority = exit_authority
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -102,8 +103,10 @@ class ChainProcess:
                     if remaining <= 0:
                         raise TimeoutError(f'{identity}: chain initialization timeout')
                     worker = self._factory(member.directory, copy.deepcopy(member.config), member.version,
-                                           init_timeout_s=remaining, inference_timeout_s=self.inference_timeout_s,
-                                           release_timeout_s=self.release_timeout_s, policy_hosts=self._hosts,
+                                           init_timeout_s=min(remaining, member.config.get('timeouts', {}).get('initialize_s', remaining)),
+                                           inference_timeout_s=min(self.inference_timeout_s, member.config.get('timeouts', {}).get('inference_s', self.inference_timeout_s)),
+                                           release_timeout_s=min(self.release_timeout_s, member.config.get('timeouts', {}).get('release_s', self.release_timeout_s)), endpoint=self._endpoints.get(identity),
+                                           exit_authority=self._exit_authority,
                                            on_log=self._log)
                     worker.resources = _MemberResources(self, identity)
                     with self._condition:
@@ -121,7 +124,8 @@ class ChainProcess:
                     self._thread = threading.Thread(target=self._coordinate, name='policy-chain', daemon=False)
                     self._thread.start()
             except BaseException:
-                self.close()
+                if not self._endpoints:
+                    self.close()
                 raise
 
     def _check_ready(self):
@@ -325,7 +329,13 @@ class ChainProcess:
                     return {**message, 'member_id': identity, 'config_version': self.config_version}
             return None
 
-    def close(self):
+    def accept_exit_proof(self, proof):
+        worker = self._workers.get(proof.policy_id)
+        if worker is not None:
+            worker.accept_exit_proof(proof)
+
+    def close(self, *, deadline=None):
+        deadline = deadline if deadline is not None else time.monotonic() + self.release_timeout_s + 6
         self._stop.set()
         with self._condition:
             self._ready = False
@@ -338,18 +348,30 @@ class ChainProcess:
             for identity, worker in reversed(list(self._workers.items())):
                 key = getattr(worker, 'host', None) or worker
                 groups.setdefault(key, []).append((identity, worker))
-            for group in groups.values():
+            from concurrent.futures import ThreadPoolExecutor
+            def close_group(group):
                 identity, worker = group[0]
+                if hasattr(worker, 'close_group'):
+                    forced = worker.close_group([w for _, w in group], deadline=deadline)
+                else:
+                    forced = any([w.close() for _, w in group])
+                for name,w in group:
+                    if getattr(w, 'has_readers', w.alive):
+                        raise RuntimeError(f'{name}: readers remain')
+                return forced, next((f'{name}: {w.release_error}' for name,w in group if w.release_error), None)
+            if groups:
+                executor = ThreadPoolExecutor(max_workers=min(16,len(groups)), thread_name_prefix='chain-release')
+                futures = [(group[0][0],executor.submit(close_group,group)) for group in groups.values()]
                 try:
-                    if hasattr(worker, 'close_group'):
-                        self._forced |= worker.close_group([w for _, w in group])
-                    else:
-                        for _, w in group: self._forced |= w.close()
-                    for name, w in group:
-                        if getattr(w, 'has_readers', w.alive): raise RuntimeError(f'{name}: readers remain')
-                        if w.release_error: self.release_error = f'{name}: {w.release_error}'
-                except Exception as exc:
-                    errors.append(f'{identity}: {exc}')
+                    for identity,future in futures:
+                        try:
+                            forced,error = future.result(timeout=max(0,deadline-time.monotonic()))
+                            self._forced |= forced
+                            self.release_error = error or self.release_error
+                        except Exception as exc:
+                            errors.append(f'{identity}: {exc}')
+                finally:
+                    executor.shutdown(wait=False,cancel_futures=True)
             if self._thread is not None and self._thread is not threading.current_thread():
                 self._thread.join(1)
                 if self._thread.is_alive():

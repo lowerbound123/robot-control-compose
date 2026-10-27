@@ -18,12 +18,13 @@ def command_controller(tmp_path, monkeypatch, request):
         directory = tmp_path / "policy" / name
         directory.mkdir(parents=True)
         (directory / "main.py").write_text(getattr(request, "param", SOURCE))
+        (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         config = worker_config(directory, workers=2)
-        config.update(schema_version=2, id=name, hot_reloadable=["params.value"])
+        config.update(schema_version=3, id=name, hot_reloadable=["params.value"])
         config["params"]["value"] = 1
         config["execution"].update(mode="sync", call_every_actions=1)
         (directory / "policy.json").write_text(json.dumps(config))
-    config = {"schema_version": 2, "frequency_hz": 100, "policy_directory": "policy",
+    config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy",
               "startup_policy": "first", "robot": {"backend": "mock"},
               "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
               "reset_qpos": [0]*14, "outputs_directory": "outputs",
@@ -35,7 +36,6 @@ def command_controller(tmp_path, monkeypatch, request):
     def factory(*args, **kwargs):
         return PolicyProcess(*args, python_command=[sys.executable], **kwargs)
     controller = RobotController(path, robot=MockRobot(), process_factory=factory)
-    monkeypatch.setattr(controller, "_check_environment", lambda *args: None)
     controller.start()
     try:
         try:
@@ -100,7 +100,7 @@ def test_timeout_unloads_worker_cancels_peers_and_requires_switch(command_contro
 def test_queued_command_cannot_run_on_replacement_worker(command_controller):
     controller, root = command_controller
     with controller._lock:
-        switch = controller.submit("switch second --no-reset")
+        switch = controller.submit("switch second")
         old = controller.submit("unlimited stale .01")
     assert completed(controller, switch)["status"] == "succeeded"
     assert completed(controller, old)["status"] == "cancelled"
@@ -259,8 +259,8 @@ def test_switch_preflight_failure_reopens_old_worker_commands(command_controller
     controller, _ = command_controller
     worker = controller._worker
     def invalid(*args): raise ValueError("environment unavailable")
-    monkeypatch.setattr(controller, "_check_environment", invalid)
-    assert completed(controller, controller.submit("switch second --no-reset"))["status"] == "failed"
+    monkeypatch.setattr(controller.registry, "snapshot", invalid)
+    assert completed(controller, controller.submit("switch second"))["status"] == "failed"
     call = controller.submit("unlimited recovered .01")
     assert completed(controller, call)["result"] == "recovered"
     assert controller._worker is worker

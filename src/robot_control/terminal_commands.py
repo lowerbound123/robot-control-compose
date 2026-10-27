@@ -1,6 +1,8 @@
 """Local terminal routing without UI, network, or MCP SDK imports."""
 from __future__ import annotations
 
+from .secret_config import reject_secret_edit
+
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 import json
 from pathlib import Path
@@ -93,6 +95,7 @@ class TerminalCommandRouter:
         return "\n".join(rows)
 
     def submit(self, line: str):
+        reject_secret_edit(line)
         words = line.split()
         if words and words[0] == "snapshot":
             if len(words) != 1:

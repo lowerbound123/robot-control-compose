@@ -31,7 +31,7 @@ def policy(context,state,action_chunk,images,config,*,runtime):
     mode = config['execution']['control_mode']
     rows = action_chunk['actions'] if mode == 'mixed' else action_chunk
     row = rows[0] if rows else state['qpos']
-    row = [v * 10 if config['id'] == 'B' else v + context['calls'] for v in row]
+    row = [v * 10 if config['id'] == 'b' else v + context['calls'] for v in row]
     return {'actions':[row], 'modes':['qpos']} if mode == 'mixed' else [row]
 def reset_context(context):
     context['calls'] = 0
@@ -58,7 +58,7 @@ def wait_for(function, timeout=5):
 def setup_chain(tmp_path):
     def build(*, mode='qpos', delays=(0, 0), fail=None, fail_init=None, timeout=3):
         events = tmp_path / 'events'
-        for index, identity in enumerate(('A', 'B')):
+        for index, identity in enumerate(('a', 'b')):
             config = add_policy(tmp_path, identity, mode=mode, commands={
                 'test': {'handler':'test', 'args':[], 'timeout_s':1},
                 'delay': {'handler':'delay', 'args':['float'], 'timeout_s':.05},
@@ -66,10 +66,11 @@ def setup_chain(tmp_path):
             config['params'].update(events=str(events), delay=delays[index], fail=identity == fail, fail_init=identity == fail_init)
             (tmp_path / identity / 'policy.json').write_text(json.dumps(config))
             (tmp_path / identity / 'main.py').write_text(SOURCE)
-        add_chain(tmp_path, ['A', 'B', 'A'])
+            (tmp_path / identity / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+        add_chain(tmp_path, ['a', 'b', 'a'])
         registry = PolicyRegistry(tmp_path)
-        registry.get('A').version = 3
-        registry.get('B').version = 5
+        registry.get('a').version = 3
+        registry.get('b').version = 5
         record = registry.get('default_chain')
         from robot_control.chain_process import ChainProcess
         children = []
@@ -106,14 +107,14 @@ def test_real_chain_reuses_workers_and_maps_versions_and_commands(setup_chain, f
     try:
         worker.start()
         assert len(children) == 2
-        assert [child.config['policy_host'] for child in children] == ['env-A', 'env-B']
+        assert [child.config['id'] for child in children] == ['a', 'b']
         worker.submit(frames)
         result = wait_for(worker.poll)
         assert result['type'] == 'result', result
         assert result['actions'] == [[12.]*14]
         assert result['config_version'] == 1 and result['generation'] == 2
-        assert [item[0] for item in rows(events) if item[1] == 'policy'] == ['A','B','A']
-        for name, expected in [('test',['B',1]), ('A-test',['A',2]), ('B-test',['B',1])]:
+        assert [item[0] for item in rows(events) if item[1] == 'policy'] == ['a','b','a']
+        for name, expected in [('a-test',['a',2]), ('b-test',['b',1])]:
             worker.submit_command(name, name, [])
             message = wait_for(worker.poll_command)
             if message['type'] == 'command_started': message = wait_for(worker.poll_command)
@@ -126,8 +127,8 @@ def test_real_chain_reuses_workers_and_maps_versions_and_commands(setup_chain, f
         assert wait_for(worker.poll)['actions'] == [[12.]*14]
     finally:
         worker.close()
-    assert [item[0] for item in rows(events) if item[1] == 'release'] == ['B','A']
-    assert sorted(item[0] for item in rows(events) if item[1] == 'observe') == ['A','B']
+    assert sorted(item[0] for item in rows(events) if item[1] == 'release') == ['a','b']
+    assert sorted(item[0] for item in rows(events) if item[1] == 'observe') == ['a','b']
     assert not worker.alive
     worker.close()
 
@@ -137,10 +138,10 @@ def test_pause_finishes_current_reader_without_starting_next_stage(setup_chain, 
     try:
         worker.start()
         worker.submit(frames)
-        wait_for(lambda: ['A','policy'] in rows(events))
+        wait_for(lambda: ['a','policy'] in rows(events))
         worker.cancel_inference()
         assert wait_for(worker.poll)['type'] == 'cancelled'
-        assert ['B','policy'] not in rows(events)
+        assert ['b','policy'] not in rows(events)
         worker.reset_context()
         worker.submit({**frames,'request_id':2})
         assert wait_for(worker.poll)['actions'] == [[12.]*14]
@@ -151,34 +152,34 @@ def test_pause_finishes_current_reader_without_starting_next_stage(setup_chain, 
 @pytest.mark.parametrize('failure', ['timeout', 'model'])
 def test_whole_chain_deadline_and_stage_failure_short_circuit(setup_chain, frames, failure):
     worker, _, events = setup_chain(delays=(.10,.10) if failure == 'timeout' else (0,0),
-                                   fail='B' if failure == 'model' else None,
+                                   fail='b' if failure == 'model' else None,
                                    timeout=.16 if failure == 'timeout' else 3)
     try:
         worker.start()
         worker.submit(frames)
         result = wait_for(worker.poll)
         assert result['type'] == 'error', result
-        assert 'B' in result['error'] and 'cell 2' in result['error']
+        assert 'b' in result['error'] and 'cell 2' in result['error']
         assert 'timeout' in result['error'] if failure == 'timeout' else 'model failed' in result['error']
     finally:
         worker.close()
-    assert rows(events).count(['A','policy']) == 1
+    assert rows(events).count(['a','policy']) == 1
 
 
 def test_partial_initialization_failure_closes_all_workers(setup_chain):
-    worker, children, events = setup_chain(fail_init='B')
-    with pytest.raises(RuntimeError, match='B.*load failed'):
+    worker, children, events = setup_chain(fail_init='b')
+    with pytest.raises(RuntimeError, match='b.*load failed'):
         worker.start()
     worker.close()
     assert not any(child.alive for child in children)
-    assert rows(events).count(['A','release']) == 1
+    assert rows(events).count(['a','release']) == 1
 
 
 def test_command_timeout_is_fatal_for_aggregate(setup_chain):
     worker, _, _ = setup_chain()
     try:
         worker.start()
-        worker.submit_command('sleep', 'A-delay', [.3])
+        worker.submit_command('sleep', 'a-delay', [.3])
         message = wait_for(worker.poll_command)
         if message['type'] == 'command_started': message = wait_for(worker.poll_command)
         assert message['type'] == 'command_timeout'
@@ -195,25 +196,26 @@ def test_observation_error_waits_for_every_image_reader(setup_chain, frames, tmp
 from pathlib import Path
 def observe(context, state, images, config, *, runtime):
     event(config, 'observe-start')
-    if config['id'] == 'B':
+    if config['id'] == 'b':
         while not Path(GATE).exists():
             assert int(images['head'][0,0,0]) == 0
             time.sleep(.005)
     event(config, 'observe-done')
-    if config['id'] == 'A': raise ValueError('observer failed')
+    if config['id'] == 'a': raise ValueError('observer failed')
 '''.replace('GATE', repr(str(gate)))
     for member in worker.record.members:
         (member.directory / 'main.py').write_text(SOURCE + observer)
+        (member.directory / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     try:
         worker.start()
         wait_for(lambda: worker.supports_observe)
         assert worker.observe(frames)
-        wait_for(lambda: ['A','observe-done'] in rows(events) and ['B','observe-start'] in rows(events))
+        wait_for(lambda: ['a','observe-done'] in rows(events) and ['b','observe-start'] in rows(events))
         assert worker.poll_observation() is None, 'failed A cannot acknowledge live B image reader'
         gate.touch()
         response = wait_for(worker.poll_observation)
-        assert response['type'] == 'observation_error' and 'A' in response['error']
-        assert ['B','observe-done'] in rows(events)
+        assert response['type'] == 'observation_error' and 'a' in response['error']
+        assert ['b','observe-done'] in rows(events)
     finally:
         gate.touch()
         worker.close()
@@ -241,6 +243,7 @@ def release(context): pass
 '''
     for member in worker.record.members:
         (member.directory / 'main.py').write_text(SOURCE + rpc_source)
+        (member.directory / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     try:
         worker.start()
         worker.submit(frames)

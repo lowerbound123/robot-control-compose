@@ -1,0 +1,8 @@
+services:
+  policy:
+    image: robot-control-compose-policy:local
+    build:
+      context: ../..
+      dockerfile: policy/hold/Dockerfile
+      target: runtime
+    restart: "no"

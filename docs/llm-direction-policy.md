@@ -44,14 +44,14 @@
 
 供应商模板位于 `policy/llm_direction/providers/`：
 
-| 文件 | API | 密钥变量 | 输出方式 |
+| 文件 | API | 密钥字段 | 输出方式 |
 | --- | --- | --- | --- |
-| `deepseek.json` | DeepSeek Chat Completions，`deepseek-flash` | `DEEPSEEK_API_KEY` | `json_object` |
-| `openai_compatible.json` | 自定义 Chat Completions，模型自行填写 | `LLM_API_KEY` | `json_schema`、`json_object` 或 `text` |
-| `openai_decisions.json` | OpenAI Decisions，`gpt-6-luna` | `OPENAI_API_KEY` | `choice` |
-| `openai.json` | OpenAI Responses，`gpt-6-luna` | `OPENAI_API_KEY` | `json_schema` |
+| `deepseek.json` | DeepSeek Chat Completions，`deepseek-flash` | `api_key` | `json_object` |
+| `openai_compatible.json` | 自定义 Chat Completions，模型自行填写 | `api_key` | `json_schema`、`json_object` 或 `text` |
+| `openai_decisions.json` | OpenAI Decisions，`gpt-6-luna` | `api_key` | `choice` |
+| `openai.json` | OpenAI Responses，`gpt-6-luna` | `api_key` | `json_schema` |
 
-模板是 `params.provider` 对象，不是独立 policy manifest。初始化不访问供应商，但会检查 task、配置及指定环境变量是否存在。自建无认证服务也需在对应变量提供其允许的占位凭证，因为官方 SDK 要求 API key 参数。
+模板是 `params.provider` 对象，不是独立 policy manifest。初始化不访问供应商，但会检查 task、配置及params.provider.api_key 是否已填写。自建无认证服务也需在对应字段提供其允许的占位凭证，因为官方 SDK 要求 API key 参数。
 
 在启动 RC 前，可以从项目根目录运行以下示例，原子更新 task 和供应商对象：
 
@@ -83,36 +83,33 @@ Decisions 使用单题 226 个联合选项（左右手 15×15，再加完成）�
 独立 Python 3.11 CPU 镜像不需要 GPU，不依赖 Qwen 的 CUDA 环境。Linux amd64 镜像可以在 x86 Ubuntu 22.04 上本机构建；在其他架构构建时可显式添加 `--platform linux/amd64`。
 
 ```bash
-./scripts/setup-user.sh
-test -f .env.llm || cp .env.llm.example .env.llm
-# 用本地编辑器填写所选供应商的密钥；不要提交 .env.llm。
-# 两个 env-file 都保留：.env 提供本机 UID/GID 与 ROS/MCP 配置。
-docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml build policy-llm-direction
-docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml up -d
-docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml attach robot-control
+./setup.sh --policies hold,llm_direction
+# 编辑 policy/llm_direction/policy.json 的 task 和 provider.api_key
+./scripts/compose.sh up -d
+./scripts/compose.sh attach robot-control
 ```
 
 首次启动整个项目可在 `up` 增加 `--build`，同时构建主框架与 hold。启动仍为 mock + hold，保持暂停。TUI 中输入：
 
 ```text
-switch llm_direction --no-reset
+switch llm_direction
 show policy
 resume
 pause
 ```
 
-使用 `--no-reset` 保留切换时的当前位置。切换成功仍保持暂停。终端 detach 使用 Ctrl-P、Ctrl-Q；`exit` 会关闭控制器。
+使用 默认 switch 保留切换时的当前位置。切换成功仍保持暂停。终端 detach 使用 Ctrl-P、Ctrl-Q；`exit` 会关闭控制器。
 
 ROS 模拟器组合：
 
 ```bash
-docker compose --env-file .env --env-file .env.llm --profile ros-sim -f compose.yaml -f compose.llm.yaml -f compose.ros-sim.yaml up -d
+./scripts/compose.sh --profile ros-sim -f compose.ros-sim.yaml up -d
 ```
 
 真实 ACOne 的 Linux host-network 组合：
 
 ```bash
-ROS_DOMAIN_ID=0 docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml -f compose.acone.yaml up -d
+ROS_DOMAIN_ID=0 ./scripts/compose.sh -f compose.acone.yaml up -d
 ```
 
 之后的 attach、logs、stop、down 使用同一组文件和环境参数。机器人网络配置沿用 [Ubuntu 部署教程](ubuntu22-amd64-from-scratch.md)。自定义 API 在宿主机时可用 `http://host.docker.internal:端口/v1`，覆盖文件已提供 Linux host-gateway 映射；服务需要监听容器可访问的宿主地址。容器内的 `127.0.0.1` 指向容器自身。
@@ -132,7 +129,7 @@ save-config policy
 resume
 ```
 
-每条 `set` 都执行一次冷重载，成功后保持暂停。更换供应商时一次设置完整的 `params.provider` JSON 对象，避免分步修改期间出现类型与输出格式不匹配。`api_key_env` 不得使用 PYTHON、CONDA、ROS 等保留变量名。密钥值始终只在环境变量中；`save-config` 只会保存变量名。
+更换供应商和密钥时编辑 policy.json 中的 params.provider 并重新加载策略。密钥字段禁止在线 set；show 输出掩码，save-config 保留实际值。
 
 原生链通过 `manage-policy` 编排，所有成员须为 `epos`。默认 hold 和两个 Qwen 都是 `qpos`，不能直接加入同一链。`A → B → A` 复用 A 实例；若 A 生成的动作长度大于触发阈值，第二次 A 调用仅透传，不再请求 LLM。后续成员可以加工动作，但最终输出仍必须满足 epos 契约。
 
@@ -141,25 +138,12 @@ resume
 暂停、MCP 接管、配置冷重载和退出都会使旧动作失效。HTTP 请求可能仍需等返回或超时，迟到结果不能恢复动作。用户 `resume` 才允许下一次模型决策；硬超时或 worker 故障后先重新加载 policy。
 
 ```bash
-docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml stop
-docker compose --env-file .env --env-file .env.llm -f compose.yaml -f compose.llm.yaml down
+./scripts/compose.sh stop
+./scripts/compose.sh down
 ```
 
 更新密钥需要重建容器环境；先正常 stop，再 `up -d --force-recreate`。更新依赖或适配包后先 build，再 up。正常停止先让 RC 结束回调与释放 policy，host 负责必要的进程树清理。失去释放证明的帧不能提前复用；全栈停止后 IPC namespace 最终销毁。输出、配置和快照绑定目录继续保留。
 
-## 测试与验收
+## 准备与验证
 
-运行单元和本地 worker 测试需要额外测试环境安装 `requirements/llm-direction.lock`、本地 SDK、适配包及 `.[test]`，然后运行 `pytest tests/test_llm_direction.py tests/test_llm_providers.py tests/test_llm_worker.py`。主镜像不安装 OpenAI SDK，因此主环境会明确跳过需要该可选环境的测试。
-
-真实跨容器测试使用本地 HTTP 替身，无真实密钥、无 API 费用：
-
-```bash
-docker build -f docker/rc.Dockerfile --target test -t robot-control-compose-tests:local .
-docker build --platform linux/amd64 -f docker/llm-direction.Dockerfile -t robot-control-compose-llm-direction:local .
-docker compose -p rc-llm-validation -f compose.yaml -f compose.llm.yaml -f compose.llm-test.yaml run --rm llm-integration
-docker compose -p rc-llm-validation -f compose.yaml -f compose.llm.yaml -f compose.llm-test.yaml down -v
-```
-
-`compose.llm-test.yaml` 只用于隔离测试项目。它将供应商替换为容器内 HTTP 服务，并使用独立夹具卷。测试覆盖 Python 3.10 → amd64 Python 3.11、三图像素、RPC 无图像负载、四种 API、原生链、硬超时租约与迟到结果。
-
-真实供应商权限、模型对实际场景的决策质量和实体机器人效果，需要使用部署者自己的账户与机器人单独验收；HTTP 替身与 ROS 模拟器不代表这部分已通过。软件验证结果另见 [LLM 验收记录](llm-direction-verification.md)。
+部署入口为 `policy/llm_direction/compose.yaml`，依赖锁和 Dockerfile 位于同目录；运行 `./setup.sh --policies llm_direction` 准备镜像。基础 up 仅启动 RC/anchor，选择该策略时才创建容器。使用 `./scripts/compose.sh down` 收尾，验证范围见 [verification.md](verification.md)。

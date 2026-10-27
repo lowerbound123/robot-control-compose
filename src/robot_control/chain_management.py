@@ -72,8 +72,8 @@ class ChainManagement:
         saved = []
         if path.exists():
             definition = json.loads(path.read_text(encoding='utf-8'))
-            validate_policy(definition)
-            if definition.get('kind') != 'chain' or definition['id'] != 'default_chain':
+            validate_policy(definition, "default_chain")
+            if definition.get('kind') != 'chain' or definition.get('id', 'default_chain') != 'default_chain':
                 raise ValueError('default_chain is occupied by an ordinary policy')
             saved = definition['policies']
         catalog = [row for row in self.registry.list() if row.get('kind') != 'chain' and row['id'] != 'default_chain']

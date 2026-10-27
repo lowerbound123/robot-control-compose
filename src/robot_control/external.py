@@ -9,8 +9,11 @@ from .config import atomic_json
 
 
 class ExternalResources:
-    def __init__(self, pool, recovery_path, *, start=False):
+    def __init__(self, pool, recovery_path, *, start=False, deployment_id=None, anchor_id=None, anchor_epoch=None):
         self.pool = pool
+        self.deployment_id = deployment_id
+        self.anchor_id = anchor_id
+        self.anchor_epoch = anchor_epoch
         self.recovery_path = recovery_path
         self._lock = threading.RLock()
         self._records = {}
@@ -31,7 +34,7 @@ class ExternalResources:
             records.append({k:v for k,v in record.items() if k not in ('worker','leases')}
                            | {'remote_id':rid,'requests':{q:lease.descriptors for q,lease in record['leases'].items()}})
         if records:
-            atomic_json(self.recovery_path, {'remote_models':records})
+            atomic_json(self.recovery_path, {'version':3, 'deployment_id':self.deployment_id, 'anchor_id':self.anchor_id, 'anchor_epoch':self.anchor_epoch, 'remote_models':records})
         else:
             self.recovery_path.unlink(missing_ok=True)
 
@@ -69,14 +72,15 @@ class ExternalResources:
             self._persist()
         return {'retained':True}
 
-    def begin_close(self,worker):
+    def begin_close(self,worker, *, deadline=None):
         with self._lock:
             self._closing_workers.add(worker)
             records=[r for r in self._records.values() if r['worker'] is worker]
         for record in records:
             try:
                 self._http(record,'/v1/models/unload',{'owner_id':record['owner_id'],
-                                                     'expected_instance_id':record['instance_id']})
+                                                     'expected_instance_id':record['instance_id']},
+                           timeout=min(1.,max(.001,deadline-time.monotonic())) if deadline else 1.)
             except Exception:
                 pass  # Final close must confirm exit; failure never releases pins.
 
@@ -107,46 +111,144 @@ class ExternalResources:
                     # 404, connection failure and timeout never acknowledge release.
                     pass
 
-    def close_worker(self, worker, timeout=35.):
+    @staticmethod
+    def _release_remote(record, deadline, http=None):
+        http = http or ExternalResources._http
+        def left():
+            value=deadline-time.monotonic()
+            if value<=0:
+                raise TimeoutError('external cleanup deadline exceeded')
+            return min(2.,value)
+        status=http(record,'/v1/status',timeout=left())
+        if not record.get('instance_id') or status.get('instance_id') != record['instance_id']:
+            raise RuntimeError('server instance differs; old remote readers cannot be confirmed')
+        op=http(record,'/v1/models/unload',{'owner_id':record['owner_id'],
+                    'expected_instance_id':record['instance_id']},timeout=left())
+        while True:
+            result=http(record,'/v1/operations/'+op['operation_id'],timeout=left())
+            if result['status']=='succeeded':
+                outcome=result['result']
+                if outcome.get('instance_id')!=record['instance_id']:
+                    raise RuntimeError('server restarted: instance changed during unload')
+                if outcome.get('state')!='unloaded' or outcome.get('worker_pid') is not None:
+                    raise RuntimeError('external worker exit unconfirmed')
+                return outcome.get('cleanup_forced',False)
+            if result['status']=='failed':
+                raise RuntimeError(result.get('error'))
+            time.sleep(min(.05,left()))
+
+    def close_worker(self, worker, timeout=35., *, deadline=None):
+        deadline = deadline if deadline is not None else time.monotonic()+timeout
         forced=False
         with self._lock:
             owned = [(rid,record) for rid,record in self._records.items() if record['worker'] is worker]
-        for rid, record in owned:
-            deadline=time.monotonic()+timeout
+        errors=[]
+        for rid,record in owned:
             try:
-                # Even an unloaded server revokes this owner, so a delayed load
-                # packet from a dead policy cannot initialize another model later.
-                status=self._http(record,'/v1/status',timeout=min(2.,timeout))
-                if record['instance_id'] is not None and status.get('instance_id') != record['instance_id']:
-                    raise RuntimeError('server restarted; old remote readers cannot be confirmed')
-                op=self._http(record,'/v1/models/unload',{'owner_id':record['owner_id'],
-                                                        'expected_instance_id':record['instance_id']},timeout=min(2.,timeout))
-                while True:
-                    remaining=deadline-time.monotonic()
-                    if remaining<=0:
-                        raise TimeoutError('remote unload deadline exceeded')
-                    result=self._http(record,'/v1/operations/'+op['operation_id'],timeout=min(2.,remaining))
-                    if result['status']=='succeeded':
-                        outcome=result['result']
-                        if record['instance_id'] is not None and outcome.get('instance_id') != record['instance_id']:
-                            raise RuntimeError('server restarted during unload; old remote readers cannot be confirmed')
-                        if outcome['state']!='unloaded' or outcome.get('worker_pid') is not None:
-                            raise RuntimeError('remote worker exit was not confirmed')
-                        forced |= outcome.get('cleanup_forced',False)
-                        break
-                    if result['status']=='failed':
-                        raise RuntimeError(result.get('error'))
-                    time.sleep(min(.05,remaining))
+                forced |= self._release_remote(record,deadline,self._http)
                 with self._lock:
                     for lease in record['leases'].values():
                         lease.release()
                     self._records.pop(rid,None)
                     self._persist()
             except Exception as exc:
-                with self._lock:
-                    self._persist()
-                raise RuntimeError(f'remote model/image cleanup unconfirmed; retained {self.recovery_path}: {exc}') from exc
+                errors.append(str(exc))
+        if errors:
+            with self._lock:
+                self._persist()
+            raise RuntimeError(f'remote model/image cleanup unconfirmed; retained {self.recovery_path}: ' + '; '.join(errors))
         return forced
+
+    @staticmethod
+    def _reclaim_segments(descriptors, deadline=None):
+        import mmap
+        import re
+        import posix_ipc
+        from rc_policy_sdk.images import _HEADER, MAX_IMAGE_BYTES
+        opened = []
+        try:
+            unique = {}
+            for descriptor in descriptors:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('image recovery deadline exceeded')
+                name = descriptor.get('shm_name')
+                if (not isinstance(name, str) or not re.fullmatch(r'/rc[0-9a-f]{22}', name) or
+                        descriptor.get('pool_id') != name[3:15] or
+                        type(descriptor.get('nbytes')) is not int or not 0 < descriptor['nbytes'] <= MAX_IMAGE_BYTES or
+                        type(descriptor.get('frame_id')) is not int or descriptor['frame_id'] <= 0):
+                    raise RuntimeError('invalid recovered shared image identity')
+                identity = (descriptor['nbytes'], descriptor['frame_id'])
+                if name in unique and unique[name] != identity:
+                    raise RuntimeError('conflicting recovered frame identities; rebuild IPC namespace')
+                unique[name] = identity
+            # Validate every segment before unlinking any of them. All local and
+            # external readers have already been proved gone by the caller.
+            for name, identity in unique.items():
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('image recovery deadline exceeded')
+                try:
+                    segment = posix_ipc.SharedMemory(name, read_only=True)
+                except posix_ipc.ExistentialError:
+                    continue
+                opened.append(segment)
+                if segment.size < _HEADER.size + identity[0]:
+                    raise RuntimeError('recovered image size mismatch; rebuild IPC namespace')
+                with mmap.mmap(segment.fd, _HEADER.size, access=mmap.ACCESS_READ) as mapping:
+                    if _HEADER.unpack(mapping[:]) != identity:
+                        raise RuntimeError('recovered frame mismatch; rebuild IPC namespace')
+            for segment in opened:
+                try: segment.unlink()
+                except posix_ipc.ExistentialError: pass
+        finally:
+            for segment in opened:
+                segment.close_fd()
+
+    @classmethod
+    def recover(cls, directory, deadline, deployment_id, *, anchor_id=None, anchor_epoch=None, defer_namespace_cleanup=False):
+        """Revoke every old owner, then reclaim only proven frames in the same IPC instance."""
+        from pathlib import Path
+        journals = []
+        for path in sorted(Path(directory).glob('*.json')):
+            data=json.loads(path.read_text())
+            if data.get('version')!=3 or data.get('deployment_id')!=deployment_id:
+                raise RuntimeError('external recovery journal ownership mismatch')
+            journals.append((path,data))
+        forced=False
+        # Keep descriptors until ALL registered external readers are gone, even
+        # if a crash interrupts this recovery pass between owners.
+        for path,data in journals:
+            for record in data['remote_models']:
+                if not record.get('exit_confirmed'):
+                    record['cleanup_forced'] = cls._release_remote(record,deadline)
+                    record['exit_confirmed'] = True
+                    atomic_json(path,data)
+                forced |= record.get('cleanup_forced',False)
+        descriptors=[]
+        for _,data in journals:
+            items=[image for record in data['remote_models'] for frames in record.get('requests',{}).values()
+                   for image in frames.values()]
+            if items and (not data.get('anchor_id') or
+                          not defer_namespace_cleanup and (data['anchor_id'] != anchor_id or data.get('anchor_epoch') != anchor_epoch)):
+                raise RuntimeError('old anchor/IPC namespace is not bound; retain journal and recreate RC plus anchor')
+            descriptors.extend(items)
+        if defer_namespace_cleanup:
+            return forced  # Host down removes journals only after exact anchor removal.
+        cls._reclaim_segments(descriptors,deadline)
+        for path,_ in journals:
+            path.unlink()
+        return forced
+
+    @staticmethod
+    def finish_namespace_cleanup(directory, deployment_id, removed_anchors):
+        from pathlib import Path
+        for path in Path(directory).glob('*.json'):
+            data=json.loads(path.read_text())
+            if (data.get('deployment_id') != deployment_id or
+                    any(not record.get('exit_confirmed') for record in data['remote_models'])):
+                raise RuntimeError('external namespace cleanup lacks owner exit proof')
+            if any(record.get('requests') for record in data['remote_models']) and data.get('anchor_id') not in removed_anchors:
+                raise RuntimeError('external namespace cleanup lacks anchor removal proof')
+            path.unlink()
 
     def close(self):
         self._stop.set()

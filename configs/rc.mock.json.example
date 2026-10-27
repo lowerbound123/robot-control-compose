@@ -1,0 +1,106 @@
+{
+  "schema_version": 3,
+  "frequency_hz": 30,
+  "policy_directory": "../policy",
+  "startup_policy": "hold",
+  "robot": {
+    "backend": "mock"
+  },
+  "safety": {
+    "enabled": true,
+    "reference_frequency_hz": 50,
+    "max_delta_per_step": [
+      0.006072,
+      0.018664,
+      0.014556,
+      0.009768,
+      0.007063,
+      0.008024,
+      0.05,
+      0.007601,
+      0.012064,
+      0.014512,
+      0.011047,
+      0.013188,
+      0.009549,
+      0.05
+    ],
+    "epos": {
+      "translation_m_s": 0.15,
+      "rotation_rad_s": 0.75,
+      "gripper_units_s": 2.5
+    }
+  },
+  "reset_qpos": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    -5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    -5
+  ],
+  "timeouts": {
+    "initialize_s": 600,
+    "inference_s": 60,
+    "release_s": 30
+  },
+  "outputs_directory": "../outputs",
+  "mcp": {
+    "host": "127.0.0.1",
+    "port": 4000,
+    "token_env": "ROBOT_CONTROL_MCP_TOKEN"
+  },
+  "direct_control": {
+    "default_speed": "slow",
+    "gripper_open": -3.4,
+    "gripper_close": 0,
+    "gripper_tolerance": 0.12
+  },
+  "tui": {
+    "camera": {
+      "protocol": "kitty"
+    },
+    "monitor": {
+      "qpos_thres": [
+        0.02,
+        0.02,
+        0.02,
+        0.02,
+        0.02,
+        0.02,
+        0.12,
+        0.02,
+        0.02,
+        0.02,
+        0.02,
+        0.02,
+        0.02,
+        0.12
+      ],
+      "epos_thres": [
+        0.005,
+        0.005,
+        0.005,
+        0.05,
+        0.05,
+        0.05,
+        0.12,
+        0.005,
+        0.005,
+        0.005,
+        0.05,
+        0.05,
+        0.05,
+        0.12
+      ]
+    }
+  }
+}

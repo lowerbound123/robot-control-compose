@@ -4,14 +4,14 @@ from pathlib import Path
 from rc_qwen35_policy.configuration import load_model_config, validate_manifest
 from rc_qwen35_policy.runtime import AsyncQwenPolicy
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+POLICY_ROOT = Path(__file__).resolve().parent
 
 
 def initialize(config, *, runtime):
     validate_config(config)
     model_config = load_model_config(config['params']['model_config_path'],
-                                     workflow='two_stage', project_root=PROJECT_ROOT)
-    return AsyncQwenPolicy(model_config, project_root=PROJECT_ROOT)
+                                     workflow='two_stage', project_root=POLICY_ROOT)
+    return AsyncQwenPolicy(model_config, project_root=POLICY_ROOT)
 
 
 def policy(context, state, action_chunk, images, config, *, runtime):

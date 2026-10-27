@@ -76,7 +76,8 @@ def local_worker(tmp_path):
         directory = tmp_path / f"policy-{len(workers)}"
         directory.mkdir()
         (directory / "main.py").write_text(source)
-        worker = PolicyProcess(directory, {"id": "pause-demo", "policy_host": "test",
+        (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+        worker = PolicyProcess(directory, {"id": "pause-demo",
                                "execution": {"control_mode": mode}, "tui_commands": commands or {}},
                                python_command=[sys.executable], init_timeout_s=3,
                                inference_timeout_s=3, release_timeout_s=1)

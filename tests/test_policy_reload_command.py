@@ -46,7 +46,8 @@ def reload_controller(tmp_path, request):
     model = root / "model.json"
     model.write_text(json.dumps({"name": "old"}))
     (root / "main.py").write_text(SOURCE)
-    config = {"schema_version": 2, "id": "first", "policy_host": "test",
+    (root / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    config = {"schema_version": 3, "id": "first",
               "execution": {"mode": "sync", "call_every_actions": 1, "control_mode": "qpos"},
               "params": {"root": str(root), "model_config_path": str(model), "hot": 1, "nested": {"leaf": 1}},
               "hot_reloadable": ["params.hot"], "tui_commands": {
@@ -55,7 +56,7 @@ def reload_controller(tmp_path, request):
                   "current": {"handler": "current", "args": []},
                   "wait-command": {"handler": "wait_command", "args": []}}}
     (root / "policy.json").write_text(json.dumps(config))
-    rc = {"schema_version": 2, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first",
+    rc = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first",
           "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
           "reset_qpos": [0]*14, "outputs_directory": "outputs",
           "timeouts": {"initialize_s": getattr(request, "param", 3), "inference_s": .1, "release_s": .3}}
@@ -185,7 +186,7 @@ def test_new_worker_rejects_old_host_before_initializing_model(reload_controller
 
 def test_host_rejects_worker_without_reload_capability(tmp_path):
     from robot_control.process import PolicyProcess as RemotePolicyProcess
-    config={'id':'old','policy_host':'test','params':{},'tui_commands':{
+    config={'id':'old','params':{},'tui_commands':{
         'change':{'handler':'change','args':[],'effect':'reload_policy'}}}
     worker=RemotePolicyProcess(tmp_path,config,host_socket='/unused')
     worker._receive({'runtime_id':'old-runtime','event':{'type':'ready','config_version':1,'tui_commands':True}})
@@ -210,10 +211,10 @@ def test_explicit_switch_during_validation_cannot_apply_stale_reload(reload_cont
     model.write_text(json.dumps({"name": "new", "validation_delay": .15}))
     call = controller.submit(f"switch-model {model}")
     until(lambda: (root / "validating").exists())
-    switched = controller.submit("switch first --no-reset")
+    switched = controller.submit("switch first")
     assert completed(controller, switched)["status"] == "succeeded"
     assert completed(controller, call)["status"] == "cancelled"
-    assert controller.registry.get("first").version == 1
+    assert controller.registry.get("first").version == 2
     assert (root / "events").read_text().count("load:new") == 1
 
 

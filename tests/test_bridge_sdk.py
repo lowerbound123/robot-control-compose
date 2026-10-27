@@ -45,7 +45,8 @@ def observe(context,state,images,config,*,runtime):
 def reset_context(context): pass
 def release(context): pass
 ''')
-    config = {'schema_version': 2, 'id': 'runtime', 'policy_host': 'test',
+    (directory / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    config = {'schema_version': 3, 'id': 'runtime',
               'params': {'proof': str(proof)}, 'hot_reloadable': []}
     worker = PolicyProcess(directory, config, python_command=[sys.executable],
                            init_timeout_s=2, inference_timeout_s=2, release_timeout_s=1)
@@ -80,7 +81,8 @@ def policy(*args): return [[0]*14]
 def reset_context(context): pass
 def release(context): raise RuntimeError('release cleanup failed')
 ''')
-    worker=PolicyProcess(directory,{'policy_host':'test','params':{},'hot_reloadable':[]},
+    (directory/'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    worker=PolicyProcess(directory,{'params':{},'hot_reloadable':[]},
                          python_command=[sys.executable],init_timeout_s=2,release_timeout_s=1)
     worker.start()
     assert worker.close() is True

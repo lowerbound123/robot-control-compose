@@ -60,7 +60,13 @@ class Peer:
 class PolicyHost:
     def __init__(self, root, host_id):
         self.root = Path(root).resolve()
-        self.host_id = host_id
+        from .catalog import policy_id
+        self.host_id = policy_id(host_id)
+        self.deployment_id = os.environ.get('RC_DEPLOYMENT_ID', '')
+        self.run_id = os.environ.get('RC_RUN_ID', '')
+        self.generation = int(os.environ.get('RC_GENERATION', '0'))
+        self.cleanup_failed = False
+        self.owner_seen = time.monotonic()
         self.instance_id = uuid.uuid4().hex
         self.condition = threading.Condition(threading.RLock())
         self.stop_lock = threading.Lock()
@@ -79,19 +85,11 @@ class PolicyHost:
         threading.Thread(target=self._watch, daemon=True).start()
 
     def preflight(self, policy_id):
-        if not isinstance(policy_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', policy_id):
-            raise ValueError('invalid policy ID')
-        # RC identifies policies by manifest ID, not by directory basename.
-        matches = []
-        for manifest in self.root.glob('*/policy.json'):
-            try:
-                config = json.loads(manifest.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                continue
-            if isinstance(config, dict) and config.get('id') == policy_id:
-                matches.append(manifest.parent.resolve())
-        if len(matches) > 1: raise ValueError('ambiguous policy ID: ' + policy_id)
-        directory = matches[0] if matches else (self.root / policy_id).resolve()
+        if policy_id != self.host_id:
+            raise ValueError('host accepts only its assigned policy ID')
+        if self.cleanup_failed or self.closing or self.shutting_down:
+            raise RuntimeError('host unavailable: cleanup/closing')
+        directory = (self.root / policy_id).resolve()
         if directory.parent != self.root:
             raise ValueError('policy directory escapes the configured root')
         source = (directory / 'main.py').read_text(encoding='utf-8')
@@ -206,7 +204,8 @@ class PolicyHost:
                 expired = next((key for r in self.sessions.values() for key, deadline in r['deadlines'].items()
                                 if time.monotonic() >= deadline), None)
                 reason = (f'policy {expired} timeout' if expired else
-                          'policy runtime exited' if self.process.poll() is not None else None)
+                          'policy runtime exited' if self.process.poll() is not None else
+                          'RC heartbeat expired' if time.monotonic() - self.owner_seen > 10 else None)
                 runtime_id = self.runtime_id
             if reason: self.stop(runtime_id, timeout=0, reason=reason)
 
@@ -218,9 +217,14 @@ class PolicyHost:
             peer.owner = message.get('owner_id')
             return {'host_id': self.host_id, 'host_instance_id': self.instance_id,
                     'protocol_version': PROTOCOL_VERSION, 'image_protocol_version': IMAGE_PROTOCOL_VERSION,
-                    'python': sys.version.split()[0]}
+                    'python': sys.version.split()[0], 'policy_id': self.host_id,
+                    'deployment_id': self.deployment_id, 'run_id': self.run_id, 'generation': self.generation,
+                    'healthy': not (self.closing or self.shutting_down or self.cleanup_failed)}
         if not peer.owner: raise ValueError('hello required')
-        if kind == 'ping': return {'healthy': not self.shutting_down}
+        if kind == 'ping':
+            if self.owner == peer.owner:
+                self.owner_seen = time.monotonic()
+            return {'healthy': not (self.shutting_down or self.closing or self.cleanup_failed)}
         if kind == 'preflight': return self.preflight(message['policy_id'])
         if kind == 'stop':
             if self.owner is not None and peer.owner != self.owner: raise ValueError('host owned by another RC')
@@ -231,11 +235,14 @@ class PolicyHost:
                     return {'runtime_id':None, 'host_instance_id':self.instance_id, 'cleanup_confirmed':True, 'forced':False}
             return self.stop(runtime_id, order=message.get('sessions'), timeout=message['release_timeout'])
         with self.condition:
-            if self.closing or self.shutting_down: raise RuntimeError('host is closing')
+            if self.closing or self.shutting_down or self.cleanup_failed: raise RuntimeError('host is closing or poisoned')
             if self.owner is not None and self.owner != peer.owner: raise ValueError('host owned by another RC')
             if kind == 'load':
                 if peer.owner in self.revoked_owners: raise RuntimeError('RC owner revoked; create a new session')
                 directory = self.preflight(message['policy_id'])['directory']
+                from .catalog import validate_policy
+                validate_policy(message['event']['config'], self.host_id)
+                self.owner_seen = time.monotonic()
                 if self.process is None: self._start(peer.owner)
                 sid = message['session_id']
                 if sid in self.sessions or any(r['policy_id'] == message['policy_id'] for r in self.sessions.values()):
@@ -308,7 +315,8 @@ class PolicyHost:
                     return result
             finally:
                 with self.condition:
-                    self.closing = False
+                    self.cleanup_failed = self.process is not None
+                    self.closing = self.cleanup_failed
                     self.condition.notify_all()
 
     def serve_peer(self, connection):
@@ -355,7 +363,7 @@ def main():
             send_message(connection, {'type':'hello','rpc_id':1,'owner_id':uuid.uuid4().hex,
                 'protocol_version':PROTOCOL_VERSION,'image_protocol_version':IMAGE_PROTOCOL_VERSION})
             answer = receive_message(connection)
-            if answer.get('error') or answer['result']['host_id'] != args.host_id: raise SystemExit(1)
+            if answer.get('error') or answer['result']['host_id'] != args.host_id or not answer['result'].get('healthy'): raise SystemExit(1)
         return
     become_subreaper()
     path = Path(args.socket); path.parent.mkdir(parents=True, exist_ok=True)

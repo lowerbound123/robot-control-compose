@@ -1,0 +1,32 @@
+services:
+  policy:
+    image: robot-control-compose-qwen35:local
+    build:
+      context: ../..
+      dockerfile: policy/qwen35_single/Dockerfile
+      target: runtime
+      additional_contexts:
+        policy-deps: ./dependencies
+    restart: "no"
+    platform: linux/amd64
+    environment:
+      HF_HOME: /data/huggingface
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: ${MODELS_DIR:?Set deployment.env MODELS_DIR}
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HF_CACHE_DIR:?Set deployment.env HF_CACHE_DIR}
+        target: /data/huggingface
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE:-0}"]
+              capabilities: [gpu]

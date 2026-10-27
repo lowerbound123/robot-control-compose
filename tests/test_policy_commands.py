@@ -7,7 +7,7 @@ from robot_control.config import validate_policy
 
 
 def config():
-    return {"schema_version": 2, "id": "commands", "policy_host": "test",
+    return {"schema_version": 3, "id": "commands",
             "execution": {"mode": "sync", "call_every_actions": 1, "control_mode": "qpos"},
             "params": {}, "hot_reloadable": [],
             "tui_commands": {"test": {"handler": "handle_test", "args": ["str", "int", "float", "bool"]}}}

@@ -37,7 +37,7 @@ def test_real_mcp_readonly_take_move_return_images_and_tui_commands(setup_contro
                 assert denied.is_error
                 assert not (await session.call_tool("take", {})).is_error
                 shown = await session.call_tool("show", {"scope": "rc"})
-                assert shown.structured_content["schema_version"] == 2
+                assert shown.structured_content["schema_version"] == 3
                 movement = await session.call_tool("move_eef", {
                     "targets": {"left": {"end_pos": [.01, 0, 0, 0, 0, 0], "speed": "fast"}}, "wait": True})
                 assert not movement.is_error, movement

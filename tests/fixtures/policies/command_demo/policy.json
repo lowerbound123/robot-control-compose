@@ -1,1 +1,35 @@
-{"schema_version": 2, "id": "command_demo", "execution": {"mode": "sync", "call_every_actions": 10, "control_mode": "qpos", "tui_command_workers": 4}, "params": {"chunk_size": 20}, "hot_reloadable": ["params.chunk_size"], "tui_commands": {"test": {"handler": "test", "args": ["str", "int"], "help": "\u8bb0\u5f55\u5b57\u7b26\u4e32\u548c\u6574\u6570\uff0c\u8fd4\u56de\u8c03\u7528\u4fe1\u606f", "timeout_s": 30}, "delay": {"handler": "delay", "args": ["float"], "help": "\u7b49\u5f85\u6307\u5b9a\u79d2\u6570\uff0c\u6f14\u793a\u4e0e\u63a8\u7406/\u5176\u4ed6\u547d\u4ee4\u5e76\u884c", "timeout_s": -1}}, "policy_host": "rc-policy-demo"}
+{
+  "schema_version": 3,
+  "id": "command_demo",
+  "execution": {
+    "mode": "sync",
+    "call_every_actions": 10,
+    "control_mode": "qpos",
+    "tui_command_workers": 4
+  },
+  "params": {
+    "chunk_size": 20
+  },
+  "hot_reloadable": [
+    "params.chunk_size"
+  ],
+  "tui_commands": {
+    "test": {
+      "handler": "test",
+      "args": [
+        "str",
+        "int"
+      ],
+      "help": "\u8bb0\u5f55\u5b57\u7b26\u4e32\u548c\u6574\u6570\uff0c\u8fd4\u56de\u8c03\u7528\u4fe1\u606f",
+      "timeout_s": 30
+    },
+    "delay": {
+      "handler": "delay",
+      "args": [
+        "float"
+      ],
+      "help": "\u7b49\u5f85\u6307\u5b9a\u79d2\u6570\uff0c\u6f14\u793a\u4e0e\u63a8\u7406/\u5176\u4ed6\u547d\u4ee4\u5e76\u884c",
+      "timeout_s": -1
+    }
+  }
+}

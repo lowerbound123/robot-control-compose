@@ -1,6 +1,5 @@
 """Provider-specific wire formats; no replay, model fallback or response repair."""
 import json
-import os
 
 from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError, OpenAIError
 
@@ -45,9 +44,10 @@ def _parse_json(text):
 class ProviderClient:
     def __init__(self, settings):
         self.settings = dict(settings)
-        key = os.environ.get(settings['api_key_env'], '').strip()
+        key = settings.get('api_key', '')
+        key = key.strip() if isinstance(key, str) else ''
         if not key:
-            raise ValueError('missing API key environment variable: ' + settings['api_key_env'])
+            raise ValueError('provider.api_key is required in the policy configuration file')
         self.client = OpenAI(api_key=key, base_url=settings['base_url'],
                              timeout=settings['timeout_s'], max_retries=0)
         if settings['type'] == 'openai_decisions' and not hasattr(self.client, 'decisions'):

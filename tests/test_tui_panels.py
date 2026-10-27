@@ -151,8 +151,13 @@ async def test_sixel_partial_repaint_restores_retained_frame(row, setup_controll
     app._write_graphics = writes.append
     async with app.run_test(size=(120, 36)) as pilot:
         app.router.submit("camera on")
-        await pilot.pause(.3)
         image = app.query_one("#image-head", CameraImage)
+        # Encoding is asynchronous; wait for its result rather than assuming
+        # the first frame always fits a 300ms budget on a busy container host.
+        for _ in range(40):
+            if image.frame is not None:
+                break
+            await pilot.pause(.05)
         assert image.frame is not None
         payload = image.frame.payload
         writes.clear()

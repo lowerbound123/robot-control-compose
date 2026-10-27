@@ -3,6 +3,7 @@
 Only interpreter selection is injected. Real subprocesses, mmap image leases,
 config acknowledgments, policy callbacks and process cleanup remain in use.
 """
+from project_templates import template_path, copy_templates
 
 import json
 import asyncio
@@ -49,14 +50,14 @@ class EndToEnd:
         folder.mkdir(parents=True)
         if example:
             source = ROOT / "policy" / example if example == "hold" else ROOT / "tests/fixtures/policies" / example
-            config = json.loads((source / "policy.json").read_text())
+            config = json.loads((template_path(source / "policy.json")).read_text())
             config["id"] = identity
             config["execution"]["mode"] = mode
             config["params"].update(params)
             shutil.copy(source / "main.py", folder / "main.py")
         else:
             config = {
-                "schema_version": 2, "id": identity, "policy_host": "e2e-python-injection",
+                "schema_version": 3, "id": identity,
                 "execution": {"mode": mode, "call_every_actions": 2, "control_mode": "qpos"},
                 "hot_reloadable": ["params.value", "params.delay_s", "execution.mode"],
                 "params": {
@@ -66,12 +67,13 @@ class EndToEnd:
                 },
             }
             shutil.copy(FIXTURE_POLICY, folder / "main.py")
+        (folder / "compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         (folder / "policy.json").write_text(json.dumps(config))
         return folder
 
     def launch(self, *, startup="first", release_s=0.6, inference_s=3):
         config = {
-            "schema_version": 2, "frequency_hz": 100, "policy_directory": "policy",
+            "schema_version": 3, "frequency_hz": 100, "policy_directory": "policy",
             "startup_policy": startup,
             "robot": {"backend": "mock"},
             "safety": {"enabled": True, "reference_frequency_hz": 100,
@@ -288,7 +290,7 @@ def test_exit_during_switch_never_orphans_either_real_worker(e2e, phase):
     e2e.add_policy("second", initialize_delay_s=2)
     controller = e2e.launch(release_s=0.5 if phase == "old_release" else 0.08)
     e2e.ready()
-    controller.submit("switch second --no-reset")
+    controller.submit("switch second")
     if phase == "old_release":
         wait_for(lambda: e2e.events("release_start", identity="first"))
     else:
@@ -347,7 +349,7 @@ def test_old_inference_error_cannot_cancel_requested_policy_switch(e2e):
     e2e.ready()
     controller.submit("resume")
     wait_for(lambda: e2e.events("inference_start", identity="first"))
-    controller.submit("switch second --no-reset")
+    controller.submit("switch second")
     e2e.ready(identity="second", count=2)
     assert controller.status()["state"] == "paused"
     assert not e2e.workers[0].alive

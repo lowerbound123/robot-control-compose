@@ -26,6 +26,7 @@ def test_pause_result_never_installs_or_trims_and_retains_worker(setup_controlle
     config = copy.deepcopy(controller.registry.get('first').config)
     config['execution'].update(mode=scheduling, control_mode=mode)
     controller.registry.commit('first', config)
+    controller.registry.save('first')
     worker = ready(controller)
     accepted = []
     accept = controller.buffer.accept
@@ -66,7 +67,7 @@ def test_pause_result_never_installs_or_trims_and_retains_worker(setup_controlle
     assert worker is controller._worker
 
 
-@pytest.mark.parametrize('action', ['pause', 'take', 'switch second --no-reset', 'exit'])
+@pytest.mark.parametrize('action', ['pause', 'take', 'switch second', 'exit'])
 def test_late_pause_result_cannot_override_manual_control_or_lifecycle(setup_controller, action):
     controller, _, _ = setup_controller
     worker = ready(controller)
@@ -76,7 +77,7 @@ def test_late_pause_result_cannot_override_manual_control_or_lifecycle(setup_con
     operation(controller, controller.submit(action))
     before = controller.status()
     finish(worker, request=request)
-    if action not in ('exit', 'switch second --no-reset'):
+    if action not in ('exit', 'switch second'):
         until(lambda: not controller.status()['in_flight'])
     after = controller.status()
     assert (after['state'], after['control_owner'], after['policy'], after['generation']) == (
@@ -151,9 +152,9 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     context['calls'] += 1
     with open({str(events)!r}, 'a') as stream:
         stream.write(json.dumps([config['id'], context['calls']]) + '\\n')
-    if config['id'] == 'A' and context['calls'] == 1:
+    if config['id'] == 'a' and context['calls'] == 1:
         runtime.pause('native complete')
-    if config['id'] == 'B':
+    if config['id'] == 'b':
         while not Path({str(gate)!r}).exists():
             assert images['head'].shape[0] > 0
             time.sleep(.005)
@@ -163,32 +164,33 @@ def release(context): pass
 def test(context): return context['calls']
 def change(context, value): return {{'params.value': value}}
 '''
-    for identity in ('A', 'B'):
+    for identity in ('a', 'b'):
         (root / 'policy' / identity / 'main.py').write_text(source)
+        (root / 'policy' / identity / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         config = copy.deepcopy(controller.registry.get(identity).config)
         config['execution']['mode'] = scheduling
         controller.registry.commit(identity, config)
     token = operation(controller, controller.manage_policy('open'))['result']['token']
-    operation(controller, controller.manage_policy('apply', ['A', 'B', 'A'], token=token))
+    operation(controller, controller.manage_policy('apply', ['a', 'b', 'a'], token=token))
     worker = controller._worker
     accepted = []
     accept = controller.buffer.accept
     monkeypatch.setattr(controller.buffer, 'accept', lambda *args: (accepted.append(args), accept(*args))[1])
     operation(controller, controller.submit('resume'))
     try:
-        until(lambda: events.exists() and '["B", 1]' in events.read_text())
+        until(lambda: events.exists() and '["b", 1]' in events.read_text())
         assert controller.status()['state'] == 'running'
         with controller._lock:
             lease = controller._inflight['lease']
             assert not lease._released
         gate.touch()
         until(lambda: controller.status()['state'] == 'paused')
-        assert events.read_text().splitlines() == ['["A", 1]', '["B", 1]', '["A", 2]']
+        assert events.read_text().splitlines() == ['["a", 1]', '["b", 1]', '["a", 2]']
         assert accepted == [] and controller.status()['consumed'] == 0
         assert lease._released
         assert controller._worker is worker and worker.alive
         assert len([child for child in children if child.alive]) == 2
-        assert any('native complete' in event['message'] and 'A' in event['message'] and 'cell 1' in event['message']
+        assert any('native complete' in event['message'] and 'a' in event['message'] and 'cell 1' in event['message']
                    for event in controller.read_events()['events'])
     finally:
         gate.touch()

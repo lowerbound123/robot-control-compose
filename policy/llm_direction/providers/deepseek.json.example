@@ -1,0 +1,8 @@
+{
+  "type": "deepseek",
+  "model": "deepseek-flash",
+  "base_url": "https://api.deepseek.com",
+  "output_format": "json_object",
+  "timeout_s": 30,
+  "api_key": ""
+}

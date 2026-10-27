@@ -18,10 +18,14 @@ from rc_policy_sdk.outbox import PriorityOutbox
 
 
 class PolicyProcess(MonitorClient):
-    def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, policy_hosts=None,
+    def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
                  init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None):
-        if not isinstance(config, dict) or not isinstance(config.get('policy_host'), str) or not config['policy_host']:
-            raise ValueError('policy config must name a policy_host')
+        from rc_policy_sdk.catalog import policy_id
+        policy_id(config.get('id'))
+        self.endpoint = endpoint
+        self.exit_authority = exit_authority
+        self.expected_host = (dict(deployment_id=endpoint.deployment_id, run_id=endpoint.run_id,
+                                   generation=endpoint.generation) if endpoint else None)
         for value in (init_timeout_s, inference_timeout_s, release_timeout_s):
             if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
                 raise ValueError('policy timeout must be positive and finite')
@@ -29,7 +33,7 @@ class PolicyProcess(MonitorClient):
         self.policy_dir, self.config, self.config_version = Path(policy_dir), config, config_version
         self.init_timeout_s, self.inference_timeout_s, self.release_timeout_s = init_timeout_s, inference_timeout_s, release_timeout_s
         self.on_log = on_log
-        self.host_socket = host_socket or (policy_hosts or {}).get(config['policy_host'], {}).get('socket')
+        self.host_socket = host_socket or (endpoint.socket if endpoint else None)
         if not self.host_socket: raise ValueError('policy host socket is not configured')
         self.session_id = uuid.uuid4().hex
         self.runtime_id = None
@@ -77,7 +81,7 @@ class PolicyProcess(MonitorClient):
 
     def preflight(self, cancel_event=None):
         if cancel_event and cancel_event.is_set(): raise RuntimeError('preflight cancelled')
-        client = HostClient.get(self.host_socket, self.config['policy_host'])
+        client = HostClient.get(self.host_socket, self.config['id'], expected=self.expected_host)
         return client.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
 
     def start(self, cancel_event=None):
@@ -86,7 +90,9 @@ class PolicyProcess(MonitorClient):
                 if self._state != 'new': raise RuntimeError('policy session already started')
                 if cancel_event and cancel_event.is_set(): raise RuntimeError('policy initialize cancelled')
                 self._state = 'starting'
-                self.host = HostClient.get(self.host_socket, self.config['policy_host'])
+                self.host = HostClient.get(self.host_socket, self.config['id'], expected=self.expected_host)
+                if self.endpoint and self.host.instance_id != self.endpoint.host_instance_id:
+                    raise RuntimeError('host restarted after readiness; stale endpoint')
                 self.host.register(self)
                 self.host.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
                 self._submitted_load = True
@@ -103,9 +109,10 @@ class PolicyProcess(MonitorClient):
                     self._condition.wait(.02)
                 self._check_wait(deadline, cancel_event, 'initialize')
                 self._state = 'running'
-            self._log(f'policy ready host={self.config["policy_host"]} runtime={self.runtime_id} pid={self.pid}')
+            self._log(f'policy ready host={self.config["id"]} runtime={self.runtime_id} pid={self.pid}')
         except BaseException:
-            self.close()
+            if self.endpoint is None:
+                self.close()
             raise
 
     @property
@@ -181,7 +188,7 @@ class PolicyProcess(MonitorClient):
             self._record_failure(self.release_error or 'policy runtime stopped')
             self._condition.notify_all()
 
-    def close_group(self, members):
+    def close_group(self, members, *, deadline=None):
         with self._close_lock, self._launch_lock:
             if self.cleanup_confirmed:
                 self._state = 'closed'
@@ -193,7 +200,7 @@ class PolicyProcess(MonitorClient):
             self._state = 'closing'
             try:
                 self._forced |= self.host.stop_group(self.runtime_id,
-                    [p.session_id for p in members], self.release_timeout_s)
+                    [p.session_id for p in members], self.release_timeout_s, deadline=deadline)
                 if not self.cleanup_confirmed: raise RuntimeError('runtime cleanup unconfirmed')
                 self._state = 'closed'
                 return self._forced
@@ -201,7 +208,19 @@ class PolicyProcess(MonitorClient):
                 self._state = 'cleanup_failed'
                 raise
 
-    def close(self): return self.close_group([self])
+    def close(self, *, deadline=None): return self.close_group([self], deadline=deadline)
+
+    def accept_exit_proof(self, proof):
+        endpoint = self.endpoint
+        if (endpoint is None or proof.authority is not self.exit_authority or not proof.removed or
+                any(getattr(proof, key) != getattr(endpoint, key) for key in
+                    ('deployment_id', 'daemon_id', 'policy_id', 'run_id', 'generation', 'container_id', 'host_instance_id'))):
+            raise ValueError('untrusted or stale container exit proof')
+        if self.host:
+            self.host.disconnect()
+        self._confirm_closed(dict(runtime_id=self.runtime_id, cleanup_confirmed=True, forced=proof.forced))
+        self._state = 'closed'
+
 
     def _record_failure(self, error):
         with self._condition:

@@ -1,0 +1,24 @@
+{
+  "schema_version": 3,
+  "id": "qwen35_single",
+  "execution": {
+    "mode": "sync",
+    "call_every_actions": 1,
+    "control_mode": "qpos"
+  },
+  "params": {
+    "model_config_path": "model.json"
+  },
+  "hot_reloadable": [],
+  "tui_commands": {
+    "switch-model": {
+      "handler": "switch_model",
+      "args": [
+        "str"
+      ],
+      "help": "读取独立模型配置，强制卸载并重载 checkpoint；完成后等待 resume",
+      "timeout_s": 30,
+      "effect": "reload_policy"
+    }
+  }
+}

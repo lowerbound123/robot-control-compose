@@ -46,7 +46,8 @@ def wait_until(callback, timeout=3):
 @pytest.fixture
 def worker(tmp_path):
     (tmp_path / "main.py").write_text(SOURCE)
-    config = {"id":"monitored", "policy_host":"monitor-test", "params":{"root":str(tmp_path),"value":0}, "hot_reloadable":["params.value"], "execution":{"control_mode":"qpos"}}
+    (tmp_path / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    config = {"id":"monitored",  "params":{"root":str(tmp_path),"value":0}, "hot_reloadable":["params.value"], "execution":{"control_mode":"qpos"}}
     process = PolicyProcess(tmp_path, config, python_command=[sys.executable], inference_timeout_s=3, release_timeout_s=.25)
     process.start()
     try: yield process, tmp_path
@@ -135,7 +136,8 @@ def test_hanging_monitor_does_not_fault_until_bounded_release(worker):
 
 def test_missing_callback_is_backward_compatible(tmp_path):
     (tmp_path / "main.py").write_text(SOURCE.replace("def monitor(context):", "def unused(context):"))
-    cfg = {"id":"legacy", "policy_host":"monitor-legacy", "params":{"root":str(tmp_path)}}
+    (tmp_path / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    cfg = {"id":"legacy",  "params":{"root":str(tmp_path)}}
     process = PolicyProcess(tmp_path, cfg, python_command=[sys.executable], release_timeout_s=.25)
     try:
         process.start()
@@ -156,7 +158,8 @@ def initialize(config, *, runtime):
 def observe(context, state, images, config): pass
 '''
     (tmp_path / "main.py").write_text(source)
-    cfg = {"id":"ready-caps", "policy_host":"ready-caps", "params":{"root":str(tmp_path)}}
+    (tmp_path / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    cfg = {"id":"ready-caps",  "params":{"root":str(tmp_path)}}
     process = PolicyProcess(tmp_path, cfg, python_command=[sys.executable], release_timeout_s=.25)
     try:
         process.start()

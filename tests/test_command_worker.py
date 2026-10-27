@@ -49,7 +49,7 @@ def release(context):
 
 
 def worker_config(root, workers=4):
-    return {"id": "commands", "policy_host": "test", "params": {"root": str(root)},
+    return {"id": "commands",  "params": {"root": str(root)},
             "execution": {"control_mode": "qpos", "tui_command_workers": workers},
             "tui_commands": {
                 "meet": {"handler": "meet", "args": ["str"]},
@@ -72,6 +72,7 @@ def make_worker(tmp_path):
         directory = tmp_path / str(len(made))
         directory.mkdir()
         (directory / "main.py").write_text(source)
+        (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         worker = PolicyProcess(directory, config or worker_config(directory, workers),
                                python_command=[sys.executable], release_timeout_s=.2, inference_timeout_s=3)
         made.append(worker)
@@ -167,6 +168,7 @@ def test_invalid_handler_fails_start_without_initializing(tmp_path):
     directory = tmp_path / "bad"
     directory.mkdir()
     (directory / "main.py").write_text(SOURCE)
+    (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     config = worker_config(directory)
     config["tui_commands"]["meet"]["handler"] = "missing"
     worker = PolicyProcess(directory, config, python_command=[sys.executable])

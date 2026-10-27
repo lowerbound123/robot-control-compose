@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .secret_config import public_value, reject_secret_edit
+
 from os.path import commonprefix
 from queue import Empty
 import re
@@ -53,6 +55,7 @@ class CommandInput(Input):
         self.paste_text(event.text)
 
     def remember(self, command: str) -> None:
+        reject_secret_edit(command)
         if not self.history or self.history[-1] != command:
             self.history.append(command)
         self.history_index = len(self.history)
@@ -155,9 +158,9 @@ class RobotControlApp(App):
         command_input.value = ""
         if not line.strip():
             return
-        command_input.remember(line)
-        self.query_one(StructuredLog).write(Text(f"> {line}", style="bold cyan"))
         try:
+            command_input.remember(line)
+            self.query_one(StructuredLog).write(Text(f"> {line}", style="bold cyan"))
             self.router.submit(line)
         except (ValueError, RuntimeError, PermissionError) as exc:
             self.query_one(StructuredLog).write(Text(f"命令失败：{exc}", style="red"))
@@ -354,7 +357,12 @@ class RobotControlApp(App):
         self.query_one(CommandInput).commands = (*COMMANDS, *getattr(self.controller, "local_commands", lambda: [])(), *monitor_commands)
         self.query_one(CommandInput).mcp_tools = self.router.tool_names
         status = self.controller.status()
-        fields = [f"{key}={value}" for key, value in status.items() if key != "direct"]
+        fields = [f"{key}={value}" for key, value in status.items() if key not in ("direct", "runtime")]
+        runtime = status.get('runtime')
+        if runtime:
+            fields.extend([f"runtime={runtime['phase']}", f"target={runtime['target']}"])
+            if runtime.get('error'):
+                fields.append(f"runtime_error={runtime['error']}")
         if "direct" in status:
             fields.extend([f"direct={status['direct']['phase']}", f"direct_pending={status['direct']['pending_steps']}"])
         self.query_one("#status", Static).update(Text(" | ".join(fields)))

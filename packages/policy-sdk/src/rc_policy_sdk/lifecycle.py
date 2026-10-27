@@ -67,8 +67,10 @@ def descendant_snapshot(pid, root_birth=None):
                 data = (entry / "stat").read_text()
                 fields = data[data.rfind(")") + 2:].split()
                 processes[int(entry.name)] = (int(fields[1]), int(fields[19]))
-            except (OSError, ValueError, IndexError):
+            except (FileNotFoundError, ProcessLookupError):
                 continue
+            except (OSError, ValueError, IndexError) as exc:
+                raise RuntimeError("cannot enumerate process tree") from exc
         if root_birth is not None and (pid not in processes or processes[pid][1] != root_birth):
             return {}
         found, frontier = {}, {pid}

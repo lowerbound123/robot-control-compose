@@ -137,7 +137,7 @@ class PolicyManagerPanel(Widget):
             candidate = self._candidate(row['id'])
             if not reason and len({modes.get(identity) for identity in candidate}) > 1:
                 reason = 'control_mode 不兼容'
-            label = f"{row['id']}  [{row.get('policy_host', '?')} / {row.get('control_mode', '?')}]"
+            label = f"{row['id']}  [{row.get('state', '?')} / {row.get('control_mode', '?')}]"
             if reason: label += f' — {reason}'
             right.add_option(Option(Text(label), disabled=bool(reason)))
         right.highlighted = 0 if self.catalog else None

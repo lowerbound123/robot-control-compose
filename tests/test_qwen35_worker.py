@@ -1,4 +1,5 @@
 """Real RC, UDS host, production Qwen entry and scheduler; CUDA is substituted."""
+from project_templates import template_path, copy_templates
 import json
 import os
 import time
@@ -24,16 +25,17 @@ def qwen_controller(tmp_path, monkeypatch):
     package = str(ROOT / 'packages/qwen35-policy/src')
     monkeypatch.setenv('PYTHONPATH', package + os.pathsep + os.environ.get('PYTHONPATH', ''))
     root = prepare_policies(tmp_path / 'policy')
-    host = Host(root, 'qwen35-single')
-    rc = json.loads((ROOT / 'configs/rc.mock.json').read_text())
+    host = Host(root, 'qwen35_single')
+    rc = json.loads((template_path(ROOT / 'configs/rc.mock.json')).read_text())
     rc['safety']['enabled'] = False  # Deterministic test actions encode the policy identity.
     rc.update(policy_directory=str(root), startup_policy='qwen35_single',
               outputs_directory=str(tmp_path / 'outputs'), frequency_hz=100,
               timeouts={'initialize_s': 5, 'inference_s': 3, 'release_s': 1},
-              policy_hosts={'qwen35-single': {'socket': host.socket}})
+              host_socket=host.socket)
     path = tmp_path / 'rc.json'
     path.write_text(json.dumps(rc))
-    controller = RobotController(path, robot=ThreeCameraRobot())
+    from host_helpers import LocalPolicyProcess
+    controller = RobotController(path, robot=ThreeCameraRobot(), process_factory=LocalPolicyProcess)
     controller.start()
     try:
         wait(lambda: controller.status()['state'] == 'paused' and controller._worker is not None)

@@ -7,7 +7,7 @@ import shlex
 BUILTIN_COMMANDS = (
     "set", "show", "save-config", "reset", "r", "save", "load", "pause",
     "resume", "policies", "switch", "status", "help", "exit", "quit", "take", "return", "mcp",
-    "camera", "monitor", "manage-policy", "snapshot",
+    "camera", "monitor", "manage-policy", "snapshot", "policy",
 )
 _TYPES = {"str": "", "int": 0, "float": 0., "bool": False}
 

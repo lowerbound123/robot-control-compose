@@ -1,6 +1,13 @@
 services:
+  ros-sim:
+    image: robot-control-compose-rc:local
+    user: "${RC_UID}:${RC_GID}"
+    environment:
+      HOME: /tmp
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
+      ROS_LOCALHOST_ONLY: "0"
+    command: ["python3", "-m", "robot_control_test_sim.simulator", "--namespace", "/robot_control_test"]
   robot-control:
     command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.ros-test.json", "--mcp", "0.0.0.0:4000"]
     depends_on:
-      ros-sim:
-        condition: service_started
+      ros-sim: {condition: service_started}

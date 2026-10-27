@@ -55,7 +55,7 @@ async def test_tab_completes_command_without_rewriting_json():
     app = RobotControlApp(controller)
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
-        command_input.value = "pol"
+        command_input.value = "polici"
         await pilot.press("tab")
         assert command_input.value == "policies "
         command_input.value = 'set policy.params.label "hello world"'

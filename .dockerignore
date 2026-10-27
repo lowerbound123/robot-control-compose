@@ -14,6 +14,17 @@ vendor/*
 /.env
 /.env.local
 /.env.llm
+/.env.qwen
 ros_ws/build
 ros_ws/install
 ros_ws/log
+
+# Never include local credentials or generated configuration in build context
+/rc*.json
+/configs/**/*.json
+/policy/**/*.json
+/policy/**/.env
+/.setup
+
+/policy/**/.runtime/
+/policy/**/deployment.env

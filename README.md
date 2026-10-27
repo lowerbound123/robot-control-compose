@@ -1,75 +1,74 @@
 # robot-control-compose
 
-独立的 Docker 机器人控制框架。主容器为 Ubuntu 22.04 / ROS 2 Humble / Python 3.10，hold 为 Python 3.14。Qwen single / two-stage 共用一个 Python 3.11 CUDA 镜像、分别运行独立容器。其他 policy 可按 host 选择同容器或独立容器。
+独立的 Docker 机器人控制框架。RC 使用 ROS 2 Humble / Python 3.10，hold 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
 
-图像通过 posix-ipc + mmap 只读共享内存传输，控制消息走 UDS 上的长度前缀 JSON RPC。全部依赖在镜像内安装。
+## 准备与运行
 
-将整个项目复制到 x86_64 Ubuntu 22.04 后，请按 [从零构建与运行教程](docs/ubuntu22-amd64-from-scratch.md) 安装 Docker、原生构建 amd64 镜像并执行目标机验收。
-
-Qwen 的 GPU 配置、模型挂载、共享镜像构建和切换方法见 [Qwen 部署教程](docs/qwen35-policy.md)。默认启动不包含 Qwen 服务，不需要 GPU 或模型权重。
-
-## 启动
-
-需要 Docker Engine 与 Docker Compose 2.24.4 或更新版本。在项目根目录运行：
+本版配置为 **schema 3**，不兼容旧 host/socket 表与根级策略 Compose。支持范围是本地 Linux Docker 部署；其他环境的测试证据单独记录。
 
 ```bash
-./scripts/setup-user.sh
-docker compose build
-docker compose up -d
-docker compose attach robot-control
+# 只准备所需策略镜像，不启动机器人或策略
+./setup.sh --policies hold
+./scripts/compose.sh up -d
+./scripts/compose.sh attach robot-control
 ```
 
-`setup-user.sh` 用当前普通用户的 UID/GID 更新本机 `.env`，保留原内容、在末尾维护生效的身份设置，并创建默认的 outputs、snapshot、models 和 HF 缓存目录。不要用 sudo 运行此脚本。RC、hold、LLM、Qwen 及 ROS 模拟器统一使用这个身份，新快照和配置可由该宿主用户直接读取、编辑；不需要放宽为 777。每台部署机器都应运行一次，不能照搬其他机器的 UID/GID。
+基础 Compose 只有 `robot-control` 与 `ipc-anchor`。RC 先处于空策略状态，连接机器人后读取 `startup_policy`，通过生命周期线程创建策略容器；`null` 保持空策略。默认策略失败不会启动备用 hold，管理命令仍可使用。
 
-首次从旧版升级时，先用当前部署的完整 `-f` 组合执行 `docker compose down`，再运行脚本并重新构建镜像，最后用相同组合 `up -d --force-recreate`。仅 `restart` 不会应用新的用户身份。初始化服务 `rpc-init` 只调整 Docker 内部通信卷（包括旧 lock 文件）的所有者，完成后退出；不会修改现有快照、配置或 outputs 的权限。各业务容器的 HOME 位于独立、可写的临时目录，HF 模型缓存仍保存在宿主目录。
+```text
+policies
+help hold
+switch hold
+resume
+pause
+switch hold --reset
+exit
+```
 
-启动后保持暂停。输入 `resume` 开始保持当前位置，`pause` 暂停，`exit` 清理并退出 RC。随后 `docker compose down` 停止监督服务和 IPC 容器。不要使用 exec 启动第二个控制器。
+`switch` 默认保持当前位置，只有 `--reset` 显式复位。每次切换和冷重载都先清理整个旧运行组，包括新旧链的交集成员，再创建新容器。成功后保持暂停，需要显式 `resume`。新组失败后停在空策略故障状态。
 
 ```bash
-# headless：先停止已有控制器，再启动唯一的交互实例
-docker compose stop robot-control
-docker compose run --rm --service-ports robot-control python3 -m robot_control --headless --config /workspace/configs/rc.mock.json --mcp 0.0.0.0:4000
-
-# 独立 ROS 模拟器（不会连接真实硬件）
-docker compose --profile ros-sim -f compose.yaml -f compose.ros-sim.yaml up -d
-docker compose attach robot-control
-
-# Linux 真机：先按实际 ROS 网络/域和话题修改配置
-docker compose -f compose.yaml -f compose.acone.yaml up -d
+# 先关闭 RC，再回收动态策略与外部资源，最后关闭基础设施
+./scripts/compose.sh down
 ```
 
-真实 ACOne 消息包在主镜像内从 `ros_ws/src/arx5_arm_msg` 编译。厂商完整备份位于 `vendor/arx_x5_ws`，不参与默认构建、不启动硬件驱动。配置目录、policy manifest、outputs 和 snapshot 持久化在宿主项目中；MCP 默认仅通过宿主 127.0.0.1:4000 访问。
+使用项目提供的 down 入口；基础 `docker compose down` 无法独自覆盖动态策略 project。清理无法证明时不会关闭 anchor，也不会启动新策略。`BLOCKED_INFRA` 表示 RC 与 anchor 的 IPC 绑定不再一致，应先完成收尾，再一起重建两者。
 
-## Policy 部署接口
+## 插件目录
 
-配置 schema_version 为 2。manifest 的 `policy_host` 对应 RC 配置 `policy_hosts` 中的名称，例如 `"hold": {"socket": "/run/robot-control/hold.sock"}`。同一 host 下所有已加载 policy 共用一个执行进程，但模块包、context 和配置独立。辅助模块必须使用相对导入，资源路径使用 `__file__`，不要修改进程工作目录。
+每个可执行策略提供自己的目录：
 
-新增策略保留 initialize / policy / reset_context / release 四个同步入口；主框架只检查文件存在，语法由对应 host 的 Python 预检。热更新遵守 hot_reloadable 叶路径白名单，冷更新重建运行组。链 A/B/A 复用 A 的上下文，同一轮全链使用同一份图像。
-
-policy 回调中的图像是借用的只读视图，不得保留到调用结束之后；需要长期保留时显式 copy。任何硬超时、崩溃或视图逃逸会终止该 host 的整个执行进程，等待手动 switch / 链应用后再 resume。断连不代表读者已退出；无法确认清理时需整体 down，重建 IPC 域后重新启动。
-
-主框架参数全部冷改，配置保存仍通过 save-config，快照仍通过 snapshot。初始化/推理/release 默认期限为 600/60/30 秒；调整 release 期限时同步增加 Compose 的 stop_grace_period。
-
-## 开发与验收
-
-详见 [验收记录与重现命令](docs/verification.md)、[Policy 编写与多容器部署](docs/policy-authoring.md) 和 [迁移计划](docs/superpowers/plans/2026-10-23-docker-migration.md)。mock、真实 ROS 模拟器与真实机器人验收分别记录。旧 Conda launcher 专属检查保留为迁移记录，实际生命周期由新 host 集成测试验证。
-
-```bash
-docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml build integration
-docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml run --rm integration
-docker compose -p rc-compose-validation -f compose.yaml -f compose.test.yaml down -v
+```text
+policy/my_policy/
+  policy.json
+  main.py
+  compose.yaml        # 恰好一个服务 policy，明确 image
+  deployment.env      # 可选，本机部署参数
+  Dockerfile          # 可选，准备镜像时使用
 ```
 
-厂商资源来源及消息副本关系见 [vendor/README.md](vendor/README.md)。真实机器人未在本轮验收中连接；Linux host-network 配置保留供硬件部署使用。
+目录名是唯一身份，格式 `[a-z0-9][a-z0-9_-]{0,47}`；manifest 的 `id` 可省略，存在时必须同名。socket 自动派生为 `/run/robot-control/<id>.sock`。正式 manifest 没有 `.example` 也能发现；发现和帮助不会导入策略 Python。
 
-## LLM 离散动作 policy
+新增目录后运行 `./setup.sh --policies my_policy` 准备镜像，再 `switch my_policy`。无须修改 RC、setup 名单或基础 Compose。部署、模型和供应商配置都在策略目录内；运行切换不构建镜像、不安装依赖、不下载模型。
 
-新增 `llm_direction`：三路图像 + task，经 DeepSeek、自定义 OpenAI 兼容接口、OpenAI Decisions 或 Responses 决策，输出标准 epos 动作块。支持双手各选方向/开闭夹爪/noop，完成后暂停；参数、环境和链式使用见 [使用教程](docs/llm-direction-policy.md)。
+原生 chain 只是成员列表，不增加容器；`[a,b,a]` 创建两个容器，复用 a 的 context。SDK 内部 `PolicyChain` 仍是单 worker 内模块组合。
 
-### Policy 信息监控
+## 配置与权限
 
-可选 `monitor(context)` 返回标量字典；`monitor-<policy_id> [on|off]` 在日志右侧打开独立面板。启用后目标 10 Hz、超时只影响显示。接口、线程安全示例和升级步骤见 [使用教程](docs/policy-monitor.md)。
+`.json.example` 和 `deployment.env.example` 用于生成缺失配置。本机 JSON、密钥、部署 env、`.setup` 和运行产物不提交。setup 保留现有配置值并备份变更；不会把未知模型格式解释为 Qwen。
 
-### 日志展开与复制
+RC 持有 Docker daemon 管理权限，用于管理同一 daemon 下的兄弟容器。setup 探测 Unix socket 路径与 GID；不假定固定组号、不修改 socket 为全员可写。策略不会得到 Docker socket 或 host PID namespace。anchor 仅初始化通信卷，然后降权；常驻进程使用宿主用户 UID/GID。
 
-TUI 支持 JSON 点击展开、鼠标选区、Ctrl+Shift+C 复制及多行粘贴转入命令框。详见 [日志使用说明](docs/structured-logs.md)。
+图像通过只读 POSIX 共享内存传输。断连不是读者退出证明；容器退出只能证明本地读者结束，容器外模型服务必须独立确认释放。RC 重启会先核对旧容器和未完成外部 reader 账本。
+
+## 文档与验证
+
+- [部署与配置准备](docs/setup.md)
+- [Ubuntu 22.04 从零部署](docs/ubuntu22-amd64-from-scratch.md)
+- [策略作者规范](docs/policy-authoring.md)
+- [Qwen 策略](docs/qwen35-policy.md)
+- [LLM 离散动作策略](docs/llm-direction-policy.md)
+- [策略监控](docs/policy-monitor.md)
+- [测试与验收边界](docs/verification.md)
+
+只构建 `ros_ws` 下的消息包，厂商备份原样保留；项目不自动启动硬件驱动。mock、真实 Docker、ROS 仿真与真机验证分别记录，模拟测试通过不代表真机验收。

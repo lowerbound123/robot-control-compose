@@ -55,8 +55,8 @@ def test_hot_patch_waits_at_complete_action_boundary_before_next_slew(setup_cont
 def test_remote_forced_cleanup_makes_rc_exit_nonzero(setup_controller):
     controller,_,_=setup_controller
     worker=ready(controller)
-    controller._external.begin_close=lambda worker:None
-    controller._external.close_worker=lambda worker,timeout:True
+    controller._external.begin_close=lambda worker, **kwargs:None
+    controller._external.close_worker=lambda worker, **kwargs:True
     controller._close_worker(worker)
     assert controller.exit_code==1
-    assert any('模型' in event['message'] and '强制' in event['message'] for event in controller.events.queue)
+    assert any('policy' in event['message'] and '强制' in event['message'] for event in controller.events.queue)

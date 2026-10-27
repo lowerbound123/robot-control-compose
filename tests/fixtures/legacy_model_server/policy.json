@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "id": "model_server",
+  "schema_version": 3,
+  "id": "legacy_model_server",
   "conda_env": "rc-policy-model-server",
   "execution": {
     "mode": "sync",

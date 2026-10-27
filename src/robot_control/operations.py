@@ -1,5 +1,6 @@
 """Bounded command receipts and independent event cursors for all frontends."""
 import copy
+from .secret_config import public_value, reject_secret_edit
 import threading
 import time
 import uuid
@@ -33,6 +34,7 @@ class Operations:
         self.history, self.max_pending = history, max_pending
 
     def create(self, command):
+        reject_secret_edit(command)
         with self._condition:
             if (command not in ("pause", "return", "exit", "quit")
                     and sum(item["status"] not in TERMINAL for item in self._items.values()) >= self.max_pending):
@@ -66,7 +68,7 @@ class Operations:
         with self._condition:
             if identity not in self._items:
                 raise ValueError("unknown or expired operation_id")
-            return copy.deepcopy(self._items[identity])
+            return public_value(self._items[identity])
 
     def wait(self, identity, timeout_s):
         if not isinstance(timeout_s, (float, int)) or not 0 <= timeout_s <= 120:

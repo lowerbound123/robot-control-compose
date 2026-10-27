@@ -23,19 +23,65 @@ class PolicyCommandSupport:
         with self._lock:
             return list(self._local_specs())
 
+    def declared_commands(self):
+        from rc_policy_sdk.catalog import read_descriptor
+        from rc_policy_sdk.commands import command_specs
+        result = {}
+        for row in self.registry.list():
+            if not row['valid'] or row.get('kind') == 'chain':
+                continue
+            config = read_descriptor(row['directory'])['config']
+            result[row['id']] = command_specs(config)
+        return result
+
     def local_help(self, name=None):
         from .controller import HELP
         with self._lock:
             specs = self._local_specs()
-            if name is not None and name not in specs:
-                raise ValueError(f"unknown active policy command: {name}")
-            rows = [f"{command_usage(key, value)} — {value['help']} (timeout_s={value['timeout_s']})"
-                    for key, value in specs.items() if name is None or key == name]
-            return "\n".join(([HELP, "Policy TUI commands:"] if name is None and rows else [HELP] if name is None else []) + rows)
+            if name in specs:
+                value = specs[name]
+                return f"{command_usage(name, value)} — {value['help']} (timeout_s={value['timeout_s']})"
+            catalog = self.declared_commands()
+            if name is not None and name not in catalog:
+                raise ValueError(f'unknown policy or active command: {name}')
+            worker = self._worker
+            active = (set(worker.monitor_members()) if hasattr(worker, 'monitor_members') else
+                      {self._identity} if worker is not None else set())
+            rows = []
+            for identity, commands in catalog.items():
+                if name is not None and name != identity:
+                    continue
+                state = 'running' if identity in active else 'not_running'
+                for key,value in commands.items():
+                    rows.append(f"policy {identity} {command_usage(key, value)} — {value['help']} [{state}] (timeout_s={value['timeout_s']})")
+            return '\n'.join(([HELP, 'Policy TUI commands:'] if name is None else []) + rows)
 
     def _policy_request(self, identity, line, word):
         specs = getattr(self._worker, "command_specs", {})
+        if word == 'policy':
+            import shlex
+            words = shlex.split(line)
+            if len(words) < 3:
+                raise ValueError('用法：policy <id> <command> [args...]')
+            target, command = words[1:3]
+            worker = self._worker
+            if worker is None:
+                raise RuntimeError(f'{target}: not_running; switch first')
+            if getattr(worker, 'record', None) is not None and worker.record.is_chain:
+                key = f'{target}-{command}'
+                if worker.command_targets.get(key) != (target, command):
+                    raise RuntimeError(f'{target}: not_running or unknown command')
+            else:
+                if target != self._identity:
+                    raise RuntimeError(f'{target}: not_running; switch first')
+                key = command
+            if key not in specs:
+                raise ValueError(f'{target}: unknown command {command}')
+            word, line = key, shlex.join([key, *words[3:]])
         if word not in specs:
+            targets = getattr(self._worker, 'command_targets', {})
+            if sum(1 for _,command in targets.values() if command == word) > 1:
+                raise ValueError(f'ambiguous command {word}; use policy <id> {word}')
             return None
         if not self._local_specs():
             raise RuntimeError("busy: no active policy accepting commands")

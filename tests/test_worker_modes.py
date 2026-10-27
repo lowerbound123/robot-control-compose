@@ -22,7 +22,8 @@ def policy(context, state, action_chunk, images, config):
     assert action_chunk == {"actions": [], "modes": []}
     return {"actions": [state["qpos"], state["eef"]], "modes": ["qpos", "epos"]}
 ''')
-    config = {"id": "mixed", "policy_host": "test", "params": {}, "execution": {"control_mode": mode}}
+    (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    config = {"id": "mixed",  "params": {}, "execution": {"control_mode": mode}}
     worker = PolicyProcess(directory, config, python_command=[sys.executable])
     pool = ImagePool(tmp_path / "frames", cameras=("head",))
     pool.publish("head", np.zeros((2, 2, 3), np.uint8), 1.)

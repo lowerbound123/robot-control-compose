@@ -51,7 +51,7 @@ def model_server(host='127.0.0.1', port=0):
                 self.server.received.clear()
                 self.reply({'ok': True})
                 return
-            self.server.requests.append({'path': self.path, 'body': body})
+            self.server.requests.append({'path': self.path, 'body': body, 'authorization': self.headers.get('Authorization')})
             item = self.server.responses.popleft() if self.server.responses else {}
             self.server.received.set()
             if item.get('wait'):

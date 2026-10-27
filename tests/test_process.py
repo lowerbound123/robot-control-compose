@@ -22,7 +22,7 @@ def policy(tmp_path):
 
 
 def config(tmp_path, **params):
-    return {"schema_version": 2, "id": "sdk-test", "policy_host": "test-env", "hot_reloadable": ["params.value"], "params": {"release_file": str(tmp_path / "released"), **params}}
+    return {"schema_version": 3, "id": "sdk-test",  "hot_reloadable": ["params.value"], "params": {"value": 1, "release_file": str(tmp_path / "released"), **params}}
 
 
 def process(policy, settings, **kwargs):
@@ -149,14 +149,6 @@ def test_inference_timeout_emitted_once(policy, tmp_path):
         pool.close()
 
 
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_production_launch_uses_conda_and_sanitizes_environment(policy, tmp_path, monkeypatch):
-    for name in ("PYTHONPATH", "PYTHONHOME", "CONDA_PREFIX", "LD_LIBRARY_PATH", "AMENT_PREFIX_PATH", "ROS_DISTRO"):
-        monkeypatch.setenv(name, "must-not-leak")
-    worker = PolicyProcess(policy, config(tmp_path), conda_executable="/bin/conda")
-    command, environment = worker._command_and_environment(tmp_path / "sock")
-    assert command[:7] == ["/bin/conda", "run", "--no-capture-output", "-n", "test-env", "python", "-m"]
-    assert not any(name in environment for name in ("PYTHONPATH", "PYTHONHOME", "CONDA_PREFIX", "LD_LIBRARY_PATH", "AMENT_PREFIX_PATH", "ROS_DISTRO"))
 
 
 def test_graceful_close_reaps_detached_child(policy, tmp_path):
@@ -188,18 +180,6 @@ def test_cancel_before_launch_creates_no_process(policy, tmp_path):
     assert not worker.close()
 
 
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_group_metadata_permission_error_is_not_cleanup_confirmation(policy, tmp_path, monkeypatch):
-    worker = process(policy, config(tmp_path))
-    from types import SimpleNamespace
-    worker._process = SimpleNamespace(pid=1234567, poll=lambda: 0)
-    def denied(*args):
-        raise PermissionError("transient group metadata")
-    monkeypatch.setattr(os, "killpg", denied)
-    assert worker._group_alive()
-    worker._signal_group(signal.SIGTERM)
-    worker._process = None
-    worker.close()
 
 
 def test_multi_leaf_patch_failure_is_atomic(policy, tmp_path):
@@ -294,33 +274,8 @@ def test_explicit_hot_array_leaf_preserves_config_identity(policy, tmp_path):
         worker.close()
 
 
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_close_failure_is_unconfirmed_and_retry_can_confirm_cleanup(policy, tmp_path, monkeypatch):
-    import robot_control.process as process_module
-    worker = process(policy, config(tmp_path))
-    worker.start()
-    original = process_module.descendant_snapshot
-    def fail_discovery(*_args):
-        raise OSError("injected process discovery failure")
-    monkeypatch.setattr(process_module, "descendant_snapshot", fail_discovery)
-    with pytest.raises(RuntimeError, match="discovery failed"):
-        worker.close()
-    assert worker._state == "cleanup_failed"
-    assert not worker.alive
-    monkeypatch.setattr(process_module, "descendant_snapshot", original)
-    assert not worker.close()
-    assert worker._state == "closed"
-    assert not worker.close()
-    assert (tmp_path / "released").read_text() == "release\n"
 
 
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_production_launch_accepts_conda_prefix(policy, tmp_path):
-    settings = config(tmp_path)
-    settings["policy_host"] = str(tmp_path / "prefix")
-    worker = PolicyProcess(policy, settings)
-    command, _ = worker._command_and_environment(tmp_path / "sock")
-    assert command[3:5] == ["-p", str(tmp_path / "prefix")]
 
 
 def test_recycled_descendant_pid_is_never_signaled(monkeypatch):
@@ -406,34 +361,8 @@ def test_native_pidfd_error_preserves_process_lookup_semantics(monkeypatch):
         lifecycle._open_pidfd(1234)
 
 
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_recycled_group_leader_is_never_signaled(policy, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    import robot_control.process as process_module
-    worker = process(policy, config(tmp_path))
-    worker._process = SimpleNamespace(pid=1234, poll=lambda: 0)
-    worker._birth = "original-birth"
-    worker._retry_cleanup = True
-    monkeypatch.setattr(process_module, "process_birth", lambda pid: "new-birth")
-    signals = []
-    monkeypatch.setattr(process_module.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
-    worker._signal_group(signal.SIGTERM)
-    assert signals == [(1234, 0)]
 
 
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_group_exit_is_checked_before_birth_metadata(policy, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    import robot_control.process as process_module
-    worker = process(policy, config(tmp_path))
-    worker._process = SimpleNamespace(pid=1234, poll=lambda: 0)
-    def gone(_pid, _sig):
-        raise ProcessLookupError()
-    def denied(_pid):
-        raise PermissionError("birth metadata denied")
-    monkeypatch.setattr(process_module.os, "killpg", gone)
-    monkeypatch.setattr(process_module, "process_birth", denied)
-    assert not worker._group_alive()
 
 
 @pytest.mark.parametrize("alive", [False, True])
@@ -491,12 +420,3 @@ def test_linux_subreaper_cleans_immediate_detach_before_tracker(policy, tmp_path
         if lease:
             lease.release()
         pool.close()
-
-
-@pytest.mark.skip(reason="Legacy Conda/RC-owned process API; Docker RPC lifecycle covered by test_host_transport")
-def test_linux_launcher_uses_independent_supervisor(policy, tmp_path, monkeypatch):
-    import robot_control.process as process_module
-    worker = process(policy, config(tmp_path))
-    monkeypatch.setattr(process_module.sys, "platform", "linux")
-    command, _ = worker._command_and_environment(tmp_path / "sock")
-    assert command[command.index("-m") + 1] == "rc_policy_sdk.supervisor"

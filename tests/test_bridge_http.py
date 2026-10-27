@@ -1,4 +1,5 @@
 """Real HTTP + managed policy subprocess; optional production Conda/ROS paths."""
+from project_templates import template_path, copy_templates
 import json
 import os
 from pathlib import Path
@@ -68,7 +69,7 @@ def _healthy(endpoint):
 
 def build_controller(endpoint,path,mode,transport,*,delay=.15,load_delay=0.,ros_robot=None):
     policies=path/'policy'
-    shutil.copytree(ROOT/'policy',policies)
+    copy_templates(ROOT/'policy',policies)
     # Retired HTTP policy: regression coverage for external image leases.
     shutil.copytree(ROOT/'tests/fixtures/legacy_model_server', policies/'model_server')
     manifest=policies/'model_server/policy.json'
@@ -78,7 +79,7 @@ def build_controller(endpoint,path,mode,transport,*,delay=.15,load_delay=0.,ros_
     config['params']['load_overrides']={'model':{'chunk_size':8,'delay_s':delay,'load_delay_s':load_delay}}
     config['params']['timeouts']={'connect_s':1.,'request_s':5.,'load_s':10.,'release_s':3.}
     manifest.write_text(json.dumps(config))
-    rc=json.loads((ROOT/'rc.json').read_text())
+    rc=json.loads((template_path(ROOT/'rc.json')).read_text())
     rc.update(policy_directory=str(policies),startup_policy='model_server',outputs_directory=str(path/'outputs'))
     rc['frequency_hz']=50
     rc['timeouts']={'initialize_s':15.,'inference_s':10.,'release_s':2.}

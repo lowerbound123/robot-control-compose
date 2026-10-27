@@ -25,7 +25,7 @@ class EditorController(FakeController):
         self.receipts = {}
         self.actions = []
         self.reject_apply = False
-        self.saved = ['A', 'B', 'A']
+        self.saved = ['a', 'b', 'a']
         self.applied = list(self.saved)
         self.token = 0
 
@@ -36,7 +36,7 @@ class EditorController(FakeController):
         if action == 'open':
             self.token += 1
             result = {'token':self.token, 'policies':self.applied, 'applied':self.applied, 'saved':self.saved,
-                      'catalog':[{'id':name, 'valid':True, 'policy_host':'env-'+name, 'control_mode':'qpos'} for name in ('A','B','C')]}
+                      'catalog':[{'id':name, 'valid':True,  'control_mode':'qpos'} for name in ('a','b','c')]}
         elif action == 'save':
             self.saved = list(policies)
             result = {'saved':self.saved}
@@ -67,25 +67,25 @@ async def test_two_columns_insert_above_below_replace_delete_and_cancel(monkeypa
         await pilot.press('b')
         assert right.has_focus
         await pilot.press('down', 'down', 'enter')
-        assert panel.policies == ['A','C','B','A'] and left.has_focus
+        assert panel.policies == ['a','c','b','a'] and left.has_focus
         await pilot.press('a', 'escape')
-        assert panel.policies == ['A','C','B','A'] and left.has_focus
+        assert panel.policies == ['a','c','b','a'] and left.has_focus
         await pilot.press('enter', 'down', 'enter')
-        assert panel.policies == ['A','B','B','A']
+        assert panel.policies == ['a','b','b','a']
         await pilot.press('delete')
-        assert panel.policies == ['A','B','A']
+        assert panel.policies == ['a','b','a']
         # Test the intended rapid dd gesture independently of CI render speed.
         from types import SimpleNamespace
         from robot_control import policy_manager_tui
         ticks = iter([100., 100.1])
         monkeypatch.setattr(policy_manager_tui, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
         await pilot.press('d', 'd')
-        assert panel.policies == ['A','A']
+        assert panel.policies == ['a','a']
         await pilot.press('escape')
         assert not panel.display and app.query_one(CommandInput).has_focus
         app.router.submit('manage-policy')
         await eventually(pilot, lambda: panel.display and left.has_focus)
-        assert panel.policies == ['A','A']
+        assert panel.policies == ['a','a']
         controller.done.set()
         # Let the app process controller completion before run_test tears down
         # widgets; a running refresh timer must not race forced test teardown.
@@ -103,12 +103,12 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
         await pilot.press('delete')
         await pilot.press('ctrl+s')
         await pilot.pause(.1)
-        assert controller.saved == ['B','A'] and controller.applied == ['A','B','A']
+        assert controller.saved == ['b','a'] and controller.applied == ['a','b','a']
         controller.reject_apply = True
         await pilot.press('shift+enter')
         await pilot.pause(.1)
-        assert controller.actions[-1] == ('apply', ['B', 'A'])
-        assert panel.policies == ['B','A'] and panel.display
+        assert controller.actions[-1] == ('apply', ['b', 'a'])
+        assert panel.policies == ['b','a'] and panel.display
         assert app.query_one(StructuredLog).records
         await pilot.press('delete', 'delete')
         assert panel.policies == []
@@ -116,12 +116,12 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
         await pilot.press('ctrl+s', 'shift+enter')
         assert len(controller.actions) == count
         await pilot.press('b', 'enter')
-        assert panel.policies == ['A']
+        assert panel.policies == ['a']
         command = app.query_one(CommandInput)
         command.focus()
         await pilot.press('a', 'b', 'd', 'd')
         assert command.value == 'abdd'
-        assert panel.policies == ['A']
+        assert panel.policies == ['a']
         await pilot.press('ctrl+c')
         assert controller.commands[-1] == 'exit'
         controller.done.set()

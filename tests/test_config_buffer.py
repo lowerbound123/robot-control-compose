@@ -11,7 +11,7 @@ from robot_control.safety import SlewLimiter
 
 
 def manifest():
-    return {"schema_version": 2, "id": "hold", "policy_host": "demo", "execution": {"mode": "async", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"nested": {"value": 1}}, "hot_reloadable": ["params.nested.value"]}
+    return {"schema_version": 3, "id": "hold",  "execution": {"mode": "async", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"nested": {"value": 1}}, "hot_reloadable": ["params.nested.value"]}
 
 
 def test_nested_hot_exact_and_original_not_mutated():
@@ -45,6 +45,7 @@ def test_registry_keeps_session_changes_and_atomic_save(tmp_path):
     folder = tmp_path / "hold"
     folder.mkdir()
     (folder / "main.py").write_text("\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"]))
+    (folder / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     (folder / "policy.json").write_text(json.dumps(manifest()))
     registry = PolicyRegistry(tmp_path)
     record = registry.get("hold")
@@ -60,16 +61,18 @@ def test_invalid_manifest_and_entry_do_not_break_policy_discovery(tmp_path):
     valid.mkdir()
     source = "\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"])
     (valid / "main.py").write_text(source + "\nraise RuntimeError('static check must not import')\n")
-    (valid / "policy.json").write_text(json.dumps(manifest()))
+    (valid / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
+    (valid / "policy.json").write_text(json.dumps({**manifest(), "id": "valid"}))
     for name, payload in [("malformed", {**manifest(), "execution": []}), ("missing_entry", {**manifest(), "id": "missing_entry"})]:
         folder = tmp_path / name
         folder.mkdir()
         (folder / "policy.json").write_text(json.dumps(payload))
         if name != "missing_entry":
             (folder / "main.py").write_text("def policy(*args): pass\n")
+            (folder / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     registry = PolicyRegistry(tmp_path)
     assert sum(item["valid"] for item in registry.list()) == 1
-    assert registry.get("hold").directory == valid
+    assert registry.get("valid").directory == valid
 
 
 def test_consumed_counter_trims_exact_request_prefix():

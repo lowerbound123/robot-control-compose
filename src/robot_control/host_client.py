@@ -15,17 +15,19 @@ class HostClient:
     _registry_lock = threading.Lock()
 
     @classmethod
-    def get(cls, socket_path, host_id):
-        key = (str(socket_path), host_id)
+    def get(cls, socket_path, host_id, *, expected=None, connect_timeout=3):
+        key = (str(socket_path), host_id, tuple(sorted((expected or {}).items())))
         with cls._registry_lock:
             client = cls._clients.get(key)
             if client is None or client.closed:
-                client = cls(str(socket_path), host_id)
+                client = cls(str(socket_path), host_id, expected=expected, connect_timeout=connect_timeout)
                 cls._clients[key] = client
             return client
 
-    def __init__(self, path, host_id):
+    def __init__(self, path, host_id, *, expected=None, connect_timeout=3):
         self.path, self.host_id = path, host_id
+        self.expected = expected or {}
+        self._heartbeat_stop = threading.Event()
         self.owner_id = uuid.uuid4().hex
         self.members = {}
         self.condition = threading.Condition(threading.RLock())
@@ -36,7 +38,7 @@ class HostClient:
         self.failure = None
         self.connection = socket.socket(socket.AF_UNIX)
         try:
-            self.connection.settimeout(3)
+            self.connection.settimeout(connect_timeout)
             self.connection.connect(path)
             info = self._hello(self.connection)
             self.instance_id = info['host_instance_id']
@@ -44,10 +46,11 @@ class HostClient:
         except BaseException:
             self.connection.close(); raise
         self.threads = [threading.Thread(target=self._read, name='host-reader', daemon=True),
-                        threading.Thread(target=self._write, name='host-writer', daemon=True)]
+                        threading.Thread(target=self._write, name='host-writer', daemon=True),
+                        threading.Thread(target=self._heartbeat, name='host-heartbeat', daemon=True)]
         for thread in self.threads: thread.start()
 
-    def _hello(self, connection):
+    def _hello(self, connection, *, require_healthy=True):
         send_message(connection, {'type':'hello','rpc_id':0,'owner_id':self.owner_id,
             'protocol_version':1,'image_protocol_version':1})
         response = receive_message(connection)
@@ -57,7 +60,18 @@ class HostClient:
         info = response['result']
         if info.get('host_id') != self.host_id or info.get('protocol_version') != 1 or info.get('image_protocol_version') != 1:
             raise RuntimeError('policy host identity/protocol mismatch')
+        if (require_healthy and not info.get('healthy')) or any(info.get(key) != value for key,value in self.expected.items()):
+            raise RuntimeError('policy host unavailable or stale generation')
         return info
+
+    def _heartbeat(self):
+        while not self._heartbeat_stop.wait(1):
+            try:
+                if not self.request('ping', timeout=3).get('healthy'):
+                    raise RuntimeError('policy host unavailable')
+            except Exception as exc:
+                self._fail(str(exc))
+                return
 
     def register(self, member):
         with self.condition: self.members[member.session_id] = member
@@ -139,16 +153,21 @@ class HostClient:
         except (OSError, EOFError, ValueError) as exc:
             if not self.closed: self._fail(f'host disconnected: {exc}')
 
-    def stop_group(self, runtime_id, sessions, timeout):
-        payload = dict(runtime_id=runtime_id, sessions=sessions, release_timeout=timeout)
+    def stop_group(self, runtime_id, sessions, timeout, *, deadline=None):
+        deadline = deadline if deadline is not None else time.monotonic() + timeout + 6
+        def left():
+            value = deadline - time.monotonic()
+            if value <= 0: raise TimeoutError('host cleanup deadline exceeded')
+            return value
+        payload = dict(runtime_id=runtime_id, sessions=sessions, release_timeout=min(timeout, max(0, left()-5)))
         try:
-            proof = self.request('stop', timeout=timeout + 8, **payload)
+            proof = self.request('stop', timeout=left(), **payload)
         except (OSError, RuntimeError, TimeoutError):
-            # Cleanup only: a fresh connection may retrieve an existing proof
-            # or revoke this owner before a delayed load. Never replay user work.
+            # Discard queued load/dispatch before opening a cleanup-only connection.
+            self.disconnect()
             with socket.socket(socket.AF_UNIX) as rescue:
-                rescue.settimeout(timeout + 8); rescue.connect(self.path)
-                info = self._hello(rescue)
+                rescue.settimeout(left()); rescue.connect(self.path)
+                info = self._hello(rescue, require_healthy=False)
                 if info['host_instance_id'] != self.instance_id:
                     raise RuntimeError('host restarted; old readers cannot be confirmed')
                 send_message(rescue, {'type':'stop', 'rpc_id':1, **payload})
@@ -162,11 +181,15 @@ class HostClient:
         return proof['forced']
 
     def disconnect(self):
+        self._heartbeat_stop.set()
         with self.condition:
             self.closed = True
             self.condition.notify_all()
         try: self.connection.shutdown(socket.SHUT_RDWR)
         except OSError: pass
+        while True:
+            try: self.outbox.get_nowait()
+            except queue.Empty: break
         try: self.outbox.put_nowait(None)
         except queue.Full: pass
         self.connection.close()
