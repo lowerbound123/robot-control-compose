@@ -19,6 +19,10 @@
 
 模型和缓存路径相对策略目录，或使用宿主绝对路径。两个策略可以共用同一个外部模型/cache 目录。更换 GPU 或 mount 后重新 switch，配置会重新解析；运行切换不构建、安装或下载权重。NVIDIA 驱动和 Container Toolkit 需在目标机配置，setup 构建成功不代表 GPU 已可用。
 
+两个 Qwen 的 Compose 环境同时设置 `USER=robot-control` 和 `LOGNAME=robot-control`，供 Python/PyTorch 查询用户名、创建临时缓存。实际进程仍使用 setup 记录的宿主 UID/GID；这两个变量不会创建系统账号或改变权限。PyTorch 2.10 在导入 torchvision 时就可能查询用户名，即使 `compile_model=false` 也需要这些变量。
+
+若旧部署出现 `getpwuid(): uid not found: 1000`，检查对应 `compose.yaml` 的 `services.policy.environment` 是否有上述两项。修改 Compose 后重新 `switch qwen35_single` 或 `switch qwen35_twostage` 即会创建使用新环境的容器，无需重建镜像。仅在宿主 Shell export 或只写进 `deployment.env` 不会自动传给容器。
+
 ## 运行与模型切换
 
 ```bash

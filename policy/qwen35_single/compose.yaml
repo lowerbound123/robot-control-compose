@@ -10,6 +10,8 @@ services:
     restart: "no"
     platform: linux/amd64
     environment:
+      USER: robot-control
+      LOGNAME: robot-control
       HF_HOME: /data/huggingface
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
