@@ -151,8 +151,35 @@ class RobotControlApp(App):
         self._refresh_timers.append(self.set_interval(1 / 30, self.refresh_preview))
         self.refresh_controller()
 
+    def _restore_terminal_input(self) -> None:
+        """A late Docker attach never sees the driver's startup escape codes."""
+        if not self._ui_active or self.exit_requested:
+            return
+        driver = self._driver
+        # Textual 8.2's terminal driver owns the modes and honors mouse=False.
+        # Headless/web drivers have no such hooks and need no terminal writes.
+        modes = ["_enable_mouse_support"]
+        if getattr(driver, "_mouse_pixels", False):
+            # 1006h selects cell coordinates in terminals such as Ghostty.
+            # Keep the negotiated 1016 pixel encoding aligned with the parser.
+            modes.append("_enable_mouse_pixels")
+        modes.append("_enable_bracketed_paste")
+        for name in modes:
+            enable = getattr(driver, name, None)
+            if enable is not None:
+                enable()
+        flush = getattr(driver, "flush", None)
+        if flush is not None:
+            flush()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._restore_terminal_input()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
+        # A same-size reattach may not generate a resize; even an empty Enter
+        # restores input without submitting any controller/lifecycle operation.
+        self._restore_terminal_input()
         line = event.value
         command_input = self.query_one(CommandInput)
         command_input.value = ""

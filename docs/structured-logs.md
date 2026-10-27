@@ -43,6 +43,8 @@ TUI 和 headless 日志按固定 UTC+8 显示完整日期、时间和毫秒，�
 
 ## Ghostty 与 Docker attach
 
+`up -d` 时 TUI 已在容器中启动，后续 `attach` 的终端收不到启动时发出的鼠标初始化指令。这会造成键盘命令和 JSON 显示正常，但展开、复制按钮及拖选均无响应。RC 现在会在终端尺寸通知和命令框提交时重新启用鼠标与整段粘贴；同尺寸重新连接后，在命令框按一次空 Enter 或输入 `status` 即可恢复。空 Enter 只恢复终端输入，不向控制器提交命令。已协商像素鼠标的终端会保留像素模式，避免恢复后点击坐标错位。
+
 复制使用终端的 OSC 52 剪贴板协议，直接交给宿主终端处理，不依赖容器里的 `xclip`、桌面服务或宿主剪贴板读取权限。终端必须允许应用写入剪贴板；TUI 无法确认宿主系统是否接受了写入。
 
 如果 Ghostty 拦截 Ctrl+Shift+C，可在其配置文件中使用：
@@ -59,20 +61,21 @@ keybind = performable:ctrl+shift+c=copy_to_clipboard
 
 ## 更新 Docker 部署
 
-在本仓库目录构建主镜像：
+更新源码后，在本仓库目录构建主镜像：
 
 ```bash
-docker compose build robot-control
+./scripts/compose.sh build robot-control
 ```
 
-先在旧 TUI 中运行 `exit`，等待控制器完成清理。IPC anchor 和 policy 服务仍在运行时，只重建主服务：
+先在旧 TUI 中运行 `exit`，等待控制器完成清理，再通过项目入口回收动态策略与基础容器。以下为 ACOne 实机配置，硬件驱动仍由现场独立管理：
 
 ```bash
-docker compose up -d --no-deps --force-recreate robot-control
-docker compose attach robot-control
+./scripts/compose.sh -f compose.acone.yaml down
+./scripts/compose.sh -f compose.acone.yaml up -d --no-build
+./scripts/compose.sh -f compose.acone.yaml attach robot-control
 ```
 
-如果全栈已经停止，使用 `docker compose up -d` 启动依赖。使用 Qwen、LLM、ROS 或真实机器人覆盖配置时，以上命令必须保留当前部署完整的 `-f` 参数组合。
+mock 部署去掉 `-f compose.acone.yaml`，其他部署保留自身的 overlay。`down` 未完成时先处理其错误；不要删除恢复账本或单独替换 anchor。连接新 TUI 后输入 `status`，点击 JSON 第一行展开、右侧 `[复制]` 复制原文。
 
 本次没有修改 SDK 或 policy 镜像；只需重建主镜像。镜像内 Textual 锁定 8.2.8，主包最低版本要求也为 8.2.8。重启后遵循现有暂停与显式 `resume` 流程。
 
@@ -81,10 +84,10 @@ docker compose attach robot-control
 在开发测试环境执行：
 
 ```bash
-python -m pytest tests/test_structured_log.py tests/test_structured_log_tui.py -q
+python -m pytest tests/test_structured_log.py tests/test_structured_log_tui.py tests/test_terminal_attach.py -q
 ```
 
-自动化覆盖 JSON、选区、实际 OSC 52 输出、增强键盘事件、粘贴、滚动、拥塞和退出。真实终端还需要人工验收：
+自动化覆盖 JSON、选区、实际 OSC 52 输出、增强键盘事件、粘贴、滚动、拥塞和退出。PTY 回归运行真实 Textual 终端驱动，丢弃启动阶段输出后，分别通过尺寸通知和同尺寸命令提交恢复鼠标；随后发送终端鼠标字节，检查 JSON 展开、完整原文 OSC 52 输出和正常退出。真实终端还需要人工验收：
 
 1. Ghostty 中 attach 到控制器，执行 `show rc`，展开和收起 JSON。
 2. 拖选中文及跨行文字，用 Ctrl+Shift+C 粘贴到宿主编辑器，检查没有多余自动换行。
@@ -93,6 +96,13 @@ python -m pytest tests/test_structured_log.py tests/test_structured_log_tui.py -
 5. 打开 camera 和 policy monitor，缩放窗口、查看历史日志，检查各区域正常。
 
 宿主剪贴板、真实 Ghostty/Docker attach 的视觉和鼠标效果，必须以这套人工验收为准；模拟事件和协议输出检查不能替代它。
+
+## Docker attach 输入恢复验证（2026-10-27）
+
+- 本机 Python 3.11 完整套件：724 通过、27 跳过；Linux/Humble Python 3.10 完整套件：699 通过、27 跳过。各有 13 条既有 Pillow 弃用告警。
+- 新增 4 个真实 PTY 回归，覆盖字符/像素坐标，以及尺寸通知/同尺寸命令提交；检查展开、完整 JSON 复制协议与正常退出。两类缺陷均先复现失败，再验证修复。
+- 旧代码在隔离 Docker 容器后台启动后 attach，捕获不到鼠标初始化；修复后的实际 RC 镜像会重新发送初始化，随后 JSON 展开及原文 OSC 52 输出通过。
+- 镜像安装的 TUI 源码与当前代码哈希一致，验证时未挂载源码、未连接机器人、未加载 Qwen。临时测试容器已清理。
 
 ## 本次自动验证（2026-10-24）
 
