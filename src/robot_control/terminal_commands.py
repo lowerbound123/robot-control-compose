@@ -14,11 +14,14 @@ SHORTHANDS = {
     "command": "line",
     "show": "scope",
     "get_operation": "operation_id",
+    "get_policy_result": "operation_id",
 }
 MCP_HELP = "\n".join([
     "mcp <tool> [JSON对象]；help mcp / mcp：工具与参数帮助；mcp help：RC 内置命令帮助",
     "简写：mcp send_command <动作>；mcp command <RC命令>；mcp show rc|policy；mcp get_operation <id>",
     "先 mcp take，确认 succeeded 后发动作，最后 mcp return；不自动接管。",
+    "mcp return_and_wait [JSON对象]：交还并等待 policy 明确结果，timeout_s 默认 null（不超时）；超时不取消任务。",
+    "mcp get_policy_result [操作ID]：查询等待结果；省略 ID 查询最近一次；result.outcome 区分 completed / terminated。",
     "示例：mcp send_command left:up:0.01@slow | right:hold",
     '示例：mcp send_command {"commands":["left:open","right:close"],"wait":true}',
     "调用在后台执行；wait=true 不阻塞终端，等待超时不取消动作；图像只显示元数据。",

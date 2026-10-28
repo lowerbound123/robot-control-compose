@@ -1,0 +1,9 @@
+services:
+  policy:
+    image: robot-control-compose-llm-failure:local
+    build:
+      context: ../..
+      dockerfile: policy/llm_failure/Dockerfile
+      target: runtime
+    restart: "no"
+    extra_hosts: ["host.docker.internal:host-gateway"]

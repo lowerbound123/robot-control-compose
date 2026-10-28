@@ -229,7 +229,8 @@ class PolicyCommandSupport:
                             self._emit(f"policy command [{other}] cancelled: worker failure")
                     self._gate_policy_commands(worker)
                     if worker is self._worker:
-                        self._pause()
+                        self._pause(cancel_wait=False)
+                        self._fail_policy_wait(message.get('error', 'policy command failed'))
                         if self._operation is not None and self._operation["kind"] not in ("shutdown", "close_robot", "unload"):
                             self._operation["cancel"].set()
                             if not self._operation["launched"]:

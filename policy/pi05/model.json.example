@@ -1,0 +1,23 @@
+{
+  "model": {
+    "checkpoint": "/models/pi05/pretrained_model",
+    "tokenizer_path": "/models/pi05/tokenizer",
+    "device": "cuda",
+    "compile_model": false,
+    "warmup_runs": 1,
+    "preprocessor_filename": "policy_preprocessor.json",
+    "postprocessor_filename": "policy_postprocessor.json"
+  },
+  "runtime": {"instruction": "Pick up the object and place it in the tray."},
+  "observations": {
+    "camera_map": {
+      "head": "observation.images.head",
+      "left_wrist": "observation.images.left_wrist",
+      "right_wrist": "observation.images.right_wrist"
+    },
+    "state_scale": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "state_offset": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  "actions": {"representation": "absolute"},
+  "execution": {"request_when_remaining": null, "inference_timeout_s": 60}
+}

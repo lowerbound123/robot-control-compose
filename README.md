@@ -1,6 +1,6 @@
 # robot-control-compose
 
-独立的 Docker 机器人控制框架。RC 使用 ROS 2 Humble / Python 3.10，hold 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
+独立的 Docker 机器人控制框架。RC 使用 ROS 2 Humble / Python 3.10，hold 和 example 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
 
 ## 准备与运行
 
@@ -61,13 +61,32 @@ RC 持有 Docker daemon 管理权限，用于管理同一 daemon 下的兄弟容
 
 图像通过只读 POSIX 共享内存传输。断连不是读者退出证明；容器退出只能证明本地读者结束，容器外模型服务必须独立确认释放。RC 重启会先核对旧容器和未完成外部 reader 账本。
 
+## MCP 等待 policy 结果
+
+当前 policy 或链成员使用 SDK 0.10 的 `runtime.finish()` 后，MCP 可以等待任务结果：
+
+```text
+mcp take
+mcp return_and_wait {"timeout_s":30}
+mcp get_policy_result
+mcp get_policy_result <operation_id>
+```
+
+`return_and_wait` 默认不超时，`timeout_s: 0` 只提交并立即返回回执。交接成功后，普通动作返回不会结束等待；只有显式完成/终止、人工干预或故障才结束该任务。超时、取消 MCP 调用和客户端断连只结束本次等待，任务仍运行，结束后仍交还 MCP；用只读 `get_policy_result` 查询同一回执。结果不被读取消费，只保留在本次 RC 运行的有界历史中。
+
+显式回调的回执状态为 `succeeded`，`result.outcome` 为 `completed` 或 `terminated`，并包含 `message` 和来源 policy；`terminated` 是主动终止报告，不表示业务成功。普通暂停或人工干预返回 `cancelled`、`reason="人工接管"`，取消自动交还资格。policy 故障返回 `failed` 并交还 MCP，仍按既有规则清理和保持故障保护。没有等待任务时，`finish` 只暂停并保持 policy 所有权。
+
+原有 `return(wait=true)` 仍只等待交接完成。新增能力使用前同步升级 RC 和使用回调的 policy 镜像；本轮没有为 `llm_direction` 或其他业务策略自动加入完成判断。回调规则见 [策略作者规范](docs/policy-authoring.md#任务完成与终止)。
+
 ## 文档与验证
 
 - [部署与配置准备](docs/setup.md)
 - [Ubuntu 22.04 从零部署](docs/ubuntu22-amd64-from-scratch.md)
 - [策略作者规范](docs/policy-authoring.md)
+- [Python 3.14 本地范例策略](policy/example/README.md)
 - [Qwen 策略](docs/qwen35-policy.md)
 - [LLM 离散动作策略](docs/llm-direction-policy.md)
+- [LLM 异步失败检测策略](docs/llm-failure-policy.md)：原样透传动作，每 60 个实际执行步用当前与历史图像检查失败，通过 MCP 等待回执返回。
 - [策略监控](docs/policy-monitor.md)
 - [测试与验收边界](docs/verification.md)
 

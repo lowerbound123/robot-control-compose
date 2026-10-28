@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "id": "example",
+  "execution": {
+    "mode": "sync",
+    "call_every_actions": 1,
+    "control_mode": "qpos"
+  },
+  "params": {
+    "message": "example",
+    "log_every_n_calls": 100
+  },
+  "hot_reloadable": [
+    "params.message",
+    "params.log_every_n_calls"
+  ],
+  "tui_commands": {
+    "example": {
+      "handler": "example",
+      "args": [],
+      "help": "查看 example 的统计、图像摘要、运行时元数据和当前配置",
+      "timeout_s": 5
+    }
+  }
+}

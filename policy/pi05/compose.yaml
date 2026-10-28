@@ -1,0 +1,36 @@
+services:
+  policy:
+    image: robot-control-compose-pi05:local
+    build:
+      context: ../..
+      dockerfile: policy/pi05/Dockerfile
+      target: runtime
+      additional_contexts:
+        policy-deps: ./dependencies
+    restart: "no"
+    platform: linux/amd64
+    environment:
+      USER: robot-control
+      LOGNAME: robot-control
+      HF_HOME: /data/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: ${MODELS_DIR:?Set deployment.env MODELS_DIR}
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HF_CACHE_DIR:?Set deployment.env HF_CACHE_DIR}
+        target: /data/huggingface
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE:-0}"]
+              capabilities: [gpu]

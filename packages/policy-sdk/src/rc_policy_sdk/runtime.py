@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .wire import receive_message
 from .outbox import PrioritySender
+from .control import merge_control_requests
 
 
 class WorkerChannel:
@@ -126,8 +127,26 @@ class PolicyRuntime:
             raise RuntimeError("host does not support runtime.pause(); upgrade robot-control")
         if not isinstance(reason, str):
             raise TypeError("pause reason must be a string")
-        if not self._control_requests:
-            self._control_requests.append({"type": "pause", "reason": reason})
+        self._control_requests = merge_control_requests(
+            self._control_requests, [{"type": "pause", "reason": reason}])
+
+    def finish(self, message: str = "", *, outcome: str = "completed") -> None:
+        """Report a task result after the entire inference/chain succeeds.
+
+        Still return valid actions. RC discards this round's actions and pauses;
+        an outstanding MCP policy wait also receives control and this result.
+        Ordinary pause requests take precedence over finish requests.
+        """
+        if self._inference_thread is not threading.current_thread():
+            raise RuntimeError("finish() is only available in the active policy() callback thread")
+        if "finish" not in self.channel.runtime_tools:
+            raise RuntimeError("host does not support runtime.finish(); upgrade robot-control")
+        if not isinstance(message, str):
+            raise TypeError("finish message must be a string")
+        if outcome not in ("completed", "terminated"):
+            raise ValueError("finish outcome must be completed or terminated")
+        self._control_requests = merge_control_requests(self._control_requests, [
+            {"type": "finish", "outcome": outcome, "message": message}])
 
     def register_remote(self, remote_id, endpoint, owner_id, model_id, instance_id=None):
         return self.channel.rpc('register', remote_id=remote_id, endpoint=endpoint,

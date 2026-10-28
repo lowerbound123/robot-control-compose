@@ -159,8 +159,8 @@ class PolicyProcess(MonitorClient):
                     if not self._inflight.get('timed_out'):
                         if kind == 'result':
                             controls = control_requests(message.get('control_requests', []))
-                            if controls and 'pause' not in self.runtime_tools:
-                                raise ValueError('control_requests requires negotiated runtime_tools pause')
+                            if controls and controls[0]['type'] not in self.runtime_tools:
+                                raise ValueError('control_requests requires negotiated runtime_tools ' + controls[0]['type'])
                         self._responses.append(message)
                     self._inflight = None
             elif kind in ('fatal','error'): self._record_failure(message.get('error','policy failed'))

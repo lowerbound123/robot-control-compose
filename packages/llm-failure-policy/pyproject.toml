@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rc-llm-failure"
+version = "0.1.0"
+description = "Asynchronous visual failure detection for robot policy chains"
+requires-python = ">=3.11"
+dependencies = ["rc-policy-sdk>=0.10.0", "numpy>=1.26,<3", "Pillow>=10.3,<14", "openai>=3.37,<4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

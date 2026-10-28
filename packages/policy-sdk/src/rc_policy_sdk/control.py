@@ -2,7 +2,7 @@
 from .wire import ProtocolError
 
 
-RUNTIME_TOOLS = ("pause",)
+RUNTIME_TOOLS = ("pause", "finish")
 
 
 def runtime_tools(value):
@@ -19,11 +19,19 @@ def control_requests(value, *, chain=False):
     if not value:
         return []
     request = value[0]
-    keys = {"type", "reason", "source"} if chain else {"type", "reason"}
-    if (not isinstance(request, dict) or set(request) != keys
-            or request["type"] != "pause" or not isinstance(request["reason"], str)):
-        raise ProtocolError("control_requests must contain a pause with a string reason")
-    result = {"type": "pause", "reason": request["reason"]}
+    if not isinstance(request, dict):
+        raise ProtocolError("control_requests must contain an object")
+    kind = request.get('type')
+    keys = {'type', 'reason'} if kind == 'pause' else {'type', 'outcome', 'message'}
+    if set(request) != keys | ({'source'} if chain else set()):
+        raise ProtocolError("control_requests has invalid fields")
+    if kind == 'pause' and isinstance(request['reason'], str):
+        result = {'type': 'pause', 'reason': request['reason']}
+    elif (kind == 'finish' and request['outcome'] in ('completed', 'terminated')
+          and isinstance(request['message'], str)):
+        result = {'type': 'finish', 'outcome': request['outcome'], 'message': request['message']}
+    else:
+        raise ProtocolError("control_requests must contain a valid pause or finish")
     if chain:
         source = request["source"]
         if (not isinstance(source, dict) or set(source) != {"policy_id", "cell"}
@@ -32,3 +40,10 @@ def control_requests(value, *, chain=False):
             raise ProtocolError("control_requests has an invalid chain source")
         result["source"] = dict(source)
     return [result]
+
+
+def merge_control_requests(current, incoming):
+    """Keep the first finish, unless any stage requests an ordinary pause."""
+    if incoming and (not current or (incoming[0]['type'] == 'pause' and current[0]['type'] != 'pause')):
+        return incoming
+    return current

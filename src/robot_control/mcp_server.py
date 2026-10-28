@@ -31,8 +31,10 @@ from .direct_commands import MOTIONS, parse_commands, structured_step
 from .mcp_config import mcp_settings
 from .direct_types import finite_number, finite_vector
 from .operations import TERMINAL
+from .policy_results import PolicyWaitActive
 
 Timeout = Annotated[float, Field(ge=0, le=120)]
+PolicyWaitTimeout = Annotated[FiniteFloat, Field(ge=0)]
 Quality = Annotated[int, Field(ge=1, le=100)]
 Vector6 = Annotated[list[FiniteFloat], Field(min_length=6, max_length=6)]
 Arm = Literal["left", "right"]
@@ -86,9 +88,11 @@ def result(payload, images=(), *, error=False):
 
 
 def create_server(controller):
-    server = MCPServer("robot-control", version="0.2.0", instructions=(
+    server = MCPServer("robot-control", version="0.3.0", instructions=(
         "Read-only until take. take pauses new policy inference and retains its model. "
         "return cancels manual motions, resets policy context from fresh feedback and resumes policy. "
+        "return_and_wait resumes policy and awaits runtime.finish; its timeout or disconnection does not cancel the episode. "
+        "Use get_policy_result to query it later. Completed and terminated outcomes are both valid policy reports. "
         "All clients share control ownership. Read props for units, speeds, topics and command grammar. "
         "Only confirmed operation success means completion; wait timeout does not cancel motion."
     ))
@@ -244,6 +248,45 @@ def create_server(controller):
     async def return_control(wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
         """Cancel manual motion, restore read-only MCP and resume policy after resetting its context."""
         return await submit("return", wait, timeout_s)
+
+    @server.tool(annotations=read)
+    async def get_policy_result(operation_id: str | None = None) -> CallToolResult:
+        """Read a policy episode without consuming it; omit the ID for the latest episode in this RC run."""
+        try:
+            payload = controller.get_policy_result(operation_id)
+            return result({**payload, 'controller': controller.status()},
+                          error=payload['status'] in ('failed', 'cancelled'))
+        except (ValueError, RuntimeError) as exc:
+            return result({'error': str(exc)}, error=True)
+
+    @server.tool(annotations=write)
+    async def return_and_wait(timeout_s: PolicyWaitTimeout | None = None) -> CallToolResult:
+        """After take, return control and await explicit policy completion/termination; default: no timeout.
+
+        A timeout (0 returns immediately), cancellation or disconnect only ends this
+        call. The episode continues and will hand control back to MCP. Query its
+        operation_id with get_policy_result. A succeeded receipt carries the
+        business outcome completed or terminated in result.outcome.
+        """
+        try:
+            # Registration is a short lock/queue operation. Do it before the
+            # first await so cancellation cannot leave an unregistered episode.
+            identity = controller.submit_policy_wait()
+            deadline = None if timeout_s is None else time.monotonic() + timeout_s
+            payload = controller.get_policy_result(identity)
+            while not payload['finished']:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    break
+                await asyncio.to_thread(controller.wait_operation, identity,
+                                        .1 if remaining is None else min(.1, remaining))
+                payload = controller.get_policy_result(identity)
+            return result({**payload, 'timed_out': not payload['finished'], 'controller': controller.status()},
+                          error=payload['status'] in ('failed', 'cancelled'))
+        except PolicyWaitActive as exc:
+            return result({'error': str(exc), 'operation_id': exc.operation_id}, error=True)
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            return result({'error': str(exc)}, error=True)
 
     async def motion(make_steps, wait, timeout_s, clear_queue, include_images, cameras, image_quality):
         try:

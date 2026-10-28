@@ -1,5 +1,7 @@
 # 策略作者规范
 
+可直接运行的完整本地范例见 [example 策略](../policy/example/README.md)：Python 3.14、动作透传、空输入保持、共享图片、同名命令、观测、监控、热配置与注释的 RC 暂停请求。
+
 ## 目录身份与声明
 
 每个可执行策略独占一个 host 容器和受监督执行进程。目录名必须匹配 `[a-z0-9][a-z0-9_-]{0,47}`，manifest 的 id 可省略或与目录一致。没有额外 host/socket 表。
@@ -52,6 +54,24 @@ def release(context):
 四个同步函数必须在 main.py 顶层声明。辅助模块使用相对 import，资源路径以本策略目录或模型配置文件为基准，不依赖仓库 parents[2]。策略依赖只装在对应镜像中，RC 不安装 Torch 等模型框架。
 
 可使用 SDK 的 `runtime`、`observe`、`monitor`、命令、外部资源接口。`runtime.pause(reason)` 只在当前推理回调线程使用，成功结果才携带暂停请求。运行时配置引用保持稳定，热补丁仅允许白名单叶字段，两端确认 config_version 后生效；RC 参数和身份/命令/时限属于冷配置。
+
+## 任务完成与终止
+
+SDK 0.10 新增 `runtime.finish(message="", *, outcome="completed")`。`outcome` 只接受 `completed`（任务完成）或 `terminated`（主动终止），`message` 为字符串。以下仅演示结果回传，实际策略应在自身判断满足结束条件时调用：
+
+```python
+def policy(context, state, action_chunk, images, config, *, runtime):
+    runtime.finish("任务已完成", outcome="completed")
+    return [state["qpos"]]  # 仍须返回符合本策略 control_mode 的合法动作
+```
+
+终止示例为 `runtime.finish("抓取未成功，需要外部处理", outcome="terminated")`。它只登记本轮结果，不抛出中断、不等待 MCP，也不直接改控制权。只能在当前 `policy()` 回调线程调用，不能用于 initialize、observe、monitor、命令处理或后台线程；旧 runtime 不得跨轮复用。
+
+无论原生 chain 或 SDK `PolicyChain`，后续成员都继续运行，全部成功、动作合法且图像释放得到确认后才提交结果。无普通暂停时保留最早的 finish；任一 `runtime.pause` 优先于 finish。后续成员异常、超时、取消或非法结果不能被此前 finish 掩盖。RC 丢弃结束轮的全部动作、清空缓存并保持当前目标；不再发起新推理，正常模型保留。
+
+有未结束的 `return_and_wait` 任务时，RC 将控制权交还 MCP，并返回 `result={"outcome":..., "message":..., "source":{"policy_id":...}}`，原生链来源还含从 1 开始的 `cell`。MCP 超时或断连不会撤销这个资格。没有等待任务时只暂停，所有权仍属于 policy，可显式 resume。普通 `runtime.pause` 会取消等待任务，回执 `reason="人工接管"`；原始 pause reason 仍记录在日志中。
+
+RC 与 worker 通过 `runtime_tools` 协商 finish 能力。未协商时调用会明确报错，不会降级成 pause 或伪造完成。使用此 API 前同步更新 RC 和对应 policy 镜像。SDK 仍仅依赖 NumPy 与 posix-ipc。
 
 ## 命令
 

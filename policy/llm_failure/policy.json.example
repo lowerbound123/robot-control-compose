@@ -1,0 +1,24 @@
+{
+  "schema_version": 3,
+  "id": "llm_failure",
+  "execution": {
+    "mode": "async",
+    "call_every_actions": 1,
+    "control_mode": "qpos"
+  },
+  "params": {
+    "task": "",
+    "prompt": "根据task以及按执行步数排列的当前和历史三路相机图像，判断机器人执行是否已经进入失败状态。只有明确证据表明当前执行已经偏离任务且不能正常继续达成目标时才判定失败。尚未完成、正常过渡、短暂遮挡或证据不足不等于失败。只返回一个JSON对象，禁止任何解释、推理过程、Markdown或动作建议。",
+    "check_every_steps": 60,
+    "history_size": 5,
+    "image_max_side": 1024,
+    "jpeg_quality": 85,
+    "provider": {
+      "model": "deepseek-flash",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "",
+      "timeout_s": 30.0
+    }
+  },
+  "hot_reloadable": []
+}

@@ -5,7 +5,7 @@ import threading
 import time
 
 from rc_policy_sdk.actions import normalize_actions
-from rc_policy_sdk.control import control_requests
+from rc_policy_sdk.control import control_requests, merge_control_requests
 
 from .chain_config import chain_commands
 from .process import PolicyProcess
@@ -195,8 +195,9 @@ class ChainProcess:
                        if 'modes' in response else response['actions'])
             chunk = normalize_actions(payload, self.execution['control_mode'])
             controls = control_requests(response.get('control_requests', []))
-            if controls and not request['control_requests']:
-                request['control_requests'] = [{**controls[0], 'source': {'policy_id': identity, 'cell': index + 1}}]
+            if controls:
+                request['control_requests'] = merge_control_requests(request['control_requests'], [
+                    {**controls[0], 'source': {'policy_id': identity, 'cell': index + 1}}])
             if request['cancel']:
                 self._finish('cancelled')
             elif index + 1 == len(self.config['policies']):

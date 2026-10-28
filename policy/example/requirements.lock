@@ -1,0 +1,3 @@
+# Same Python 3.14 dependency pins as hold; this policy has its own build inputs.
+numpy==2.5.4
+posix-ipc==1.3.2

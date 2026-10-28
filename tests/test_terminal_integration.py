@@ -19,7 +19,9 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
     app = RobotControlApp(controller, start_controller=False, router=router)
     async with app.run_test() as pilot:
         command = app.query_one(CommandInput)
-        for prefix, expected in (("mc", "mcp "), ("mcp se", "mcp send_command "), ("mcp ret", "mcp return ")):
+        for prefix, expected in (("mc", "mcp "), ("mcp se", "mcp send_command "),
+                                 ("mcp ret", "mcp return"), ("mcp return_", "mcp return_and_wait "),
+                                 ("mcp get_pol", "mcp get_policy_result ")):
             command.value = prefix
             await pilot.press("tab")
             assert command.value == expected

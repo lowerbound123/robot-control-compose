@@ -49,7 +49,7 @@ class Operations:
         for key in terminal[:-self.history]:
             self._items.pop(key)
 
-    def update(self, identity, status, *, result=None, error=None):
+    def update(self, identity, status, *, result=None, error=None, reason=None):
         if identity is None:
             return
         with self._condition:
@@ -61,6 +61,12 @@ class Operations:
                 item["result"] = copy.deepcopy(result)
             if error is not None:
                 item["error"] = str(error)
+            if reason is not None:
+                item['reason'] = str(reason)
+            if status in TERMINAL:
+                # Retain the most recently completed receipts. A long policy
+                # episode may have been created before hundreds of short calls.
+                self._items.move_to_end(identity)
             self._condition.notify_all()
             self._prune()
 

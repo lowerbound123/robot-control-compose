@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,17 @@ class Host:
         self.process = subprocess.Popen([sys.executable, '-m', 'rc_policy_sdk.host',
             '--socket', self.socket, '--policy-root', str(root), '--host-id', identity],
             stdout=self.log, stderr=subprocess.STDOUT)
-        wait_for(lambda: Path(self.socket).exists() or self.process.poll() is not None)
+        def listening():
+            if self.process.poll() is not None:
+                return True
+            try:
+                with socket.socket(socket.AF_UNIX) as probe:
+                    probe.settimeout(.1)
+                    probe.connect(self.socket)
+                return True
+            except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
+                return False
+        wait_for(listening)
         if self.process.poll() is not None:
             self.log.seek(0)
             raise AssertionError(self.log.read())

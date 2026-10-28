@@ -29,6 +29,7 @@ from .robots import make_robot
 from .safety import ModeLimiter, finite_qpos, arm_targets
 from .policy_commands import PolicyCommandSupport
 from .chain_management import ChainManagement
+from .policy_results import PolicyResultSupport
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from .operations import ControlRequest, Operations
 from .direct import DirectMotion
@@ -48,7 +49,7 @@ HELP = "\n".join([
 from .policy_monitors import PolicyMonitors
 
 
-class RobotController(PolicyCommandSupport, ChainManagement):
+class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport):
     def __init__(self, config_path, *, robot=None, process_factory=PolicyProcess, runtime_manager=None):
         self.config_path = Path(config_path).resolve()
         self.config = load_rc(self.config_path)
@@ -98,6 +99,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         self._publish_fault = False
         self._published_targets = {}
         self.operations = Operations()
+        self._init_policy_results()
         self.direct = DirectMotion(self.config.get("direct_control", {}), self.config["frequency_hz"],
                                    self.operations, self._send_direct, self.robot)
         self._event_lock = threading.Lock()
@@ -341,8 +343,12 @@ class RobotController(PolicyCommandSupport, ChainManagement):
 
     def _dispatch(self, request):
         identity = request.operation_id
+        policy_wait = request.origin == 'mcp' and request.line == 'return_and_wait'
         try:
-            if request.origin == "mcp" and request.line not in ("take", "return"):
+            if policy_wait and (
+                    self._policy_wait is None or self._policy_wait['handoff_operation_id'] != identity):
+                return  # An earlier urgent intervention cancelled the reservation.
+            if request.origin == "mcp" and request.line not in ("take", "return", "return_and_wait"):
                 if request.epoch != self._control_epoch:
                     self.operations.update(identity, "cancelled", error="control ownership changed")
                     return
@@ -364,7 +370,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 return
             word = request.line.split(maxsplit=1)[0]
             previous_motion = self._motion
-            result = self._command(request.line)
+            result = self._begin_policy_wait() if policy_wait else self._command(request.line)
             if self._operation is not None and self._operation.get("public_id") == identity:
                 return
             if self._motion is not None and self._motion is not previous_motion:
@@ -378,6 +384,8 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 self._return_operation = None
         except Exception as exc:
             self._pending_config = None
+            if self._policy_wait is not None and identity == self._policy_wait['handoff_operation_id']:
+                self._fail_policy_wait(exc)
             self.operations.update(identity, "failed", error=exc)
             self._emit(f"命令失败：{exc}", "error")
             if identity == self._return_operation:
@@ -401,6 +409,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 "hold_name": self._hold_name, "exit_code": self.exit_code,
                 "control_owner": self.control_owner, "control_epoch": self._control_epoch,
                 "returning": self._return_requested, "direct": self.direct.progress(),
+                "policy_wait_operation_id": self._policy_wait['operation_id'] if self._policy_wait else None,
             }
 
     def capture_snapshot(self):
@@ -441,7 +450,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
             except (RuntimeError, ValueError) as exc:
                 return {"qpos": None, "epos": None, "targets": targets, "error": str(exc)}
 
-    def _pause(self, state="paused"):
+    def _pause(self, state="paused", *, cancel_wait=True):
         if self._worker is not None and hasattr(self._worker, 'cancel_inference'):
             self._worker.cancel_inference()
         self.buffer.invalidate()
@@ -452,6 +461,8 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         if self.limiter.previous is not None:
             self._hold = self.limiter.previous.copy()
         self._state = state
+        if cancel_wait:
+            self._settle_policy_wait('cancelled', reason='controller stopped' if self._stop.is_set() else '人工接管')
 
     def _operation_start(self, kind, *, wait_inflight=False, **payload):
         if self._operation is not None:
@@ -804,6 +815,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 self._finish_shutdown()
                 continue
             if self._stop.is_set():
+                self._settle_policy_wait('cancelled', reason='controller stopped')
                 self.operations.update(job.get("public_id"), "cancelled", error="controller is shutting down")
                 continue
             if result.get("error"):
@@ -811,9 +823,9 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 editor_preflight = job.get('edit_token') is not None and not job.get('prepared')
                 static_rejection = job['kind'] == 'switch' and not job.get('prepared') and self._worker is not None
                 if not static_rejection:
-                    self._pause("paused" if job["cancel"].is_set() or job.get("returning") or editor_preflight else "fault")
+                    self._pause("paused" if job["cancel"].is_set() or job.get("returning") or editor_preflight else "fault",
+                                cancel_wait=job['cancel'].is_set())
                 self._emit(result["error"], "warning" if job["cancel"].is_set() else "error")
-                self.operations.update(job.get("public_id"), "cancelled" if job["cancel"].is_set() else "failed", error=result["error"])
                 self._return_requested = False
                 self._return_operation = None
                 if job["kind"] == "switch":
@@ -821,6 +833,9 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 # A failed hot transaction cannot leave divergent configurations.
                 if job["kind"] in {"hot_patch", "reset_context"} and self._worker is not None:
                     self._operation_start("unload", worker=self._worker, preserve_state=bool(job.get("returning")) or self._worker in self._command_faults)
+                if not static_rejection and not job['cancel'].is_set():
+                    self._fail_policy_wait(result['error'])
+                self.operations.update(job.get("public_id"), "cancelled" if job["cancel"].is_set() else "failed", error=result["error"])
                 continue
             if job["kind"] == "connect":
                 self._state = "paused"
@@ -855,10 +870,11 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                     # Context reset succeeded; a missing observation does not
                     # invalidate the loaded model. Stop hold publication until
                     # an explicit take/resume establishes a fresh anchor.
-                    self._pause()
+                    self._pause(cancel_wait=False)
                     self._publish_fault = True
                     self._return_requested = False
                     self._return_operation = None
+                    self._fail_policy_wait(f"cannot resume without fresh feedback: {exc}")
                     self.operations.update(job.get("public_id"), "failed", error=f"cannot resume without fresh feedback: {exc}")
                     self._emit(f"恢复失败，保持暂停：{exc}", "error")
                     continue
@@ -870,6 +886,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 self._return_operation = None
                 self._needs_request = True
                 self._emit("从最新机器人状态继续")
+                self._policy_wait_started(job.get('public_id'))
             elif job["kind"] == "unload":
                 self._command_faults.discard(job["worker"])
                 self._worker = self._identity = None
@@ -907,12 +924,14 @@ class RobotController(PolicyCommandSupport, ChainManagement):
             if request["token"].generation != self.buffer.generation and (self.control_owner == "mcp" or self._return_requested):
                 self._emit(f"已失效 policy 请求失败：{response.get('error')}", "warning")
                 if self._operation and not self._operation["launched"]:
-                    self.operations.update(self._operation.get("public_id"), "failed", error=response.get("error", "policy failed"))
+                    public_id = self._operation.get('public_id')
                     self._operation = None
                     self._return_requested = False
                     self._return_operation = None
                     if self.control_owner == "policy":
                         self._state = "paused"
+                    self._fail_policy_wait(response.get('error', 'policy failed'))
+                    self.operations.update(public_id, 'failed', error=response.get('error', 'policy failed'))
                 if self._operation is None:
                     self._operation_start("unload", worker=request["worker"], preserve_state=True)
                 return
@@ -920,7 +939,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                 self._pause("switching")
                 self._emit(f"切换中的旧 policy 请求失败：{response.get('error', response)}", "warning")
                 return
-            self._pause("fault")
+            self._pause("fault", cancel_wait=False)
             self._emit(f"policy 错误：{response.get('error', response)}", "error")
             if self._operation is not None:
                 self._operation["cancel"].set()
@@ -928,6 +947,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                     self._operation = None
             if self._operation is None:
                 self._operation_start("unload", worker=request["worker"])
+            self._fail_policy_wait(response.get('error', 'policy failed'))
             return
         if response.get("type") != "result":
             return
@@ -943,20 +963,29 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         chunk = normalize_actions(payload, record.execution["control_mode"])
         controls = control_requests(response.get("control_requests", []), chain=record.is_chain)
         if controls:
-            pause = controls[0]
+            control = controls[0]
             source = self._identity
+            source_info = {'policy_id': self._identity}
             if record.is_chain:
-                member, cell = pause['source']['policy_id'], pause['source']['cell']
+                member, cell = control['source']['policy_id'], control['source']['cell']
                 if cell > len(record.config['policies']) or record.config['policies'][cell - 1] != member:
                     raise ValueError('control_requests source does not match the active chain')
                 source = f'{self._identity} cell {cell} ({member})'
+                source_info = dict(control['source'])
             if (self._state != 'running' or self.control_owner != 'policy'
                     or self._stop.is_set() or self._return_requested):
                 return
             # A valid pause result acknowledges all readers, but none of its
             # actions may reach the buffer (including async consumption trim).
-            self._pause()
-            self._emit(f"policy {source} 请求 {request['id']} 暂停：{pause['reason']}；保持当前目标，等待 resume")
+            matches = self._matches_policy_wait(request)
+            self._pause(cancel_wait=control['type'] == 'pause')
+            if control['type'] == 'finish':
+                report = {'outcome': control['outcome'], 'message': control['message'], 'source': source_info}
+                if matches:
+                    self._settle_policy_wait('succeeded', result=report, reclaim=True)
+                self._emit(f"policy {source} 请求 {request['id']} 结束：{control['outcome']}；{control['message']}")
+            else:
+                self._emit(f"policy {source} 请求 {request['id']} 暂停：{control['reason']}；保持当前目标，等待 resume")
             return
         accepted = self.buffer.accept(request["token"], chunk)
         self._needs_request = not accepted
@@ -1031,11 +1060,12 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         if (self._worker is not None and self._operation is None and not self._stop.is_set()
                 and not getattr(self._worker, 'runnable', self._worker.alive)):
             if self.control_owner == 'policy':
-                self._pause('fault')
+                self._pause('fault', cancel_wait=False)
             else:
                 self.buffer.invalidate()
             self._emit('policy host 不可运行；清理运行组，等待手动重载', 'error')
             self._operation_start('unload', worker=self._worker, preserve_state=self.control_owner == 'mcp')
+            self._fail_policy_wait('policy host 不可运行')
         snapshot = self._observe_tick()
         if not self._connected or self._publish_fault:
             return
@@ -1158,7 +1188,7 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         self._cancel_direct("control returned to policy")
         self.control_owner = "policy"
         self._control_epoch += 1
-        self._pause("resuming")
+        self._pause("resuming", cancel_wait=False)
         if self._worker is None or not getattr(self._worker, "runnable", self._worker.alive):
             self._return_requested = False
             self._state = "paused"
@@ -1313,9 +1343,11 @@ class RobotController(PolicyCommandSupport, ChainManagement):
         if self.runtime:
             self.runtime.release()
         self._state = "stopped"
+        # Finish priority shutdown receipts after the cancellation batch, so
+        # a full queue cannot immediately prune the final exit acknowledgement.
+        self.operations.cancel_pending("controller stopped", exclude=self._exit_operations)
         for identity in self._exit_operations:
             self.operations.update(identity, "succeeded" if self.exit_code == 0 else "failed", result={"exit_code": self.exit_code})
-        self.operations.cancel_pending("controller stopped")
         self._emit("安全退出完成，退出码 0" if self.exit_code == 0 else f"退出完成，存在强制终止或清理错误，退出码 {self.exit_code}")
         with self._log_lock:
             if self._log_stream is not None:
@@ -1367,12 +1399,13 @@ class RobotController(PolicyCommandSupport, ChainManagement):
                         deadline = time.monotonic() + period
                 except Exception as exc:
                     self._cancel_direct(f"control failure: {exc}")
-                    self._pause("fault")
+                    self._pause("fault", cancel_wait=False)
                     self._emit(f"控制错误：{exc}", "error")
                     if self._stop.is_set():
                         self.exit_code = 1
                     if self._worker is not None and self._operation is None and self.control_owner != "mcp":
                         self._operation_start("unload", worker=self._worker)
+                    self._fail_policy_wait(exc)
                     deadline = time.monotonic() + period
             self._wake.wait(max(0, deadline - time.monotonic()))
             self._wake.clear()
