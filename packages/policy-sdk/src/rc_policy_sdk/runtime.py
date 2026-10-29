@@ -27,6 +27,10 @@ class WorkerChannel:
         self._send_lock = threading.Lock()
         self._condition = threading.Condition()
         self._acks = {}
+        self._global_acks = {}
+        self._global_pending = set()
+        self.global_memory = None
+        self.global_proxy = None
         self._serial = 0
         self._closed = False
         self.reader = threading.Thread(target=self._read, name='policy-channel', daemon=True)
@@ -42,7 +46,12 @@ class WorkerChannel:
         try:
             while True:
                 message = receive_message(self.connection)
-                if message.get('type') == 'resource_ack':
+                if message.get('type') == 'global_state_ack':
+                    with self._condition:
+                        if message.get('rpc_id') in self._global_pending:
+                            self._global_acks[message['rpc_id']] = message
+                        self._condition.notify_all()
+                elif message.get('type') == 'resource_ack':
                     with self._condition:
                         self._acks[message['rpc_id']] = message
                         self._condition.notify_all()
@@ -92,6 +101,56 @@ class WorkerChannel:
     def barrier(self):
         self.observations.submit(lambda: None).result()
 
+    def attach_globals(self, descriptor):
+        from .global_state import SharedState, GlobalStateProxy
+        self.global_memory = SharedState.attach(descriptor)
+        self.global_binding = descriptor['binding']
+        self.global_proxy = GlobalStateProxy(self.global_memory.snapshot, self.global_patch, self.check_globals)
+
+    def check_globals(self):
+        if self._closed or self.global_memory is None or self.global_memory.closed:
+            raise RuntimeError('global state session unavailable')
+
+    def global_patch(self, values, delete, expected_version):
+        from .global_state import GlobalStateConflict
+        self.check_globals()
+        deadline = time.monotonic() + self.global_memory.descriptor['timeout_s']
+        # Serialize request-id allocation AND enqueue to preserve per-session order.
+        if not self._send_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise TimeoutError('global state send lock timeout')
+        try:
+            with self._condition:
+                self._serial += 1
+                serial = self._serial
+                self._global_pending.add(serial)
+            try:
+                self.sender.send(dict(type='global_state_request', rpc_id=serial, binding=self.global_binding,
+                                      values=values, delete=delete, expected_version=expected_version),
+                                 timeout=max(.001, deadline - time.monotonic()))
+            except BaseException:
+                with self._condition:
+                    self._global_pending.discard(serial)
+                    self._global_acks.pop(serial, None)
+                raise
+        finally:
+            self._send_lock.release()
+        try:
+            with self._condition:
+                while serial not in self._global_acks:
+                    if self._closed or time.monotonic() >= deadline:
+                        raise TimeoutError('global state acknowledgement unavailable; commit outcome uncertain')
+                    self._condition.wait(max(0, deadline - time.monotonic()))
+                ack = self._global_acks.pop(serial)
+            if 'error' in ack:
+                error = {'GlobalStateConflict': GlobalStateConflict, 'KeyError': KeyError,
+                         'ValueError': ValueError, 'TypeError': TypeError, 'TimeoutError': TimeoutError}.get(ack.get('error_type'), RuntimeError)
+                raise error(ack['error'])
+            return ack['version']
+        finally:
+            with self._condition:
+                self._global_pending.discard(serial)
+                self._global_acks.pop(serial, None)
+
 
 class PolicyRuntime:
     def __init__(self, channel, message=None):
@@ -104,6 +163,14 @@ class PolicyRuntime:
         self.config_version = message.get('config_version', 1)
         self._inference_thread = None
         self._control_requests = []
+
+    @property
+    def globals(self):
+        proxy = getattr(self.channel, 'global_proxy', None)
+        if proxy is None:
+            raise RuntimeError('global state is unsupported; upgrade robot-control and policy SDK')
+        self.channel.check_globals()
+        return proxy
 
     @contextmanager
     def _inference_scope(self):

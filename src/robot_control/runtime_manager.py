@@ -450,6 +450,53 @@ class ComposeRuntimeManager:
                 raise BlockedCleanup('image pool anchor removal unconfirmed')
             path.unlink()
 
+    def record_global(self, identity, ipc_directory):
+        atomic_json(self.state_dir / f'global-{identity}.json', dict(
+            version=1, store_id=identity, deployment_id=self.context['deployment_id'], daemon_id=self.daemon_id,
+            run_id=self.run_id, anchor_id=self.anchor_id, anchor_epoch=self.anchor_epoch,
+            lock_path=str(Path(ipc_directory) / f'global-{identity}.lock')))
+
+    def global_records(self):
+        import re
+        records = []
+        for path in self.state_dir.glob('global-*.json'):
+            data = json.loads(path.read_text())
+            identity = data.get('store_id')
+            if (data.get('version') != 1 or data.get('deployment_id') != self.context['deployment_id']
+                    or data.get('daemon_id') != self.daemon_id or not isinstance(identity, str)
+                    or not re.fullmatch('[0-9a-f]{24}', identity) or path.name != f'global-{identity}.json'
+                    or Path(data.get('lock_path', '')).name != f'global-{identity}.lock'
+                    or Path(data['lock_path']).parent not in (Path('/run/robot-control'), self.state_dir.parent / 'ipc')):
+                raise BlockedCleanup('global state journal ownership mismatch')
+            records.append((path, data))
+        return records
+
+    def recover_globals(self, deadline):
+        import posix_ipc
+        for path, data in self.global_records():
+            remaining(deadline)
+            if data['anchor_id'] != self.anchor_id or data.get('anchor_epoch') != self.anchor_epoch:
+                if data['anchor_id'] in self._ids({}, deadline):
+                    raise BlockedInfrastructure('old global state anchor remains')
+                path.unlink()
+                continue
+            # Caller has already proved every old worker/container has exited.
+            try:
+                posix_ipc.unlink_shared_memory('/rcg' + data['store_id'])
+            except posix_ipc.ExistentialError:
+                pass
+            Path(data['lock_path']).unlink(missing_ok=True)
+            path.unlink()
+
+    def forget_global(self, identity):
+        (self.state_dir / f'global-{identity}.json').unlink(missing_ok=True)
+
+    def finish_global_namespace_cleanup(self, removed_anchors):
+        for path, data in self.global_records():
+            if data['anchor_id'] not in removed_anchors:
+                raise BlockedCleanup('global state anchor removal unconfirmed')
+            path.unlink()
+
     def snapshot(self):
         return dict(phase=self.phase, target=self.target, error=self.error,
                     cleanup_forced=self.cleanup_forced, run_id=self.run_id)

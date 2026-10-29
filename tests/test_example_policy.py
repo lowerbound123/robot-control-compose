@@ -206,8 +206,8 @@ def test_template_setup_and_catalog_discovery(tmp_path):
     shutil.copytree(EXAMPLE, tmp_path / "policy" / "example",
                     ignore=shutil.ignore_patterns("policy.json", "__pycache__"))
     assert discover(tmp_path / "policy")[0]["state"] == "needs_config"
-    changes, documents, _ = configuration_updates(tmp_path)
-    validate_documents(documents, "compose")
+    changes, documents = configuration_updates(tmp_path)
+    validate_documents(documents)
     write_updates(tmp_path, changes)
     assert select_policies(tmp_path, ["example"]) == ["example"]
     row = discover(tmp_path / "policy")[0]

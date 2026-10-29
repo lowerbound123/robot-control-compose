@@ -19,7 +19,7 @@ from rc_policy_sdk.outbox import PriorityOutbox
 
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
-                 init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None):
+                 init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None):
         from rc_policy_sdk.catalog import policy_id
         policy_id(config.get('id'))
         self.endpoint = endpoint
@@ -33,6 +33,7 @@ class PolicyProcess(MonitorClient):
         self.policy_dir, self.config, self.config_version = Path(policy_dir), config, config_version
         self.init_timeout_s, self.inference_timeout_s, self.release_timeout_s = init_timeout_s, inference_timeout_s, release_timeout_s
         self.on_log = on_log
+        self.global_state = global_state
         self.host_socket = host_socket or (endpoint.socket if endpoint else None)
         if not self.host_socket: raise ValueError('policy host socket is not configured')
         self.session_id = uuid.uuid4().hex
@@ -79,11 +80,6 @@ class PolicyProcess(MonitorClient):
             try: self.on_log(message)
             except Exception: pass
 
-    def preflight(self, cancel_event=None):
-        if cancel_event and cancel_event.is_set(): raise RuntimeError('preflight cancelled')
-        client = HostClient.get(self.host_socket, self.config['id'], expected=self.expected_host)
-        return client.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
-
     def start(self, cancel_event=None):
         try:
             with self._launch_lock:
@@ -96,11 +92,13 @@ class PolicyProcess(MonitorClient):
                 self.host.register(self)
                 self.host.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
                 self._submitted_load = True
+                global_descriptor = self.global_state.attach_session(self) if self.global_state is not None else None
                 loaded = self.host.request('load', timeout=min(10, self.init_timeout_s),
                     session_id=self.session_id, policy_id=self.config['id'],
                     timeouts=dict(initialize=self.init_timeout_s,inference=self.inference_timeout_s,release=self.release_timeout_s),
                     event=dict(type='initialize',config=self.config,config_version=self.config_version,
-                               tui_command_effects=['reload_policy'], runtime_tools=list(RUNTIME_TOOLS)))
+                               tui_command_effects=['reload_policy'], runtime_tools=list(RUNTIME_TOOLS),
+                               global_state=global_descriptor))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
             with self._condition:
@@ -134,6 +132,8 @@ class PolicyProcess(MonitorClient):
             self.runtime_id = packet['runtime_id']
             message = packet['event']; kind = message['type']
             if kind == 'ready':
+                if message.get('global_state_version') not in (None, 1):
+                    self._record_failure('incompatible global state protocol'); return
                 self.supports_monitor = message.get('monitor') is True
                 self.supports_observe = message.get('observe') is True
                 self.runtime_tools = runtime_tools(message.get('runtime_tools', []))
@@ -169,6 +169,11 @@ class PolicyProcess(MonitorClient):
                 self._forced |= bool(self.release_error)
                 # Callback completion is not runtime-tree exit proof.
                 self._ready = False
+            elif kind == 'global_state_request':
+                if self.global_state is not None:
+                    self.global_state.receive(self, message, self._enqueue)
+                else:
+                    self._enqueue(dict(type='global_state_ack', rpc_id=message.get('rpc_id'), error='global state unavailable'))
             elif kind == 'resource':
                 try:
                     if self.resources is None: raise RuntimeError('external resources unavailable')
@@ -223,6 +228,8 @@ class PolicyProcess(MonitorClient):
 
 
     def _record_failure(self, error):
+        if self.global_state is not None:
+            self.global_state.revoke(self)
         with self._condition:
             if self._state not in ("closing", "closed"):
                 self._failure = error

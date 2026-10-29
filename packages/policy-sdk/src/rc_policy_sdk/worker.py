@@ -73,6 +73,8 @@ def run_session(connection, policy_dir, namespace):
         if message.get("type") != "initialize" or not isinstance(message.get("config"), dict):
             raise ValueError("first message must initialize with a config object")
         config = message["config"]
+        if message.get('global_state') is not None:
+            channel.attach_globals(message['global_state'])
         channel.runtime_tools = runtime_tools(message.get("runtime_tools", []))
         version = message["config_version"]
         module = _load_policy(policy_dir, namespace)
@@ -106,7 +108,8 @@ def run_session(connection, policy_dir, namespace):
         if callable(getattr(module,'wants_observations',None)):
             supported=supported and module.wants_observations(context)
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
-                      "tui_command_effects": ["reload_policy"], "runtime_tools": list(RUNTIME_TOOLS)})
+                      "tui_command_effects": ["reload_policy"], "runtime_tools": list(RUNTIME_TOOLS),
+                      "global_state_version": 1 if channel.global_memory is not None else None})
         channel.send({'type':'capabilities','observe':supported})
         while True:
             message = channel.commands.get()
@@ -189,6 +192,8 @@ def run_session(connection, policy_dir, namespace):
         except BaseException as exc:
             release_error = f"{type(exc).__name__}: {exc}"
             traceback.print_exc()
+        if channel is not None and channel.global_memory is not None:
+            channel.global_memory.close()
         try:
             channel.send({"type": "closed", "release_error":release_error})
         except (OSError, AttributeError):

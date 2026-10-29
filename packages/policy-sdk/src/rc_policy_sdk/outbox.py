@@ -64,9 +64,6 @@ class PriorityOutbox:
         with self._condition:
             return len(self._normal) + len(self._monitor)
 
-    def empty(self):
-        return self.qsize() == 0
-
 
 class PrioritySender:
     """Synchronous control sends and nonblocking, retained monitor completions."""
@@ -79,7 +76,8 @@ class PrioritySender:
         self.thread = threading.Thread(target=self._write, name="policy-output", daemon=True)
         self.thread.start()
 
-    def send(self, message):
+    def send(self, message, *, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
         item = (encode_message(message), threading.Event(), [])
         while True:
             with self.lock:
@@ -92,8 +90,11 @@ class PrioritySender:
                     pass
             # Control sends previously waited on the socket send lock. Keep
             # that backpressure without holding the failure/close lock.
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('policy output queue timeout')
             self.failed.wait(.005)
-        item[1].wait()
+        if not item[1].wait(None if deadline is None else max(0, deadline - time.monotonic())):
+            raise TimeoutError('policy output acknowledgement timeout; delivery uncertain')
         if item[2]:
             raise OSError(str(item[2][0]))
 

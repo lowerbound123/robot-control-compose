@@ -1,5 +1,6 @@
 {
   "schema_version": 3,
+  "global_state": {"path": "global.env", "max_bytes": 1048576, "timeout_s": 2.0},
   "frequency_hz": 30,
   "policy_directory": "policy",
   "startup_policy": "hold",

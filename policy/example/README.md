@@ -43,6 +43,8 @@ exit
 
 ## 回调与数据
 
+`main.py` 中提供了 `runtime.globals` 的注释示例：可将代理保存到 context，在推理、命令或 release 中共享 JSON 字段。默认示例不写入业务状态；启用方式、版本条件更新和退出保存规则见 [全局共享状态](../../docs/global-state.md)。
+
 | 回调 | 演示内容 |
 | --- | --- |
 | `initialize(config)` | 验证配置、保留原始 config 引用、创建锁与统计 |

@@ -27,7 +27,7 @@ class _MemberResources:
 
 class ChainProcess:
     def __init__(self, record, *, process_factory=PolicyProcess, init_timeout_s=600,
-                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None):
+                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None):
         self.record = record
         self.config = copy.deepcopy(record.config)
         self.config_version = record.version
@@ -41,6 +41,7 @@ class ChainProcess:
         self.release_timeout_s = release_timeout_s
         self._factory, self._endpoints, self._log = process_factory, endpoints or {}, on_log
         self._exit_authority = exit_authority
+        self.global_state = global_state
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -76,10 +77,6 @@ class ChainProcess:
         return self._ready and not self._failure and all(getattr(w, 'runnable', w.alive) for w in self._workers.values())
 
     @property
-    def pid(self):
-        return None  # There is no single process-group identity for a chain.
-
-    @property
     def supports_observe(self):
         with self._condition:
             return any(worker.supports_observe for worker in self._workers.values())
@@ -107,7 +104,7 @@ class ChainProcess:
                                            inference_timeout_s=min(self.inference_timeout_s, member.config.get('timeouts', {}).get('inference_s', self.inference_timeout_s)),
                                            release_timeout_s=min(self.release_timeout_s, member.config.get('timeouts', {}).get('release_s', self.release_timeout_s)), endpoint=self._endpoints.get(identity),
                                            exit_authority=self._exit_authority,
-                                           on_log=self._log)
+                                           on_log=self._log, global_state=self.global_state)
                     worker.resources = _MemberResources(self, identity)
                     with self._condition:
                         if self._stop.is_set():

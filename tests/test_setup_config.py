@@ -48,7 +48,7 @@ def test_merge_backs_up_and_is_idempotent(tmp_path):
     path = folder / 'policy.json'
     original = '{"params":{"provider":{"api_key":"local-secret"}}}'
     path.write_text(original)
-    changes, docs, notices = module.configuration_updates(tmp_path)
+    changes, docs = module.configuration_updates(tmp_path)
     module.write_updates(tmp_path, changes)
     assert json.loads(path.read_text())['params']['provider'] == {'api_key': 'local-secret', 'model': 'new'}
     backups = list((tmp_path / '.setup/backups').rglob('policy.json'))
@@ -56,7 +56,7 @@ def test_merge_backs_up_and_is_idempotent(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
     before = path.stat().st_mtime_ns
-    changes, _, _ = module.configuration_updates(tmp_path)
+    changes, _ = module.configuration_updates(tmp_path)
     assert not changes
     module.write_updates(tmp_path, changes)
     assert path.stat().st_mtime_ns == before

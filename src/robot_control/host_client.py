@@ -67,10 +67,11 @@ class HostClient:
     def _heartbeat(self):
         while not self._heartbeat_stop.wait(1):
             try:
-                if not self.request('ping', timeout=3).get('healthy'):
+                if not self.request('ping', timeout=3).get('healthy') and not self._heartbeat_stop.is_set():
                     raise RuntimeError('policy host unavailable')
             except Exception as exc:
-                self._fail(str(exc))
+                if not self._heartbeat_stop.is_set():
+                    self._fail(str(exc))
                 return
 
     def register(self, member):
@@ -154,6 +155,8 @@ class HostClient:
             if not self.closed: self._fail(f'host disconnected: {exc}')
 
     def stop_group(self, runtime_id, sessions, timeout, *, deadline=None):
+        # Closing is expected during release; keep the RPC reader alive for ACKs.
+        self._heartbeat_stop.set()
         deadline = deadline if deadline is not None else time.monotonic() + timeout + 6
         def left():
             value = deadline - time.monotonic()

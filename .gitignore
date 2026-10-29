@@ -1,4 +1,6 @@
 .codex/
+**/global.env
+**/.global.env.*
 .venv/
 __pycache__/
 *.py[cod]

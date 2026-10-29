@@ -78,6 +78,8 @@ def load_rc(path: Path) -> dict:
     config["direct_control"] = control_settings(config.get("direct_control"))
     config["mcp"] = mcp_settings(config.get("mcp"))
     config["tui"] = tui_settings(config.get("tui"))
+    from .global_state_config import settings as global_settings
+    config['global_state'] = global_settings(config.get('global_state'))
     for key in ("initialize_s", "inference_s", "release_s", "shutdown_s"):
         timeout = config.get("timeouts", {}).get(key, {"initialize_s": 600, "inference_s": 60, "release_s": 30, "shutdown_s": 115}[key])
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
@@ -199,9 +201,6 @@ class PolicyRegistry:
                 existing = self._get_raw('default_chain')
         record = PolicyRecord(folder, config, existing.version + 1 if existing else 1)
         return self.resolve_chain(record, overrides)
-
-    def install_chain(self, record):
-        self._records[record.config["id"]] = record
 
     def save_chain(self, identities):
         record = self.propose_chain(identities)

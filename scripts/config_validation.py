@@ -1,12 +1,9 @@
 """Bootstrap validation aligned with RC/SDK contracts, using only the stdlib."""
-import copy
 import importlib.util
 import math
 from pathlib import Path
-import re
 
 ROOT = Path(__file__).resolve().parents[1]
-IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*')
 
 
 def load(relative):
@@ -34,7 +31,7 @@ def vector(value, field):
     return numbers
 
 
-def validate_rc(config, mode):
+def validate_rc(config):
     if config.get('schema_version') != 3:
         raise ValueError('RC schema_version does not match this repository')
     if not isinstance(config.get('robot'), dict) or config['robot'].get('backend') not in ('mock', 'acone'):
@@ -66,17 +63,18 @@ def validate_rc(config, mode):
     load('src/robot_control/direct_config.py').control_settings(config.get('direct_control'))
     load('src/robot_control/mcp_config.py').mcp_settings(config.get('mcp'))
     load('src/robot_control/tui_config.py').tui_settings(config.get('tui'))
+    load('src/robot_control/global_state_config.py').settings(config.get('global_state'))
 
 
-def validate_policy(config, mode, identity=None):
+def validate_policy(config, identity=None):
     load('packages/policy-sdk/src/rc_policy_sdk/catalog.py').validate_policy(config, identity)
 
 
-def validate_documents(documents, mode='compose'):
+def validate_documents(documents):
     for path, value in documents.items():
         location = Path(path)
         if (location.parent in (Path('.'), Path('configs')) and
                 (location.name == 'rc.json' or location.name.startswith('rc.') and location.suffix == '.json')):
-            validate_rc(value, mode)
+            validate_rc(value)
         elif path.endswith('/policy.json'):
-            validate_policy(value, mode, Path(path).parent.name)
+            validate_policy(value, Path(path).parent.name)

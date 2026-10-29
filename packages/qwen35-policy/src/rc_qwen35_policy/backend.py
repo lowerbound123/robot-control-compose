@@ -190,7 +190,7 @@ class Qwen35Backend:
                         self.policy_config.action_token_max,
                     )
                     prompt_length = inputs[key_ids].shape[1]
-                    _, self._subtask = _append_subtask_until_first_fast_token(
+                    _append_subtask_until_first_fast_token(
                         self.policy,
                         inputs,
                         action_token_min=self.policy_config.action_token_min,
@@ -293,7 +293,6 @@ class Qwen35Backend:
     def reset_context(self) -> None:
         self._subtask_tokens = None
         self._subtask_uses_left = 0
-        self._subtask = ""
 
     def close(self) -> None:
         if self._closed:

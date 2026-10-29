@@ -35,6 +35,9 @@ def _empty_stats():
 def initialize(config):
     """一次实例只初始化一次；锁用于保护与命令、观测、监控共享的状态。"""
     validate_config(config)
+    # 共享状态示例：将签名改成 initialize(config, *, runtime)，然后保存
+    # context["shared"] = runtime.globals。该 session 代理可在 release 中使用。
+    # context["shared"].update({"example_status": {"phase": "ready"}})
     context = {
         # 保留原始引用：SDK 接受热补丁后会原地更新这个对象。
         "config": config,
@@ -87,6 +90,12 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     # RC 控制示例，默认不执行。仅当前 policy() 推理线程可以请求暂停，
     # SDK 随成功结果提交给 RC；仍需返回合法动作，并由 RC 控制线程处理。
     # runtime.pause("example：演示暂停请求")
+
+    # 跨策略通信示例（默认不写入业务状态）：
+    # runtime.globals["example_status"] = {"calls": calls, "message": message}
+    # version, shared = runtime.globals.snapshot()
+    # runtime.globals.patch({"example_count": shared.get("example_count", 0) + 1},
+    #                       expected_version=version)  # 冲突时显式处理，不盲目重试。
 
     # 不用 if action_chunk：NumPy 数组的真假判断有歧义。
     if len(action_chunk) > 0:

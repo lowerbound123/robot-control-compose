@@ -7,10 +7,6 @@ import numpy as np
 from rc_policy_sdk.actions import ActionChunk, normalize_actions
 
 
-def validate_actions(actions) -> np.ndarray:
-    return normalize_actions(actions).actions
-
-
 @dataclass(frozen=True)
 class RequestToken:
     generation: int

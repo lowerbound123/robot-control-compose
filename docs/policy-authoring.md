@@ -1,5 +1,7 @@
 # 策略作者规范
 
+SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享内存，RC 统一提交写入，退出全量保存到 global.env。完整接口、并发与持久化约定见 [全局共享状态](global-state.md)。
+
 可直接运行的完整本地范例见 [example 策略](../policy/example/README.md)：Python 3.14、动作透传、空输入保持、共享图片、同名命令、观测、监控、热配置与注释的 RC 暂停请求。
 
 ## 目录身份与声明

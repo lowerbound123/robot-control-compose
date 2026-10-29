@@ -54,6 +54,7 @@ def down(root, arguments):
         remote_forced=ExternalResources.recover(root/'outputs/recovery',deadline,context['deployment_id'],
                                                 defer_namespace_cleanup=True)
         anchors={data['anchor_id'] for _,data in manager.pool_records()}
+        anchors.update(data['anchor_id'] for _, data in manager.global_records())
         for path in (root/'outputs/recovery').glob('*.json'):
             identity=json.loads(path.read_text()).get('anchor_id')
             if identity:anchors.add(identity)
@@ -65,6 +66,7 @@ def down(root, arguments):
             raise RuntimeError('anchor removal unconfirmed; retain external recovery journals')
         ExternalResources.finish_namespace_cleanup(root/'outputs/recovery',context['deployment_id'],anchors)
         manager.finish_pool_namespace_cleanup(anchors)
+        manager.finish_global_namespace_cleanup(anchors)
         return 1 if rc_failed or manager.cleanup_forced or remote_forced else 0
     finally:
         manager.release()

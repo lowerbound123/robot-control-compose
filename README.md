@@ -91,3 +91,7 @@ mcp get_policy_result <operation_id>
 - [测试与验收边界](docs/verification.md)
 
 只构建 `ros_ws` 下的消息包，厂商备份原样保留；项目不自动启动硬件驱动。mock、真实 Docker、ROS 仿真与真机验证分别记录，模拟测试通过不代表真机验收。
+
+## 全局状态扩展
+
+RC/SDK 0.11 支持所有策略共享的 JSON 字典：`runtime.globals` / `controller.globals`，终端 `show global`、`set global.<key> <JSON>`、`unset global.<key>`。RC 统一提交并在退出时保存至 `global.env`，policy 切换保留内容。见 [全局共享状态](docs/global-state.md)。

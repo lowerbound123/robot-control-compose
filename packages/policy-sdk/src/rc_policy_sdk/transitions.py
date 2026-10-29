@@ -2,7 +2,6 @@
 Source commit: 74dc1f9a163c61a255c6f7aa4bc91d84054733f7.
 See docs/model-server-policy.md for provenance and license.
 """
-from typing import Any
 import numpy as np
 
 class TemporalTransition:
@@ -116,7 +115,6 @@ class TrajectoryAddTransition(TemporalTransition):
                 "transition.max_smoothing_steps must be -1 or a positive integer"
             )
         self.max_smoothing_steps = max_smoothing_steps
-        self._last_metrics: dict[str, Any] = {}
 
     def apply(self, old_actions: np.ndarray, new_actions: np.ndarray) -> np.ndarray:
         old = np.asarray(old_actions, dtype=np.float32)
@@ -132,55 +130,18 @@ class TrajectoryAddTransition(TemporalTransition):
                 f"got old={old.shape}, new={new.shape}"
             )
         if len(new) == 0:
-            self._last_metrics = {
-                "trunk_mode": self.trunk_mode,
-                "applied_trunk_mode": self.trunk_mode,
-                "trunk_smoothing": self.trunk_smoothing,
-                "max_smoothing_steps": self.max_smoothing_steps,
-                "smoothing_applied": False,
-                "fallback_reason": None,
-                "old_steps": len(old),
-                "new_steps": 0,
-                "old_keypoint_index": None,
-                "keypoint_index": None,
-                "keypoint_distance": None,
-                "blend_steps": 0,
-                "appended_steps": 0,
-                "discarded_old_steps": len(old),
-                "result_steps": 0,
-            }
             return new.copy()
         if len(old) == 0:
-            self._last_metrics = {
-                "trunk_mode": self.trunk_mode,
-                "applied_trunk_mode": self.trunk_mode,
-                "trunk_smoothing": self.trunk_smoothing,
-                "max_smoothing_steps": self.max_smoothing_steps,
-                "smoothing_applied": False,
-                "fallback_reason": None,
-                "old_steps": 0,
-                "new_steps": len(new),
-                "old_keypoint_index": None,
-                "keypoint_index": None,
-                "keypoint_distance": None,
-                "blend_steps": 0,
-                "appended_steps": len(new),
-                "discarded_old_steps": 0,
-                "result_steps": len(new),
-            }
             return new.copy()
 
         applied_trunk_mode = self.trunk_mode
-        fallback_reason = None
         if self.trunk_mode == "now" and len(old) < 3:
             applied_trunk_mode = "tail"
-            fallback_reason = "old_steps_below_now_lookahead"
 
         if applied_trunk_mode == "now":
             old_keypoint = 2
             distances = np.linalg.norm(new - old[old_keypoint], axis=1)
             keypoint = int(np.argmin(distances))
-            keypoint_distance = float(distances[keypoint])
         elif applied_trunk_mode == "close":
             # Flattened argmin is deterministic: ties choose the earliest old
             # index, then the earliest new index.
@@ -192,35 +153,16 @@ class TrajectoryAddTransition(TemporalTransition):
             )
             old_keypoint = int(old_keypoint_raw)
             keypoint = int(keypoint_raw)
-            keypoint_distance = float(pairwise_distances[old_keypoint, keypoint])
         else:
             old_keypoint = len(old) - 1
             distances = np.linalg.norm(new - old[old_keypoint], axis=1)
             keypoint = int(np.argmin(distances))
-            keypoint_distance = float(distances[keypoint])
 
         smoothing_applied = self.trunk_smoothing and self.trunk_mode != "now"
         if not smoothing_applied:
             result = np.concatenate(
                 (old[:old_keypoint], new[keypoint:]), axis=0
             ).astype(np.float32, copy=False)
-            self._last_metrics = {
-                "trunk_mode": self.trunk_mode,
-                "applied_trunk_mode": applied_trunk_mode,
-                "trunk_smoothing": self.trunk_smoothing,
-                "max_smoothing_steps": self.max_smoothing_steps,
-                "smoothing_applied": False,
-                "fallback_reason": fallback_reason,
-                "old_steps": len(old),
-                "new_steps": len(new),
-                "old_keypoint_index": old_keypoint,
-                "keypoint_index": keypoint,
-                "keypoint_distance": keypoint_distance,
-                "blend_steps": 0,
-                "appended_steps": len(new) - keypoint,
-                "discarded_old_steps": len(old) - old_keypoint,
-                "result_steps": len(result),
-            }
             return result
 
         blend_steps = min(old_keypoint + 1, keypoint + 1)
@@ -234,24 +176,4 @@ class TrajectoryAddTransition(TemporalTransition):
         result = np.concatenate(
             (old_prefix, blended, new[keypoint + 1 :]), axis=0
         ).astype(np.float32, copy=False)
-        self._last_metrics = {
-            "trunk_mode": self.trunk_mode,
-            "applied_trunk_mode": applied_trunk_mode,
-            "trunk_smoothing": self.trunk_smoothing,
-            "max_smoothing_steps": self.max_smoothing_steps,
-            "smoothing_applied": True,
-            "fallback_reason": fallback_reason,
-            "old_steps": len(old),
-            "new_steps": len(new),
-            "old_keypoint_index": old_keypoint,
-            "keypoint_index": keypoint,
-            "keypoint_distance": keypoint_distance,
-            "blend_steps": blend_steps,
-            "appended_steps": len(new) - keypoint - 1,
-            "discarded_old_steps": len(old) - old_keypoint - 1,
-            "result_steps": len(result),
-        }
         return result
-
-    def metrics(self) -> dict[str, Any]:
-        return dict(self._last_metrics)

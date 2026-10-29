@@ -28,11 +28,11 @@ def test_catalog_discovers_formal_manifest_without_template_or_import(tmp_path):
     assert descriptor['config']['id'] == folder.name
     assert descriptor['socket'] == '/run/robot-control/fifth-policy.sock'
     from config_files import configuration_updates
-    _, documents, _ = configuration_updates(tmp_path.parent)
+    _, documents = configuration_updates(tmp_path.parent)
     # Bootstrap's real-file discovery has the same contract (policy root).
     root = tmp_path / 'project'
     target = plugin(root / 'policy')
-    _, documents, _ = configuration_updates(root)
+    _, documents = configuration_updates(root)
     assert 'policy/fifth-policy/policy.json' in documents
 
 
@@ -66,7 +66,7 @@ def test_templates_do_not_make_a_policy_runnable(tmp_path):
 
 def test_business_model_format_is_not_interpreted_by_bootstrap():
     from config_validation import validate_documents
-    validate_documents({'policy/custom/model.json': {'format': 'anything'}}, 'compose')
+    validate_documents({'policy/custom/model.json': {'format': 'anything'}})
 
 
 def test_symlink_alias_cannot_change_directory_identity(tmp_path):

@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import platform
 import signal
-import subprocess
 import sys
 import time
 
@@ -97,22 +96,7 @@ def descendant_snapshot(pid, root_birth=None):
             found.update(children)
             frontier = children
         return {child: birth for child in found if (birth := process_birth(child)) is not None}
-    else:
-        parents = {}
-        output = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=2, check=True).stdout
-        for line in output.splitlines():
-            child, parent = line.split()
-            parents[int(child)] = int(parent)
-    found = set()
-    frontier = {pid}
-    while frontier:
-        frontier = {child for child, parent in parents.items() if parent in frontier and child not in found}
-        found.update(frontier)
-    return {child: birth for child in found if (birth := process_birth(child)) is not None}
-
-
-def descendants(pid):
-    return set(descendant_snapshot(pid))
+    raise OSError("descendant discovery requires Linux or macOS")
 
 
 def _pidfd_syscall(number, *arguments):

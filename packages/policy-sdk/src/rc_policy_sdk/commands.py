@@ -5,7 +5,7 @@ import re
 import shlex
 
 BUILTIN_COMMANDS = (
-    "set", "show", "save-config", "reset", "r", "save", "load", "pause",
+    "set", "unset", "show", "save-config", "reset", "r", "save", "load", "pause",
     "resume", "policies", "switch", "status", "help", "exit", "quit", "take", "return", "mcp",
     "camera", "monitor", "manage-policy", "snapshot", "policy",
 )

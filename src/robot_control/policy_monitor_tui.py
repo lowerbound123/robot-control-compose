@@ -20,7 +20,6 @@ class PolicyMonitorPanel(Static):
 
     def __init__(self, identity):
         super().__init__("", markup=False)
-        self.policy_identity = identity
         self.border_title = f"monitor · {identity}"
         self._last_text = None
 

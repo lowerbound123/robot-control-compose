@@ -1,5 +1,7 @@
 .git
 .codex
+**/global.env
+**/.global.env.*
 .venv
 **/__pycache__
 **/*.pyc

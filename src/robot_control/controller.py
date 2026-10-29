@@ -30,6 +30,7 @@ from .safety import ModeLimiter, finite_qpos, arm_targets
 from .policy_commands import PolicyCommandSupport
 from .chain_management import ChainManagement
 from .policy_results import PolicyResultSupport
+from .global_state_control import GlobalStateControl
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from .operations import ControlRequest, Operations
 from .direct import DirectMotion
@@ -43,13 +44,14 @@ HELP = "\n".join([
     "policies；switch <id> [--reset]；status；help；exit/quit",
     "take：MCP 接管并暂停推理；return：交还并恢复 policy（接管时 resume 同义）",
     '示例：set policy.params.delay_s 0.2；set policy.execution.mode "async"',
+    'show global [key]；set global.<key> <JSON>；unset global.<key>：共享状态，退出自动保存',
 ])
 
 
 from .policy_monitors import PolicyMonitors
 
 
-class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport):
+class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl):
     def __init__(self, config_path, *, robot=None, process_factory=PolicyProcess, runtime_manager=None):
         self.config_path = Path(config_path).resolve()
         self.config = load_rc(self.config_path)
@@ -123,6 +125,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
         self._init_chain_editor()
         self._log_stream = None
         self._log_lock = threading.Lock()
+        self._init_globals()
 
     def _emit(self, message, level="info", *, record_history=True):
         entry = {"time": format_log_time(time.time()), "level": level, "message": public_message(message)}
@@ -208,11 +211,13 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             words = shlex.split(line)
         except ValueError:
             return False
-        return words in (["status"], ["policies"], ["help"], ["show", "rc"], ["show", "policy"])
+        return RobotController._is_global_read(words) or words in (["status"], ["policies"], ["help"], ["show", "rc"], ["show", "policy"])
 
     def query(self, line):
         with self._lock:
             words = shlex.split(line)
+            if self._is_global_read(words):
+                return self._query_global(words)
             if words == ["status"]:
                 return self.status()
             if words == ["policies"]:
@@ -359,6 +364,8 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 return
             self.operations.update(identity, "running")
             self._dispatch_id = identity
+            if self._dispatch_global(request):
+                return
             if request.chain_action is not None:
                 self._dispatch_chain_editor(request)
                 return
@@ -605,6 +612,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                     raise
                 except Exception as exc:
                     raise BlockedCleanup(f'startup recovery unconfirmed: {exc}') from exc
+            self._start_globals(cancel)
             self.robot.connect(cancel_event=cancel)
             return {"connected": True}
         if kind == "shutdown":
@@ -622,6 +630,14 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                     self.runtime.cleanup_owned(deadline)
                 except Exception as exc:
                     failures.append(str(exc))
+            try:
+                self._save_globals(deadline)
+            except Exception as exc:
+                failures.append(f'global state 保存失败：{exc}')
+            try:
+                self._close_globals(deadline, reclaim=not failures)
+            except Exception as exc:
+                failures.append(f'global state 清理失败：{exc}')
             if failures:
                 from .runtime_manager import BlockedCleanup
                 raise BlockedCleanup("；".join(failures))
@@ -684,6 +700,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             raise RuntimeError("policy 初始化已取消")
         timeouts = self.config.get("timeouts", {})
         worker_options = dict(
+            global_state=self._global_service,
             init_timeout_s=timeouts.get("initialize_s", 600),
             inference_timeout_s=timeouts.get("inference_s", 60),
             release_timeout_s=timeouts.get("release_s", 30),

@@ -13,7 +13,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 
 def test_policy_rc_named_business_document_is_not_a_controller_config():
     from config_validation import validate_documents
-    validate_documents({'policy/custom/rc-model.json':{'arbitrary':'business'}},'compose')
+    validate_documents({'policy/custom/rc-model.json':{'arbitrary':'business'}})
 
 
 def test_build_fingerprint_includes_effective_dockerignore(tmp_path):

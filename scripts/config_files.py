@@ -57,7 +57,7 @@ def configuration_updates(root):
     files = [*root.glob('rc*.json*'), *(root / 'configs').rglob('*.json*'), *(root / 'policy').rglob('*.json*')]
     targets = sorted({p.with_suffix('') if p.name.endswith('.json.example') else p
                       for p in files if p.name.endswith(('.json', '.json.example')) and '.runtime' not in p.parts})
-    changes, documents, notices = [], {}, []
+    changes, documents = [], {}
     for target in targets:
         template = target.with_name(target.name + '.example')
         if target.is_symlink() or any(p.is_symlink() for p in target.parents if p != root.parent):
@@ -68,7 +68,7 @@ def configuration_updates(root):
         documents[target.relative_to(root).as_posix()] = value
         if current != value:
             changes.append((target, (json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode()))
-    return changes, documents, notices
+    return changes, documents
 
 
 def _private_directory(path):

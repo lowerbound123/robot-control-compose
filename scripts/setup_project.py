@@ -140,8 +140,16 @@ def setup(root, policies=None, *, config_only=False):
     root = Path(root).resolve()
     if os.getuid() == 0:
         raise ValueError('run setup as the normal host user, not root')
-    changes, documents, notices = configuration_updates(root)
+    changes, documents = configuration_updates(root)
     validate_documents(documents)
+    # Global state is runtime data: initialize once, never merge/reset it.
+    for relative, document in documents.items():
+        if document.get('schema_version') == 3 and 'robot' in document:
+            state_path = Path(relative).parent / document.get('global_state', {}).get('path', 'global.env')
+            if not state_path.is_absolute() and '..' not in state_path.parts:
+                target = root / state_path
+                if not target.exists() and not any(path == target for path, _ in changes):
+                    changes.append((target, b'# RC global state: one key=<JSON> per line.\n'))
     for template in (root/'policy').glob('*/deployment.env.example'):
         if not template.with_suffix('').exists():
             changes.append((template.with_suffix(''),template.read_bytes()))
@@ -165,8 +173,6 @@ def setup(root, policies=None, *, config_only=False):
     selected=select_policies(root,requested)
     if not config_only:
         prepare_images(root,selected,context)
-    for notice in notices:
-        print(notice)
     print('配置已准备；基础启动仅 RC 和 ipc-anchor。' if config_only else '镜像与配置已准备；尚未启动容器。')
     return selected
 

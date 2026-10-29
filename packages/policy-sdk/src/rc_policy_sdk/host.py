@@ -70,7 +70,6 @@ class PolicyHost:
         self.instance_id = uuid.uuid4().hex
         self.condition = threading.Condition(threading.RLock())
         self.stop_lock = threading.Lock()
-        self.write_lock = threading.Lock()
         self.process = None
         self.runtime = None
         self.runtime_outbox = None
@@ -209,6 +208,22 @@ class PolicyHost:
                 runtime_id = self.runtime_id
             if reason: self.stop(runtime_id, timeout=0, reason=reason)
 
+    def _begin_stop(self, peer, message):
+        """Close admission synchronously; only the slow cleanup runs elsewhere."""
+        timeout = message.get('release_timeout')
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0:
+            raise ValueError('invalid release timeout')
+        with self.condition:
+            if self.owner is not None and self.owner != peer.owner:
+                raise ValueError('host owned by another RC')
+            runtime_id = message.get('runtime_id') or (self.runtime_id if self.owner == peer.owner else None)
+            if runtime_id is not None and runtime_id not in self.stopped:
+                if runtime_id != self.runtime_id:
+                    raise ValueError('unknown or stale runtime stop')
+                self.closing = True
+            self.revoked_owners.add(peer.owner)
+            return runtime_id
+
     def dispatch(self, peer, message):
         kind = message.get('type')
         if kind == 'hello':
@@ -227,16 +242,19 @@ class PolicyHost:
             return {'healthy': not (self.shutting_down or self.closing or self.cleanup_failed)}
         if kind == 'preflight': return self.preflight(message['policy_id'])
         if kind == 'stop':
-            if self.owner is not None and peer.owner != self.owner: raise ValueError('host owned by another RC')
-            with self.condition:
-                self.revoked_owners.add(peer.owner)
-                runtime_id = message.get('runtime_id') or (self.runtime_id if self.owner == peer.owner else None)
-                if runtime_id is None:
-                    return {'runtime_id':None, 'host_instance_id':self.instance_id, 'cleanup_confirmed':True, 'forced':False}
+            runtime_id = self._begin_stop(peer, message)
+            if runtime_id is None:
+                return {'runtime_id':None, 'host_instance_id':self.instance_id, 'cleanup_confirmed':True, 'forced':False}
             return self.stop(runtime_id, order=message.get('sessions'), timeout=message['release_timeout'])
         with self.condition:
-            if self.closing or self.shutting_down or self.cleanup_failed: raise RuntimeError('host is closing or poisoned')
             if self.owner is not None and self.owner != peer.owner: raise ValueError('host owned by another RC')
+            closing_ack = (kind == 'dispatch' and message.get('event', {}).get('type') == 'global_state_ack'
+                           and message.get('runtime_id') == self.runtime_id
+                           and message.get('session_id') in self.sessions
+                           and self.sessions[message['session_id']]['peer'] is peer
+                           and not self.sessions[message['session_id']]['closed'])
+            if (self.closing or self.shutting_down or self.cleanup_failed) and not closing_ack:
+                raise RuntimeError('host is closing or poisoned')
             if kind == 'load':
                 if peer.owner in self.revoked_owners: raise RuntimeError('RC owner revoked; create a new session')
                 directory = self.preflight(message['policy_id'])['directory']
@@ -321,10 +339,29 @@ class PolicyHost:
 
     def serve_peer(self, connection):
         peer = Peer(connection)
+        stop_pending = threading.Event()
+        def stop_request(message):
+            try:
+                result = self.dispatch(peer, message)
+                peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'result': result})
+            except Exception as exc:
+                try:
+                    peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'error': str(exc)})
+                except OSError:
+                    pass
+            finally:
+                stop_pending.clear()
         try:
             while True:
                 message = receive_message(connection)
                 try:
+                    if message.get('type') == 'stop' and 'rpc_id' in message:
+                        if stop_pending.is_set():
+                            raise RuntimeError('stop already pending')
+                        self._begin_stop(peer, message)
+                        stop_pending.set()
+                        threading.Thread(target=stop_request, args=(message,), name='host-stop', daemon=True).start()
+                        continue
                     result = self.dispatch(peer, message)
                     if 'rpc_id' in message:
                         peer.send({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'result': result})

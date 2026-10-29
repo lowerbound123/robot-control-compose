@@ -23,7 +23,7 @@ from pathlib import Path
 type Number = float
 def initialize(config):
     assert sys.version_info[:2] == (3, 14)
-    assert importlib.metadata.version('rc-policy-sdk') == '0.10.0'
+    assert importlib.metadata.version('rc-policy-sdk') == '0.11.0'
     return {'calls': 0}
 def policy(context, state, action_chunk, images, config, *, runtime):
     context['calls'] += 1
@@ -54,8 +54,8 @@ def container():
     import robot_control
 
     assert sys.version_info[:2] == (3, 10)
-    assert importlib.metadata.version('robot-control') == '0.10.0'
-    assert importlib.metadata.version('rc-policy-sdk') == '0.10.0'
+    assert importlib.metadata.version('robot-control') == '0.11.0'
+    assert importlib.metadata.version('rc-policy-sdk') == '0.11.0'
     assert '/site-packages/' in robot_control.__file__ or '/dist-packages/' in robot_control.__file__
     root = Path('/workspace')
     gate = root / 'policy/b/allow'

@@ -1,6 +1,4 @@
 """Keyboard policy-chain editor; holds a draft, never performs model or file I/O."""
-import time
-
 from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -23,27 +21,13 @@ class CellAction(Message):
 
 
 class ChainCells(OptionList):
-    BINDINGS = [Binding('a', 'insert_above', show=False), Binding('b', 'insert_below', show=False),
-                Binding('delete', 'delete_cell', show=False), Binding('d', 'delete_twice', show=False),
+    BINDINGS = [Binding('u', 'insert_above', show=False), Binding('d', 'insert_below', show=False),
+                Binding('delete', 'delete_cell', show=False),
                 Binding('j', 'cursor_down', show=False), Binding('k', 'cursor_up', show=False)]
-    _last_d = 0.
 
     def action_insert_above(self): self.post_message(CellAction('above'))
     def action_insert_below(self): self.post_message(CellAction('below'))
     def action_delete_cell(self): self.post_message(CellAction('delete'))
-
-    def action_delete_twice(self):
-        now = time.monotonic()
-        if now - self._last_d < .5:
-            self._last_d = 0.
-            self.action_delete_cell()
-        else:
-            self._last_d = now
-
-    def on_key(self, event):
-        if event.key != 'd': self._last_d = 0.
-
-    def on_blur(self): self._last_d = 0.
 
 
 class AvailablePolicies(OptionList):
@@ -51,7 +35,8 @@ class AvailablePolicies(OptionList):
 
 
 class PolicyManagerPanel(Widget):
-    BINDINGS = [Binding('escape', 'escape', show=False), Binding('shift+enter', 'apply', show=False),
+    BINDINGS = [Binding('escape', 'escape', show=False), Binding('a', 'apply', show=False),
+                Binding('shift+enter', 'apply', show=False),
                 Binding('ctrl+s', 'save', show=False)]
     DEFAULT_CSS = """
     PolicyManagerPanel { display: none; height: 14; min-height: 8; max-height: 50vh; border: solid $accent; }
@@ -84,7 +69,7 @@ class PolicyManagerPanel(Widget):
                 yield Static('可用 policy', classes='chain-label')
                 yield AvailablePolicies(id='chain-available')
         yield Static('', id='chain-note')
-        yield Static('a/b 上/下插入 · Enter 选择/替换 · Delete/dd 删除 · Esc 返回/关闭 · Shift+Enter 应用 · Ctrl+S 保存', id='chain-keys')
+        yield Static('u/d 上/下新增 · Enter 选择/替换 · Delete 删除 · Esc 返回/关闭 · a/Shift+Enter 激活配置 · Ctrl+S 保存', id='chain-keys')
 
     def load_snapshot(self, snapshot):
         if not self.initialized:
@@ -108,7 +93,7 @@ class PolicyManagerPanel(Widget):
             left.add_option(Option(Text(f'{index + 1:02}  {identity}{suffix}')))
             seen.add(identity)
         if not self.policies:
-            left.add_option(Option('空草稿：按 a/b 添加', disabled=True))
+            left.add_option(Option('空草稿：按 u/d 新增', disabled=True))
         left.highlighted = min(selected, max(0, len(self.policies) - 1))
         self._refresh_catalog()
         self.refresh_note()

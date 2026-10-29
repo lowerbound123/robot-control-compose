@@ -53,7 +53,7 @@ class EditorController(FakeController):
 
 
 @pytest.mark.asyncio
-async def test_two_columns_insert_above_below_replace_delete_and_cancel(monkeypatch):
+async def test_two_columns_insert_above_below_replace_delete_and_cancel():
     controller = EditorController()
     app = RobotControlApp(controller)
     async with app.run_test(size=(100, 30)) as pilot:
@@ -64,22 +64,19 @@ async def test_two_columns_insert_above_below_replace_delete_and_cancel(monkeypa
         assert panel.display and left.has_focus
         assert left.region.x < right.region.x
         assert panel.region.bottom <= app.query_one(CommandInput).region.y
-        await pilot.press('b')
+        await pilot.press('d')
         assert right.has_focus
         await pilot.press('down', 'down', 'enter')
         assert panel.policies == ['a','c','b','a'] and left.has_focus
-        await pilot.press('a', 'escape')
+        await pilot.press('u', 'escape')
         assert panel.policies == ['a','c','b','a'] and left.has_focus
         await pilot.press('enter', 'down', 'enter')
         assert panel.policies == ['a','b','b','a']
         await pilot.press('delete')
         assert panel.policies == ['a','b','a']
-        # Test the intended rapid dd gesture independently of CI render speed.
-        from types import SimpleNamespace
-        from robot_control import policy_manager_tui
-        ticks = iter([100., 100.1])
-        monkeypatch.setattr(policy_manager_tui, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
-        await pilot.press('d', 'd')
+        await pilot.press('u', 'enter')
+        assert panel.policies == ['a','a','b','a'] and left.has_focus
+        await pilot.press('delete', 'delete')
         assert panel.policies == ['a','a']
         await pilot.press('escape')
         assert not panel.display and app.query_one(CommandInput).has_focus
@@ -105,7 +102,7 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
         await pilot.pause(.1)
         assert controller.saved == ['b','a'] and controller.applied == ['a','b','a']
         controller.reject_apply = True
-        await pilot.press('shift+enter')
+        await pilot.press('a')
         await pilot.pause(.1)
         assert controller.actions[-1] == ('apply', ['b', 'a'])
         assert panel.policies == ['b','a'] and panel.display
@@ -113,14 +110,21 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
         await pilot.press('delete', 'delete')
         assert panel.policies == []
         count = len(controller.actions)
-        await pilot.press('ctrl+s', 'shift+enter')
+        await pilot.press('ctrl+s', 'a', 'shift+enter')
         assert len(controller.actions) == count
-        await pilot.press('b', 'enter')
+        await pilot.press('d', 'enter')
         assert panel.policies == ['a']
+        controller.reject_apply = False
+        await pilot.press('a')
+        await pilot.pause(.1)
+        assert controller.applied == ['a']
+        await pilot.press('shift+enter')
+        await pilot.pause(.1)
+        assert controller.actions[-1] == ('apply', ['a'])
         command = app.query_one(CommandInput)
         command.focus()
-        await pilot.press('a', 'b', 'd', 'd')
-        assert command.value == 'abdd'
+        await pilot.press('u', 'd', 'a', 'b', 'd', 'd')
+        assert command.value == 'udabdd'
         assert panel.policies == ['a']
         await pilot.press('ctrl+c')
         assert controller.commands[-1] == 'exit'

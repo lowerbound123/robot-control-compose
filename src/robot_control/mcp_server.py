@@ -165,8 +165,8 @@ def create_server(controller):
         return await query("policies")
 
     @server.tool(annotations=read)
-    async def show(scope: Literal["rc", "policy"]) -> CallToolResult:
-        """Read the effective RC or active policy configuration."""
+    async def show(scope: Literal["rc", "policy", "global"]) -> CallToolResult:
+        """Read RC configuration, active policy configuration, or global shared state."""
         return await query("show " + scope)
 
     @server.tool(annotations=read)
