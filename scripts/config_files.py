@@ -53,21 +53,31 @@ def merge_json(template, current, field='$'):
 
 
 def configuration_updates(root):
+    # Import only on setup's YAML path. compose_project imports read_json before
+    # adding source paths, and host down must work without the YAML dependency.
+    from robot_control.config_paths import main_config_targets, is_main_json
+    from robot_control.yaml_config import load_yaml_config, render_yaml_config, strict_equal
     root = Path(root).resolve()
-    files = [*root.glob('rc*.json*'), *(root / 'configs').rglob('*.json*'), *(root / 'policy').rglob('*.json*')]
-    targets = sorted({p.with_suffix('') if p.name.endswith('.json.example') else p
-                      for p in files if p.name.endswith(('.json', '.json.example')) and '.runtime' not in p.parts})
+    mains = main_config_targets(root)  # Reject legacy main files before preparing any changes.
+    files = [*(root / 'configs').rglob('*.json*'), *(root / 'policy').rglob('*.json*')]
+    business = sorted({p.with_suffix('') if p.name.endswith('.json.example') else p
+                       for p in files if p.name.endswith(('.json', '.json.example'))
+                       and '.runtime' not in p.parts and not is_main_json(root, p)})
     changes, documents = [], {}
-    for target in targets:
-        template = target.with_name(target.name + '.example')
+    for target, template in mains + [(p, p.with_name(p.name + '.example')) for p in business]:
         if target.is_symlink() or any(p.is_symlink() for p in target.parents if p != root.parent):
             raise ValueError(f'{target}: symlink configuration is not supported')
-        current = read_json(target) if target.exists() else None
-        default = read_json(template) if template.is_file() else None
+        yaml = target.suffix in ('.yaml', '.yml')
+        read = load_yaml_config if yaml else read_json
+        current = read(target) if target.exists() else None
+        template = template if template is not None and template.is_file() else None
+        default = read(template) if template is not None else None
         value = merge_json(default, current, str(target.relative_to(root))) if current is not None and default is not None else (current if current is not None else default)
         documents[target.relative_to(root).as_posix()] = value
-        if current != value:
-            changes.append((target, (json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode()))
+        if not strict_equal(current, value):
+            content = (render_yaml_config(target, value, template=template) if yaml else
+                       (json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode())
+            changes.append((target, content))
     return changes, documents
 
 

@@ -1,4 +1,4 @@
-"""Lightweight SDK; importing discovery/configuration never loads array libraries."""
+"""Lightweight SDK; importing identity/configuration validation never loads array libraries."""
 from importlib import import_module
 
 _EXPORTS = {'ImageLease':'images', 'ImagePool':'images', 'map_images':'images',

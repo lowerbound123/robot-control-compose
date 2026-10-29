@@ -23,7 +23,7 @@ def command_controller(tmp_path, monkeypatch, request):
         config.update(schema_version=3, id=name, hot_reloadable=["params.value"])
         config["params"]["value"] = 1
         config["execution"].update(mode="sync", call_every_actions=1)
-        (directory / "policy.json").write_text(json.dumps(config))
+        (directory / "policy.yaml").write_text(json.dumps(config))
     config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy",
               "startup_policy": "first", "robot": {"backend": "mock"},
               "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
@@ -31,7 +31,7 @@ def command_controller(tmp_path, monkeypatch, request):
               # These tests exercise commands, not cold Python/NumPy startup
               # deadlines; allow container CPU scheduling during suite setup.
               "timeouts": {"initialize_s": 10, "inference_s": 3, "release_s": .2}}
-    path = tmp_path / "rc.json"
+    path = tmp_path / "rc.yaml"
     path.write_text(json.dumps(config))
     def factory(*args, **kwargs):
         return PolicyProcess(*args, python_command=[sys.executable], **kwargs)

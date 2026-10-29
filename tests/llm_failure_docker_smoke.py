@@ -1,8 +1,9 @@
-"""Actual dynamic containers and installed packages, with a local HTTP model.
+"""Actual dynamic containers and mounted sources, with a local HTTP model.
 
 Build policy/llm_failure/Dockerfile (runtime), docker/rc.Dockerfile (test), and
 policy/hold/Dockerfile using the image names below. No live provider or hardware.
 """
+from config_helpers import read_config
 import json
 import os
 from pathlib import Path
@@ -14,10 +15,12 @@ import threading
 import time
 import uuid
 
-RC_IMAGE = 'robot-control-compose-policy-result-tests:local'
-PRODUCER_IMAGE = 'robot-control-compose-policy-result-worker:local'
-FAILURE_IMAGE = 'robot-control-compose-llm-failure:local'
-EVIDENCE = Path('/private/tmp/rc-llm-failure-20261028')
+from source_helpers import copy_runtime_sources, source_report, anchor_override
+
+RC_IMAGE = os.environ.get('RC_TEST_RC_IMAGE', 'robot-control-compose-policy-result-tests:local')
+PRODUCER_IMAGE = os.environ.get('RC_TEST_WORKER314_IMAGE', 'robot-control-compose-policy-result-worker:local')
+FAILURE_IMAGE = os.environ.get('RC_TEST_LLM_FAILURE_IMAGE', 'robot-control-compose-llm-failure:local')
+EVIDENCE = Path(os.environ.get('RC_LLM_EVIDENCE', '/private/tmp/rc-llm-failure-20261028'))
 
 
 def wait(predicate, timeout=40):
@@ -34,8 +37,8 @@ def container():
     from robot_control.mcp_server import MCPService
     root = Path('/workspace')
     with model_server(host='0.0.0.0') as server:
-        path = root / 'policy/llm_failure/policy.json'
-        config = json.loads(path.read_text())
+        path = root / 'policy/llm_failure/policy.yaml'
+        config = read_config(path)
         config['params']['task'] = 'put the block in the tray'
         config['params']['provider'].update(base_url=f'http://robot-control:{server.server_port}/v1',
                                              api_key='local-test-key', timeout_s=15.)
@@ -45,7 +48,7 @@ def container():
             {'wait': gate, 'body': response_for('deepseek', {'failed': False})},
             {'body': response_for('deepseek', {'failed': True})},
         ])
-        controller = RobotController(root / 'configs/rc.mock.json')
+        controller = RobotController(root / 'configs/rc.mock.yaml')
         service = MCPService(controller, {'port': 0}, allow_ephemeral=True)
         outcomes = []
 
@@ -119,7 +122,7 @@ def container():
             controller.submit('exit')
             assert controller.done.wait(30)
         assert controller.exit_code == 0
-        report = {'rc_python': list(sys.version_info[:2]), 'outcomes': outcomes,
+        report = {'rc_python': list(sys.version_info[:2]), 'sources': source_report(), 'outcomes': outcomes,
                   'model_requests': len(server.requests), 'exit_code': controller.exit_code}
         (root / 'outputs/result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print(json.dumps(report, ensure_ascii=False), flush=True)
@@ -137,17 +140,18 @@ def host():
         '--mount', f'type=bind,source={endpoint},target=/socket', PRODUCER_IMAGE, '-c', '%g', '/socket'], text=True).strip()
     with tempfile.TemporaryDirectory(prefix='rc-llm-failure-', dir='/private/tmp') as temporary:
         directory = Path(temporary)
+        copy_runtime_sources(directory)
         for folder in ('configs', '.setup', 'outputs', 'snapshot', 'policy'):
             (directory / folder).mkdir()
         context = dict(version=3, deployment_id=token, host_root=temporary, client_root='/workspace',
                        base_project=project, rpc_volume=project+'-rpc', uid=os.getuid(), gid=os.getgid(),
                        docker_socket=endpoint, docker_gid=int(gid))
         (directory / '.setup/runtime.json').write_text(json.dumps(context))
-        config = json.loads((root / 'configs/rc.mock.json.example').read_text())
+        config = read_config(root / 'configs/rc.mock.yaml.example')
         config.update(startup_policy='checked', frequency_hz=100,
                       timeouts=dict(initialize_s=30, inference_s=10, release_s=3, shutdown_s=25))
         config['safety']['enabled'] = False
-        (directory / 'configs/rc.mock.json').write_text(json.dumps(config))
+        (directory / 'configs/rc.mock.yaml').write_text(json.dumps(config))
         producer = directory / 'policy/producer'
         producer.mkdir()
         (producer / 'main.py').write_text('''
@@ -159,20 +163,26 @@ def policy(context, state, action_chunk, images, config): return [state['qpos']]
 def reset_context(context): pass
 def release(context): pass
 ''')
-        (producer / 'policy.json').write_text(json.dumps(dict(schema_version=3,
+        (producer / 'policy.yaml').write_text(json.dumps(dict(schema_version=3,
             execution=dict(mode='async', call_every_actions=1, control_mode='qpos'), params={})))
         (producer / 'compose.yaml').write_text(json.dumps({'services': {'policy': {'image': PRODUCER_IMAGE}}}))
         failure = directory / 'policy/llm_failure'
         copy_templates(root / 'policy/llm_failure', failure)
-        (failure / 'compose.yaml').write_text(json.dumps({'services': {'policy': {
-            'image': FAILURE_IMAGE, 'networks': ['model'], 'environment': {'NO_PROXY': 'robot-control,localhost,127.0.0.1'}}},
-            'networks': {'model': {'external': True, 'name': project + '_default'}}}))
+        model = json.loads(subprocess.check_output(['docker', 'compose', '--env-file', '/dev/null',
+            '-f', str(failure / 'compose.yaml'), 'config', '--format', 'json'],
+            env=dict(os.environ, RC_HOST_PROJECT_ROOT=str(directory))))
+        service = model['services']['policy']
+        service.update(image=FAILURE_IMAGE, networks=['model'])
+        service['environment']['NO_PROXY'] = 'robot-control,localhost,127.0.0.1'
+        model['networks'] = {'model': {'external': True, 'name': project + '_default'}}
+        (failure / 'compose.yaml').write_text(json.dumps(model))
         (directory / 'policy/checked').mkdir()
-        (directory / 'policy/checked/policy.json').write_text(json.dumps(
+        (directory / 'policy/checked/policy.yaml').write_text(json.dumps(
             dict(schema_version=3, kind='chain', policies=['producer', 'llm_failure'])))
         override = {'services': {'robot-control': {'image': RC_IMAGE,
             'command': ['python3', '/validation/llm_failure_docker_smoke.py', '--container'],
             'volumes': [{'type': 'bind', 'source': str(root / 'tests'), 'target': '/validation', 'read_only': True}]}}}
+        anchor_override(override['services'])
         (directory / 'override.json').write_text(json.dumps(override))
         env = dict(os.environ, RC_BASE_PROJECT=project, RC_UID=str(os.getuid()), RC_GID=str(os.getgid()),
                    RC_RPC_VOLUME=context['rpc_volume'], RC_DOCKER_GID=gid, RC_DOCKER_SOCKET=endpoint, RC_MCP_PORT='0')
@@ -185,7 +195,7 @@ def release(context): pass
             logs = subprocess.check_output(['docker', 'logs', cid], text=True, stderr=subprocess.STDOUT)
             (EVIDENCE / 'cross-container.log').write_text(logs)
             assert code == '0', logs[-8000:]
-            report = json.loads((directory / 'outputs/result.json').read_text())
+            report = read_config(directory / 'outputs/result.json')
             assert len(report['outcomes']) == 3 and report['exit_code'] == 0
             (EVIDENCE / 'cross-container.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
             print(json.dumps(report, ensure_ascii=False, indent=2))

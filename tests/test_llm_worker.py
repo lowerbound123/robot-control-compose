@@ -1,4 +1,5 @@
 """Production policy entry, real workers/chain/controller, local HTTP model only."""
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 import base64
 import copy
@@ -45,7 +46,7 @@ def setup(tmp_path, monkeypatch):
     root = tmp_path / 'policy'
     root.mkdir()
     with model_server() as server:
-        config = json.loads((template_path(ROOT / 'policy/llm_direction/policy.json')).read_text())
+        config = read_config(template_path(ROOT / 'policy/llm_direction/policy.yaml'))
         config['params']['provider'].pop('api_key_env', None)
         config['params'].update(task='move up then stop', chunk_size=3)
         config['params']['provider'].update(base_url=server.url, api_key='local-test-only', timeout_s=4.)
@@ -53,7 +54,7 @@ def setup(tmp_path, monkeypatch):
             folder = root / name
             copy_templates(ROOT / 'policy/llm_direction', folder)
             cfg = {**copy.deepcopy(config), 'id': name}
-            (folder / 'policy.json').write_text(json.dumps(cfg))
+            (folder / 'policy.yaml').write_text(json.dumps(cfg))
         (root / 'b/main.py').write_text('''
 def initialize(config): return None
 def policy(context, state, action_chunk, images, config): return action_chunk
@@ -62,7 +63,7 @@ def release(context): pass
 ''')
         (root / 'b/main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         (root / 'default_chain').mkdir()
-        (root / 'default_chain/policy.json').write_text(json.dumps({
+        (root / 'default_chain/policy.yaml').write_text(json.dumps({
             'schema_version': config['schema_version'], 'id': 'default_chain', 'kind': 'chain',
             'policies': ['llm_direction', 'b', 'llm_direction']}))
         host = None
@@ -185,13 +186,13 @@ def test_long_http_call_pins_images_until_callback_or_exit_proof(setup, frames, 
 
 def make_controller(setup, tmp_path, monkeypatch):
     _, root, _, factory, kwargs, _ = setup
-    config = json.loads((template_path(ROOT / ('configs/rc.mock.json' if REMOTE else 'rc.json'))).read_text())
+    config = read_config(template_path(ROOT / ('configs/rc.mock.yaml' if REMOTE else 'rc.yaml')))
     config.update(policy_directory=str(root), startup_policy='llm_direction',
                   outputs_directory=str(tmp_path / 'outputs'), frequency_hz=50, **kwargs)
     config['robot'] = {'backend': 'mock'}
     config['safety']['enabled'] = False
     config['timeouts'] = {'initialize_s': 10, 'inference_s': 5, 'release_s': 1}
-    path = tmp_path / 'rc.json'
+    path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(config))
     controller = RobotController(path, robot=MockRobot(), process_factory=factory)
     controller.start()
@@ -252,12 +253,12 @@ def test_two_llm_chain_members_keep_distinct_config_keys_in_separate_hosts(setup
     second['id'] = 'b'
     second['params']['request_when_remaining'] = 2
     second['params']['provider']['api_key'] = 'second-policy-key'
-    (root / 'llm_direction/policy.json').write_text(json.dumps(first))
-    (root / 'b/policy.json').write_text(json.dumps(second))
+    (root / 'llm_direction/policy.yaml').write_text(json.dumps(first))
+    (root / 'b/policy.yaml').write_text(json.dumps(second))
     (root / 'b/main.py').write_text((root / 'llm_direction/main.py').read_text())
     (root / 'b/main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
-    chain_path = root / 'default_chain/policy.json'
-    chain = json.loads(chain_path.read_text()); chain['policies'] = ['llm_direction', 'b']
+    chain_path = root / 'default_chain/policy.yaml'
+    chain = read_config(chain_path); chain['policies'] = ['llm_direction', 'b']
     chain_path.write_text(json.dumps(chain))
     record = PolicyRegistry(root).get('default_chain')
     worker = ChainProcess(record, process_factory=factory, init_timeout_s=10,

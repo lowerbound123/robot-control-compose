@@ -1,5 +1,5 @@
-"""Installed RC 3.10 + workers 3.11/3.14; task-owned mock deployment only."""
-import importlib.metadata
+"""Mounted-source RC 3.10 + workers 3.11/3.14; task-owned mock deployment only."""
+from config_helpers import read_config
 import json
 import os
 from pathlib import Path
@@ -10,8 +10,11 @@ import tempfile
 import time
 import uuid
 
-RC_IMAGE = 'robot-control-compose-global-tests:local'
-IMAGES = {'a': 'robot-control-compose-global-worker314:local', 'b': 'robot-control-compose-global-worker311:local'}
+from source_helpers import copy_runtime_sources, source_report, anchor_override
+
+RC_IMAGE = os.environ.get('RC_TEST_RC_IMAGE', 'robot-control-compose-global-tests:local')
+IMAGES = {'a': os.environ.get('RC_TEST_WORKER314_IMAGE', 'robot-control-compose-global-worker314:local'),
+          'b': os.environ.get('RC_TEST_WORKER311_IMAGE', 'robot-control-compose-global-worker311:local')}
 SOURCE = '''
 import sys,time
 def initialize(config,*,runtime):
@@ -54,10 +57,12 @@ def container():
     from robot_control.global_state_file import read_state
     from robot_control.mcp_server import MCPService
     assert sys.version_info[:2] == (3, 10)
-    assert importlib.metadata.version('rc-policy-sdk') == '0.11.0'
-    assert importlib.metadata.version('robot-control') == '0.11.0'
+    import rc_policy_sdk
+    assert rc_policy_sdk.__file__.startswith('/workspace/packages/policy-sdk/src/')
+    import robot_control
+    assert robot_control.__file__.startswith('/workspace/src/')
     root = Path('/workspace')
-    config = root / 'configs/rc.mock.json'
+    config = root / 'configs/rc.mock.yaml'
     outcomes = []
     controller = RobotController(config)
 
@@ -83,7 +88,7 @@ def container():
         assert data['rc_message'] == 'hello world' and data['a_message']['ok']
         command('policy b write')
         assert command('policy a info')['data']['b_message']['text'] == '跨容器 hello'
-        outcomes.append('installed 3.10 RC / 3.14 A / 3.11 B: initialize, command, readonly snapshots mutually visible')
+        outcomes.append('source 3.10 RC / 3.14 A / 3.11 B: initialize, command, readonly snapshots mutually visible')
         command('resume')
         wait(lambda: controller.globals.get('b_inferences', 0) > 0)
         command('pause')
@@ -134,7 +139,7 @@ def container():
     assert saved['a_released'] == saved['b_released'] == 3
     assert not list((root / 'outputs/runtime').glob('global-*.json'))
     outcomes.append('new RC loads persisted dict; real SIGTERM saves final release; resource journals reclaimed')
-    report = dict(outcomes=outcomes, exit_code=0, rc_python=list(sys.version_info[:2]), sdk='0.11.0')
+    report = dict(outcomes=outcomes, exit_code=0, rc_python=list(sys.version_info[:2]), sources=source_report())
     (root / 'outputs/global-result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps(report, ensure_ascii=False), flush=True)
 
@@ -151,30 +156,32 @@ def host():
         '--mount', f'type=bind,source={endpoint},target=/socket', IMAGES['a'], '-c', '%g', '/socket'], text=True).strip()
     with tempfile.TemporaryDirectory(prefix='rc-global-', dir='/private/tmp') as temporary:
         directory = Path(temporary)
+        copy_runtime_sources(directory)
         for folder in ('configs', '.setup', 'outputs', 'snapshot', 'policy'):
             (directory / folder).mkdir()
         context = dict(version=3, deployment_id=token, host_root=temporary, client_root='/workspace',
                        base_project=project, rpc_volume=project+'-rpc', uid=os.getuid(), gid=os.getgid(),
                        docker_socket=endpoint, docker_gid=int(gid))
         (directory / '.setup/runtime.json').write_text(json.dumps(context))
-        config = json.loads((root / 'configs/rc.mock.json.example').read_text())
+        config = read_config(root / 'configs/rc.mock.yaml.example')
         config.update(startup_policy='pair', frequency_hz=30,
                       timeouts=dict(initialize_s=35, inference_s=10, release_s=4, shutdown_s=30))
-        (directory / 'configs/rc.mock.json').write_text(json.dumps(config))
+        (directory / 'configs/rc.mock.yaml').write_text(json.dumps(config))
         (directory / 'configs/global.env').write_text('baseline=17\n')
         for name in ('a', 'b'):
             folder = directory / 'policy' / name
             folder.mkdir()
             (folder / 'main.py').write_text(SOURCE)
-            (folder / 'policy.json').write_text(json.dumps(dict(schema_version=3,
+            (folder / 'policy.yaml').write_text(json.dumps(dict(schema_version=3,
                 execution=dict(mode='sync', call_every_actions=1, control_mode='qpos'), params={},
                 tui_commands={key: dict(handler=key, args=[], timeout_s=3) for key in ('info', 'write')})))
             (folder / 'compose.yaml').write_text(json.dumps({'services': {'policy': {'image': IMAGES[name]}}}))
         (directory / 'policy/pair').mkdir()
-        (directory / 'policy/pair/policy.json').write_text(json.dumps(dict(schema_version=3, kind='chain', policies=['a','b','a'])))
+        (directory / 'policy/pair/policy.yaml').write_text(json.dumps(dict(schema_version=3, kind='chain', policies=['a','b','a'])))
         override = {'services': {'robot-control': {'image': RC_IMAGE,
             'command': ['python3', '/validation/global_state_docker_smoke.py', '--container'],
             'volumes': [{'type': 'bind', 'source': str(root / 'tests'), 'target': '/validation', 'read_only': True}]}}}
+        anchor_override(override['services'])
         (directory / 'override.json').write_text(json.dumps(override))
         env = dict(os.environ, RC_BASE_PROJECT=project, RC_UID=str(os.getuid()), RC_GID=str(os.getgid()),
                    RC_RPC_VOLUME=context['rpc_volume'], RC_DOCKER_GID=gid, RC_DOCKER_SOCKET=endpoint, RC_MCP_PORT='0')
@@ -187,7 +194,7 @@ def host():
             logs = subprocess.check_output(['docker', 'logs', cid], text=True, stderr=subprocess.STDOUT)
             (evidence / 'cross-container.log').write_text(logs)
             assert code == '0', logs[-10000:]
-            report = json.loads((directory / 'outputs/global-result.json').read_text())
+            report = read_config(directory / 'outputs/global-result.json')
             (evidence / 'cross-container.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
             print(json.dumps(report, ensure_ascii=False, indent=2))
         finally:

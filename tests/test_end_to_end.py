@@ -3,6 +3,7 @@
 Only interpreter selection is injected. Real subprocesses, mmap image leases,
 config acknowledgments, policy callbacks and process cleanup remain in use.
 """
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 
 import json
@@ -50,7 +51,7 @@ class EndToEnd:
         folder.mkdir(parents=True)
         if example:
             source = ROOT / "policy" / example if example == "hold" else ROOT / "tests/fixtures/policies" / example
-            config = json.loads((template_path(source / "policy.json")).read_text())
+            config = read_config(template_path(source / "policy.yaml"))
             config["id"] = identity
             config["execution"]["mode"] = mode
             config["params"].update(params)
@@ -68,7 +69,7 @@ class EndToEnd:
             }
             shutil.copy(FIXTURE_POLICY, folder / "main.py")
         (folder / "compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
-        (folder / "policy.json").write_text(json.dumps(config))
+        (folder / "policy.yaml").write_text(json.dumps(config))
         return folder
 
     def launch(self, *, startup="first", release_s=0.6, inference_s=3):
@@ -81,7 +82,7 @@ class EndToEnd:
             "reset_qpos": [0.0] * 14, "outputs_directory": "outputs",
             "timeouts": {"initialize_s": 4, "inference_s": inference_s, "release_s": release_s},
         }
-        path = self.directory / "rc.json"
+        path = self.directory / "rc.yaml"
         path.write_text(json.dumps(config))
 
         def real_process_factory(*args, **kwargs):
@@ -247,7 +248,7 @@ def test_pause_load_discards_old_result_and_resume_observes_loaded_qpos(e2e):
     saved = e2e.directory / "outputs" / "state_saves" / "resumed.json"
     wait_for(saved.exists)
     wait_for(lambda: controller.status()["state"] == "paused")
-    assert set(json.loads(saved.read_text())) == {"name", "saved_at", "qpos", "source", "run_id"}
+    assert set(read_config(saved)) == {"name", "saved_at", "qpos", "source", "run_id"}
     e2e.stop_and_assert_clean(expected_code=0)
 
 

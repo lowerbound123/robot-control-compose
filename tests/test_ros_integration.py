@@ -36,7 +36,7 @@ def test_actual_ros_closed_loop_cameras_staleness_and_shutdown(tmp_path, monkeyp
     pytest.importorskip(
         "robot_control_test_msgs.msg", reason="build ros_ws with colcon and source install/setup.bash",
     )
-    assert importlib.util.find_spec("robot_control_test_sim.simulator"), "source ros_ws/install/setup.bash"
+    assert importlib.util.find_spec("robot_control_test_sim.simulator"), "add ros_ws/src/robot_control_test_sim to PYTHONPATH"
     monkeypatch.setenv("ROS_DOMAIN_ID", os.environ.get("ROS_DOMAIN_ID", "83"))
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
     namespace = "/robot_control_test/run_" + uuid.uuid4().hex[:8]

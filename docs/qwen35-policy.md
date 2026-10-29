@@ -12,7 +12,7 @@
 
 各目录有：
 
-- `policy.json`：协议、execution、params、命令；model_config_path 默认 `model.json`。
+- `policy.yaml`：协议、execution、params、命令；model_config_path 默认 `model.json`。
 - `model.json`：模型、workflow、推理与动作配置。
 - `deployment.env`：GPU_DEVICE、MODELS_DIR、HF_CACHE_DIR、HF_HUB_OFFLINE。
 - `compose.yaml`、`Dockerfile`、`dependencies/requirements.lock`：部署和构建。
@@ -54,7 +54,7 @@ switch qwen35_twostage
 
 未安装可选 `flash-linear-attention` / `causal-conv1d` 时，模型使用随镜像安装的 PyTorch 回退实现。该实现的临时状态和输出张量必须直接在输入设备上分配；先在 CPU 创建零张量再 `.to(value)` 会在 CUDA Graph 录制时触发 `operation not permitted when stream is capturing`，随后产生 capture invalidated 错误。2026-10-27 的本地补丁修正了 chunk/recurrent 两条路径的三处分配，保持原有浮点计算和输出格式。
 
-此补丁在 Qwen 镜像构建时安装到 Transformers；仅修改宿主源码或重启旧镜像不会生效。更新源码后执行 `./setup.sh --policies qwen35_single`，再在 RC 中 `switch qwen35_single`。两个 Qwen 共用镜像，该次构建也更新 twostage 使用的实现。`compile_model=false` 不会关闭优化后端自己创建的 CUDA Graph；跳过预热也会把相同错误延后到第一次推理。
+补丁文件直接只读挂载到 Transformers 5.2.0 的目标模块，加载模型前校验版本、目标文件和当前宿主源码哈希。修改 `vendor/qwen35` 后重新 `switch qwen35_single` 或相应链即可，不需要 build；旧容器退出后新容器会重新绑定文件，包含原子替换编辑的文件。`scripts/install_qwen35_patches.py` 保留历史名称，但现在只做校验，不复制、不备份、不写入 site-packages。`compile_model=false` 不会关闭优化后端自己创建的 CUDA Graph；跳过预热也会把相同错误延后到第一次推理。
 
 可以先在目标 GPU 上运行不需要模型权重、相机或机器人的独立检查：
 
@@ -66,6 +66,9 @@ docker build --platform linux/amd64 \
 docker run --rm --gpus all --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp -e USER=robot-control -e LOGNAME=robot-control -e HF_HUB_OFFLINE=1 \
+  --workdir /workspace --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+  --mount "type=bind,source=$PWD/vendor/qwen35/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py,target=/usr/local/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py,readonly" \
+  -e PYTHONPATH=/workspace/packages/policy-sdk/src:/workspace/packages/qwen35-policy/src:/workspace/vendor/qwen35 \
   --entrypoint python robot-control-compose-qwen35-graph-tests:local \
   -c 'import torch,pytest; assert torch.cuda.is_available(), "CUDA unavailable"; raise SystemExit(pytest.main(["-q","-rs","-p","no:cacheprovider","tests/test_qwen35_cuda_graph.py"]))'
 ```

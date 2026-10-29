@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import json
 from pathlib import Path
 import shutil
@@ -41,14 +42,15 @@ def test_qwen_deployments_are_self_contained():
         assert set(model['services'])=={'policy'}
         assert (directory/'Dockerfile').is_file()
         assert (directory/'dependencies/requirements.lock').is_file()
-        assert 'policy_host' not in json.loads((directory/'policy.json.example').read_text())
+        assert 'policy_host' not in read_config(directory/'policy.yaml.example')
 
 
-def read_compose(path):
+def read_compose(path, *overlays):
     import os,subprocess
     if not shutil.which('docker'):
         pytest.skip('Docker CLI required for Compose config validation')
-    env=dict(os.environ,RC_BASE_PROJECT='fixture',RC_UID='1000',RC_GID='1000',RC_DOCKER_GID='0',
+    env=dict(os.environ,RC_HOST_PROJECT_ROOT=str(ROOT),RC_BASE_PROJECT='fixture',RC_UID='1000',RC_GID='1000',RC_DOCKER_GID='0',
              RC_DOCKER_SOCKET='/var/run/docker.sock',RC_RPC_VOLUME='fixture-rpc',MODELS_DIR='/models',HF_CACHE_DIR='/cache')
-    return json.loads(subprocess.check_output(['docker','compose','--env-file','/dev/null','-f',str(path),
+    files = [arg for file in (path, *overlays) for arg in ('-f', str(file))]
+    return json.loads(subprocess.check_output(['docker','compose','--env-file','/dev/null', *files,
         'config','--format','json','--no-path-resolution'],env=env))

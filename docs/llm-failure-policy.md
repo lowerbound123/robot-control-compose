@@ -36,7 +36,7 @@ runtime.finish("llm_failure：DeepSeek 判断任务已进入失败状态", outco
 ./setup.sh --policies llm_failure
 ```
 
-编辑生成的 `policy/llm_failure/policy.json`，必须填写 `params.task` 和 `params.provider.api_key`。出厂留空，初始化时明确拒绝；初始化不会联系 DeepSeek。所有参数均为冷配置，修改后重新加载运行组。
+编辑生成的 `policy/llm_failure/policy.yaml`，必须填写 `params.task` 和 `params.provider.api_key`。出厂留空，初始化时明确拒绝；初始化不会联系 DeepSeek。所有参数均为冷配置，修改后重新加载运行组。
 
 | 字段 | 默认值 / 要求 |
 |---|---|

@@ -1,4 +1,4 @@
-"""Tests consume shipped examples, never a developer's private JSON or .env."""
+"""Tests consume shipped examples, never a developer's private YAML/JSON or .env."""
 import json
 from pathlib import Path
 import shutil
@@ -16,10 +16,12 @@ def copy_templates(source, destination, **kwargs):
     def ignored(directory, names):
         result = set(previous(directory, names) if previous else ())
         result.update(name for name in names if name == '.env' or name == '__pycache__' or
-                      name.endswith('.json') and (Path(directory) / (name + '.example')).is_file())
+                      name.endswith(('.json', '.yaml', '.yml')) and (Path(directory) / (name + '.example')).is_file() or
+                      name.endswith('.json') and (name == 'policy.json' or name == 'rc.json' or name.startswith('rc.'))
+                      and (Path(directory) / (name[:-5] + '.yaml.example')).is_file())
         return result
     shutil.copytree(source, destination, ignore=ignored, **kwargs)
-    for path in destination.rglob('*.json.example'):
+    for path in [*destination.rglob('*.json.example'), *destination.rglob('*.yaml.example'), *destination.rglob('*.yml.example')]:
         target = path.with_suffix('')
         target.write_text(path.read_text())
         target.chmod(0o600)

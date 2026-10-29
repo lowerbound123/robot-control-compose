@@ -1,4 +1,5 @@
 """Behavior of the shipped, runnable example; no developer-private config."""
+from config_helpers import read_config
 import copy
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
@@ -30,7 +31,7 @@ def example():
 
 @pytest.fixture
 def config():
-    return json.loads((EXAMPLE / "policy.json.example").read_text())
+    return read_config(EXAMPLE / "policy.yaml.example")
 
 
 @pytest.fixture
@@ -199,12 +200,12 @@ def test_template_setup_and_catalog_discovery(tmp_path):
     from config_files import configuration_updates, write_updates
     from config_validation import validate_documents
     from setup_project import select_policies
-    from rc_policy_sdk.catalog import discover
+    from robot_control.policy_catalog import discover
     from rc_policy_sdk.commands import command_specs
 
     assert EXAMPLE.is_dir(), "example must be a self-contained policy directory"
     shutil.copytree(EXAMPLE, tmp_path / "policy" / "example",
-                    ignore=shutil.ignore_patterns("policy.json", "__pycache__"))
+                    ignore=shutil.ignore_patterns("policy.yaml", "__pycache__"))
     assert discover(tmp_path / "policy")[0]["state"] == "needs_config"
     changes, documents = configuration_updates(tmp_path)
     validate_documents(documents)
@@ -212,6 +213,6 @@ def test_template_setup_and_catalog_discovery(tmp_path):
     assert select_policies(tmp_path, ["example"]) == ["example"]
     row = discover(tmp_path / "policy")[0]
     assert row["id"] == "example" and row["valid"]
-    config = documents["policy/example/policy.json"]
+    config = documents["policy/example/policy.yaml"]
     assert command_specs(config)["example"]["args"] == []
     assert config["execution"] == {"mode": "sync", "call_every_actions": 1, "control_mode": "qpos"}

@@ -33,6 +33,23 @@ def remaining(deadline):
     return value
 
 
+def source_path(value, kind):
+    if not isinstance(value, str) or not value.startswith('/') or '..' in Path(value).parts:
+        raise ValueError(f'{kind}: require an absolute container path without ..')
+    return str(Path(value))
+
+
+def validate_source_mounts(roots, mounts):
+    for root in roots:
+        enclosing = [m for m in mounts if Path(root).is_relative_to(m['target'])]
+        effective = max(enclosing, key=lambda m: len(Path(m['target']).parts), default=None)
+        if effective is None or effective['type'] != 'bind' or not effective.get('read_only'):
+            raise ValueError(f'source requires a read-only bind at {root}')
+        # A nested mount overrides its ancestor, including a single SDK file.
+        if any(Path(m['target']).is_relative_to(root) and not m.get('read_only') for m in mounts):
+            raise ValueError(f'source has a writable mount override inside {root}')
+
+
 def docker_command(args, *, timeout, env=None, cwd=None, cancel=None):
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(['docker', *args], cwd=cwd, env=env, text=True,
@@ -202,11 +219,13 @@ class ComposeRuntimeManager:
         service['ipc'] = 'container:' + anchor
         service['user'] = f"{self.context['uid']}:{self.context['gid']}"
         target = f'/workspace/policy/{identity}'
+        sdk = '/workspace/packages/policy-sdk/src'
         mounts = []
         for mount in service.get('volumes', []):
             if not isinstance(mount, dict):
                 raise ValueError('Compose must normalize volume entries')
-            if mount['target'] in ('/run/robot-control', target):
+            mount['target'] = source_path(mount['target'], 'mount target')
+            if mount['target'] in ('/run/robot-control', target, sdk):
                 continue
             if mount['type'] != 'bind':
                 raise ValueError('only policy binds and the external RPC volume are supported')
@@ -217,12 +236,29 @@ class ComposeRuntimeManager:
             mount['bind'] = {'create_host_path':False}
             mounts.append(mount)
         mounts += [dict(type='volume', source='rpc', target='/run/robot-control'),
+                   dict(type='bind', source=str(Path(self.context['host_root']) / 'packages/policy-sdk/src'),
+                        target=sdk, read_only=True, bind={'create_host_path':False}),
                    dict(type='bind', source=map_host_path(directory, directory, self.context), target=target,
                         read_only=True, bind={'create_host_path':False})]
         service['volumes'] = mounts
-        service['entrypoint'] = ['python', '-m', 'rc_policy_sdk.host']
+        service['entrypoint'] = ['python', sdk + '/rc_policy_sdk/source.py', '--module', 'rc_policy_sdk.host']
         service['command'] = ['--host-id', identity, '--socket', socket_path(identity), '--policy-root', '/workspace/policy']
         service['environment'] = dict(service.get('environment', {}), HOME='/tmp', RC_POLICY_ID=identity)
+        environment = service['environment']
+        sources = json.loads(environment.get('RC_SOURCE_MODULES') or '{}')
+        if not isinstance(sources, dict):
+            raise ValueError('RC_SOURCE_MODULES must be a JSON object')
+        sources['rc_policy_sdk'] = sdk
+        for name, root in sources.items():
+            if not isinstance(name, str) or not name.isidentifier():
+                raise ValueError('source declarations require module names and absolute paths')
+            sources[name] = source_path(root, f'{name} source')
+        # The daemon validates existence; the bootstrap validates import origins
+        # in the new container. RC need not have access to model source binds.
+        validate_source_mounts([*sources.values(), target], mounts)
+        environment['RC_SOURCE_MODULES'] = json.dumps(sources)
+        environment['PYTHONPATH'] = ':'.join(filter(None, (sdk, environment.get('PYTHONPATH'))))
+        environment['PYTHONPYCACHEPREFIX'] = '/tmp/rc-pycache'
         service['healthcheck'] = {'disable':True}  # Manager performs the identity-bearing handshake.
         model['volumes'] = {'rpc':{'external':True,'name':self.context['rpc_volume']}}
         for key in ('configs', 'secrets', 'include'):

@@ -1,4 +1,5 @@
 """Qwen test files shared by native UDS tests and real Compose containers."""
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 import json
 from pathlib import Path
@@ -15,11 +16,11 @@ def prepare_policies(root):
         directory = root / identity
         checkpoint = directory / 'weights'
         checkpoint.mkdir(parents=True, exist_ok=True)
-        manifest = json.loads((template_path(ROOT / 'policy' / identity / 'policy.json')).read_text())
+        manifest = read_config(template_path(ROOT / 'policy' / identity / 'policy.yaml'))
         manifest.pop('deployment', None)  # CPU test backend has no GPU/container settings
         manifest['params']['model_config_path'] = str(directory / 'model.json')
         manifest['tui_commands']['probe'] = {'handler': 'probe', 'args': []}
-        (directory / 'policy.json').write_text(json.dumps(manifest))
+        (directory / 'policy.yaml').write_text(json.dumps(manifest))
         entry = (ROOT / 'policy' / identity / 'main.py').read_text()
         # Test-only substitution after loading the unchanged production entry.
         entry += '''
@@ -45,20 +46,20 @@ def probe(context):
         (directory / 'events.jsonl').write_text('')
     chain = root / 'qwen_test_chain'
     chain.mkdir(exist_ok=True)
-    (chain / 'policy.json').write_text(json.dumps({
+    (chain / 'policy.yaml').write_text(json.dumps({
         'schema_version': 3, 'id': 'qwen_test_chain', 'kind': 'chain', 'policies': list(IDENTITIES)}))
     # Compose-stop fixture initializes both independent models but stays paused:
     # it exercises chain lifecycle without inventing dual-generator inference.
-    rc = json.loads((template_path(ROOT / 'configs/rc.mock.json')).read_text())
+    rc = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))
     rc.update(policy_directory=str(root), startup_policy='qwen_test_chain',
               outputs_directory='/tmp/qwen-compose-stop-outputs')
-    (root / 'rc.json').write_text(json.dumps(rc))
+    (root / 'rc.yaml').write_text(json.dumps(rc))
     return root
 
 
 def set_controls(directory, **values):
     path = Path(directory) / 'controls.json'
-    current = json.loads(path.read_text()) if path.exists() else {}
+    current = read_config(path) if path.exists() else {}
     current.update(values)
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(current))

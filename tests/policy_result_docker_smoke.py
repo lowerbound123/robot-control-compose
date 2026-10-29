@@ -1,10 +1,10 @@
-"""Installed RC 3.10 -> SDK 3.14 acceptance, using only task-owned mock containers.
+"""Mounted-source RC 3.10 -> SDK 3.14 acceptance, using only task-owned mock containers.
 
 Build robot-control-compose-policy-result-tests:local with docker/rc.Dockerfile
 and robot-control-compose-policy-result-worker:local with policy/hold/Dockerfile.
 Then run this script on the Docker host. No model or hardware service is used.
 """
-import importlib.metadata
+from config_helpers import read_config
 import json
 import os
 from pathlib import Path
@@ -14,16 +14,19 @@ import tempfile
 import time
 import uuid
 
+from source_helpers import copy_runtime_sources, source_report, anchor_override
 
-RC_IMAGE = 'robot-control-compose-policy-result-tests:local'
-WORKER_IMAGE = 'robot-control-compose-policy-result-worker:local'
+
+RC_IMAGE = os.environ.get('RC_TEST_RC_IMAGE', 'robot-control-compose-policy-result-tests:local')
+WORKER_IMAGE = os.environ.get('RC_TEST_WORKER314_IMAGE', 'robot-control-compose-policy-result-worker:local')
 WORKER = '''
-import importlib.metadata, sys, time
+import sys, time
 from pathlib import Path
 type Number = float
 def initialize(config):
     assert sys.version_info[:2] == (3, 14)
-    assert importlib.metadata.version('rc-policy-sdk') == '0.11.0'
+    import rc_policy_sdk
+    assert rc_policy_sdk.__file__.startswith('/workspace/packages/policy-sdk/src/')
     return {'calls': 0}
 def policy(context, state, action_chunk, images, config, *, runtime):
     context['calls'] += 1
@@ -54,12 +57,13 @@ def container():
     import robot_control
 
     assert sys.version_info[:2] == (3, 10)
-    assert importlib.metadata.version('robot-control') == '0.11.0'
-    assert importlib.metadata.version('rc-policy-sdk') == '0.11.0'
-    assert '/site-packages/' in robot_control.__file__ or '/dist-packages/' in robot_control.__file__
+    import robot_control
+    assert robot_control.__file__.startswith('/workspace/src/')
+    import rc_policy_sdk
+    assert rc_policy_sdk.__file__.startswith('/workspace/packages/policy-sdk/src/')
     root = Path('/workspace')
     gate = root / 'policy/b/allow'
-    controller = RobotController(root / 'configs/rc.mock.json')
+    controller = RobotController(root / 'configs/rc.mock.yaml')
     service = MCPService(controller, {'port': 0}, allow_ephemeral=True)
     outcomes = []
 
@@ -99,7 +103,7 @@ def container():
         assert result['controller']['control_owner'] == 'mcp'
         assert command('policy a info')['calls'] == 2
         assert controller.status()['consumed'] == 0
-        outcomes.append('installed Py3.10/Py3.14; A/B/A reuses two containers; deferred result and readonly frames')
+        outcomes.append('source Py3.10/Py3.14; A/B/A reuses two containers; deferred result and readonly frames')
 
         gate.unlink()
         result = tool('return_and_wait', timeout_s=0).structured_content
@@ -143,7 +147,7 @@ def container():
         controller.submit('exit')
         assert controller.done.wait(30)
     assert controller.exit_code == 0
-    report = {'rc_python': list(sys.version_info[:2]), 'sdk': importlib.metadata.version('rc-policy-sdk'),
+    report = {'rc_python': list(sys.version_info[:2]), 'sources': source_report(),
               'outcomes': outcomes, 'exit_code': controller.exit_code}
     (root / 'outputs/result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps(report, ensure_ascii=False), flush=True)
@@ -161,30 +165,32 @@ def host():
         '--mount', f'type=bind,source={endpoint},target=/socket', WORKER_IMAGE, '-c', '%g', '/socket'], text=True).strip()
     with tempfile.TemporaryDirectory(prefix='rc-policy-result-', dir='/private/tmp') as temporary:
         directory = Path(temporary)
+        copy_runtime_sources(directory)
         for folder in ('configs', '.setup', 'outputs', 'snapshot', 'policy'):
             (directory / folder).mkdir()
         context = dict(version=3, deployment_id=token, host_root=temporary, client_root='/workspace',
                        base_project=project, rpc_volume=project+'-rpc', uid=os.getuid(), gid=os.getgid(),
                        docker_socket=endpoint, docker_gid=int(gid))
         (directory / '.setup/runtime.json').write_text(json.dumps(context))
-        config = json.loads((root / 'configs/rc.mock.json.example').read_text())
+        config = read_config(root / 'configs/rc.mock.yaml.example')
         config.update(startup_policy='pair', frequency_hz=50,
                       timeouts=dict(initialize_s=30, inference_s=30, release_s=3, shutdown_s=25))
-        (directory / 'configs/rc.mock.json').write_text(json.dumps(config))
+        (directory / 'configs/rc.mock.yaml').write_text(json.dumps(config))
         for name in ('a', 'b'):
             folder = directory / 'policy' / name
             folder.mkdir()
             (folder / 'main.py').write_text(WORKER)
-            (folder / 'policy.json').write_text(json.dumps(dict(schema_version=3,
+            (folder / 'policy.yaml').write_text(json.dumps(dict(schema_version=3,
                 execution=dict(mode='sync', call_every_actions=1, control_mode='qpos'), params={},
                 tui_commands={'info': dict(handler='info', args=[], timeout_s=3)})))
             (folder / 'compose.yaml').write_text(json.dumps({'services': {'policy': {'image': WORKER_IMAGE}}}))
         (directory / 'policy/pair').mkdir()
-        (directory / 'policy/pair/policy.json').write_text(json.dumps(
+        (directory / 'policy/pair/policy.yaml').write_text(json.dumps(
             dict(schema_version=3, kind='chain', policies=['a', 'b', 'a'])))
         override = {'services': {'robot-control': {'image': RC_IMAGE,
             'command': ['python3', '/validation/policy_result_docker_smoke.py', '--container'],
             'volumes': [{'type': 'bind', 'source': str(root / 'tests'), 'target': '/validation', 'read_only': True}]}}}
+        anchor_override(override['services'])
         (directory / 'override.json').write_text(json.dumps(override))
         env = dict(os.environ, RC_BASE_PROJECT=project, RC_UID=str(os.getuid()), RC_GID=str(os.getgid()),
                    RC_RPC_VOLUME=context['rpc_volume'], RC_DOCKER_GID=gid, RC_DOCKER_SOCKET=endpoint, RC_MCP_PORT='0')
@@ -197,7 +203,7 @@ def host():
             logs = subprocess.check_output(['docker', 'logs', cid], text=True, stderr=subprocess.STDOUT)
             (evidence / 'cross-container.log').write_text(logs)
             assert code == '0', logs[-8000:]
-            report = json.loads((directory / 'outputs/result.json').read_text())
+            report = read_config(directory / 'outputs/result.json')
             assert len(report['outcomes']) == 4
             (evidence / 'cross-container.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
             print(json.dumps(report, ensure_ascii=False, indent=2))

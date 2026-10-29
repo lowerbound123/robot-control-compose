@@ -1,4 +1,5 @@
 """Runtime boundaries exercised against a stateful Engine double; live tests are separate."""
+from config_helpers import read_config
 import copy
 import json
 from pathlib import Path
@@ -27,7 +28,7 @@ class Engine:
             file = Path(args[args.index('-f')+1])
             if 'config' in args:
                 return file.read_text()
-            model = json.loads(file.read_text())
+            model = read_config(file)
             if 'create' in args:
                 cid = 'container-' + str(len(self.events))
                 service = model['services']['policy']

@@ -24,7 +24,7 @@ class PolicyCommandSupport:
             return list(self._local_specs())
 
     def declared_commands(self):
-        from rc_policy_sdk.catalog import read_descriptor
+        from .policy_catalog import read_descriptor
         from rc_policy_sdk.commands import command_specs
         result = {}
         for row in self.registry.list():

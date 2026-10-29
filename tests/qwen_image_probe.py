@@ -1,4 +1,4 @@
-"""Run in the production Qwen image without mounting the project/source tree."""
+"""Run with the production Qwen dependency image and read-only source/patch mounts."""
 import argparse
 import hashlib
 from importlib import metadata
@@ -7,7 +7,16 @@ from pathlib import Path
 import sys
 import sysconfig
 
-import numpy as np
+from rc_policy_sdk.source import validate_sources
+from rc_qwen35_policy.patches import check
+
+# Check before importing any model modules.
+patched = check()
+sources = validate_sources({
+    "rc_policy_sdk": "/workspace/packages/policy-sdk/src",
+    "rc_qwen35_policy": "/workspace/packages/qwen35-policy/src",
+    "lerobot": "/workspace/vendor/qwen35",
+})
 import torch
 import transformers
 import rc_policy_sdk
@@ -28,23 +37,22 @@ for name, version in expected.items():
     assert metadata.version(name) == version, (name, metadata.version(name))
 assert torch.version.cuda == '12.8'
 site = Path(sysconfig.get_path('purelib')).resolve()
-for module in (rc_policy_sdk, rc_qwen35_policy, lerobot, transformers):
+for module in (transformers,):
     assert Path(module.__file__).resolve().is_relative_to(site), module.__file__
 schema = get_schema('arx_acone')
 assert len(schema.image_mapping) == 3 and schema.action_mask_spec == [6, -1, 6, -1]
 assert Qwen3_5VLAKIWanPolicy.config_class is Qwen3_5VLAKIWanConfig
 
-provenance = Path(sys.prefix) / 'share/rc-qwen35-vendor/SOURCE_MANIFEST.json'
-manifest = json.loads(provenance.read_text())
-for name, entry in manifest['files'].items():
-    assert hashlib.sha256((site / name).read_bytes()).hexdigest() == entry['vendored_sha256'], name
-patched = Path(transformers.__file__).parent / 'models/qwen3_5/modeling_qwen3_5.py'
-source = site / 'lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py'
-assert hashlib.sha256(patched.read_bytes()).digest() == hashlib.sha256(source.read_bytes()).digest()
+# Report current mounted files; the historical vendor manifest is provenance,
+# not a freeze on edits to the mounted implementation.
+vendor = Path('/workspace/vendor/qwen35')
+files = {str(path.relative_to(vendor)): hashlib.sha256(path.read_bytes()).hexdigest()
+         for path in vendor.rglob('*') if path.is_file() and path.suffix in ('.py', '.yaml', '.yml')}
+assert files
 available = torch.cuda.is_available()
 if args.require_cuda:
     assert available, 'CUDA is not visible inside the container'
 print(json.dumps({'python': sys.version.split()[0], 'versions': expected,
                   'cuda_build': torch.version.cuda, 'cuda_available': available,
-                  'vendor_files_verified': len(manifest['files']), 'installed_wheels': True,
+                  'sources': sources, 'vendor_file_hashes': files,
                   'schema': 'arx_acone', 'patch_verified': True}))

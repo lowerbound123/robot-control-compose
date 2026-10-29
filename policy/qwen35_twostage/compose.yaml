@@ -10,12 +10,29 @@ services:
     restart: "no"
     platform: linux/amd64
     environment:
+      PYTHONPATH: /workspace/packages/qwen35-policy/src:/workspace/vendor/qwen35
+      RC_SOURCE_MODULES: '{"rc_qwen35_policy":"/workspace/packages/qwen35-policy/src","lerobot":"/workspace/vendor/qwen35"}'
       USER: robot-control
       LOGNAME: robot-control
       HF_HOME: /data/huggingface
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/packages/qwen35-policy/src
+        target: /workspace/packages/qwen35-policy/src
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/vendor/qwen35
+        target: /workspace/vendor/qwen35
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/vendor/qwen35/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
+        target: /usr/local/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ${MODELS_DIR:?Set deployment.env MODELS_DIR}
         target: /models

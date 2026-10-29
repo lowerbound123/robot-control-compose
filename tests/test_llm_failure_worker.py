@@ -1,4 +1,5 @@
 """Actual policy entry, SDK workers, POSIX frames and controller/MCP integration."""
+from config_helpers import read_config
 import json
 import threading
 import time
@@ -27,10 +28,10 @@ def setup(tmp_path, monkeypatch):
             assert (ROOT / 'policy/llm_failure/main.py').is_file(), 'llm_failure entry point is missing'
             folder = root / 'llm_failure'
             copy_templates(ROOT / 'policy/llm_failure', folder)
-            config = json.loads((folder / 'policy.json').read_text())
+            config = read_config(folder / 'policy.yaml')
             config['params']['task'] = 'put the block in the tray'
             config['params']['provider'].update(base_url=server.url, timeout_s=4., api_key='local-test-key')
-            (folder / 'policy.json').write_text(json.dumps(config))
+            (folder / 'policy.yaml').write_text(json.dumps(config))
             return folder, config
         try:
             yield server, root, create
@@ -123,7 +124,7 @@ def reset_context(context): pass
 def release(context): pass
 ''')
     (producer / 'compose.yaml').write_text('services:\n  policy:\n    image: fixture:local\n')
-    (producer / 'policy.json').write_text(json.dumps({'schema_version': 3, 'id': 'producer',
+    (producer / 'policy.yaml').write_text(json.dumps({'schema_version': 3, 'id': 'producer',
         'execution': {'mode': 'async', 'call_every_actions': 1, 'control_mode': 'qpos'}, 'params': {}}))
     order = ['producer', 'llm_failure']
     marker = tmp_path / 'finish-requested'
@@ -155,17 +156,17 @@ def reset_context(context): pass
 def release(context): pass
 ''')
         (tail / 'compose.yaml').write_text('services:\n  policy:\n    image: fixture:local\n')
-        (tail / 'policy.json').write_text(json.dumps({'schema_version': 3, 'id': 'tail',
+        (tail / 'policy.yaml').write_text(json.dumps({'schema_version': 3, 'id': 'tail',
             'execution': {'mode': 'async', 'call_every_actions': 1, 'control_mode': 'qpos'}, 'params': {}}))
         order.append('tail')
     (root / 'chain').mkdir()
-    (root / 'chain/policy.json').write_text(json.dumps({'schema_version': 3, 'kind': 'chain',
+    (root / 'chain/policy.yaml').write_text(json.dumps({'schema_version': 3, 'kind': 'chain',
                                                      'policies': order}))
     rc = {'schema_version': 3, 'frequency_hz': 100, 'policy_directory': 'policy', 'startup_policy': 'chain',
           'robot': {'backend': 'mock'}, 'safety': {'enabled': False, 'reference_frequency_hz': 50,
           'max_delta_per_step': [.1] * 14}, 'reset_qpos': [0] * 14, 'outputs_directory': 'outputs',
           'timeouts': {'initialize_s': 10, 'inference_s': 5, 'release_s': 2}}
-    path = tmp_path / 'rc.json'
+    path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(rc))
     gate = threading.Event()
     body = response_for('deepseek', {'failed': True if verdict == 'tail_failure' else verdict})

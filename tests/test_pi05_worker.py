@@ -1,4 +1,5 @@
 """Shipped Pi05 callbacks through real SDK host/worker and shared RGB images."""
+from config_helpers import read_config
 import json
 import os
 from pathlib import Path
@@ -40,8 +41,8 @@ def test_shipped_pi05_entrypoint_releases_images_and_resets_in_real_worker(tmp_p
     checkpoint_fixture(directory)
     source = ROOT / 'policy/pi05'
     shutil.copyfile(source / 'compose.yaml', directory / 'compose.yaml')
-    config = json.loads((source / 'policy.json.example').read_text())
-    (directory / 'policy.json').write_text(json.dumps(config))
+    config = read_config(source / 'policy.yaml.example')
+    (directory / 'policy.yaml').write_text(json.dumps(config))
     # Replace only the model boundary; all shipped entrypoint callbacks, config
     # validation, shared scheduler, SDK workers and image transport remain real.
     (directory / 'main.py').write_text((source / 'main.py').read_text() + MODEL_BOUNDARY)

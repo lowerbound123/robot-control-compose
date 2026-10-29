@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import importlib
 import json
 from pathlib import Path
@@ -56,7 +57,7 @@ def test_wrong_workflow_rejected_without_inheriting_checkpoint(model_config):
 def test_checkpoint_family_and_horizon_verified_before_unload(model_config, change):
     path, _ = model_config
     checkpoint = path.parent / 'weights/config.json'
-    value = json.loads(checkpoint.read_text())
+    value = read_config(checkpoint)
     value.update(change)
     checkpoint.write_text(json.dumps(value))
     with pytest.raises(ValueError): loader()(path, workflow='single', project_root=path.parent)

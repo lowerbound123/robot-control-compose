@@ -1,4 +1,5 @@
 """Real RC, UDS host, production Qwen entry and scheduler; CUDA is substituted."""
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 import json
 import os
@@ -26,13 +27,13 @@ def qwen_controller(tmp_path, monkeypatch):
     monkeypatch.setenv('PYTHONPATH', package + os.pathsep + os.environ.get('PYTHONPATH', ''))
     root = prepare_policies(tmp_path / 'policy')
     host = Host(root, 'qwen35_single')
-    rc = json.loads((template_path(ROOT / 'configs/rc.mock.json')).read_text())
+    rc = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))
     rc['safety']['enabled'] = False  # Deterministic test actions encode the policy identity.
     rc.update(policy_directory=str(root), startup_policy='qwen35_single',
               outputs_directory=str(tmp_path / 'outputs'), frequency_hz=100,
               timeouts={'initialize_s': 5, 'inference_s': 3, 'release_s': 1},
               host_socket=host.socket)
-    path = tmp_path / 'rc.json'
+    path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(rc))
     from host_helpers import LocalPolicyProcess
     controller = RobotController(path, robot=ThreeCameraRobot(), process_factory=LocalPolicyProcess)
@@ -80,4 +81,4 @@ def test_qwen_entry_runs_and_reloads_with_real_worker(qwen_controller):
     assert loads[0] < close < loads[1]
     assert controller.registry.get('qwen35_single').config['params']['model_config_path'] == str(model)
     assert completed(controller, 'save-config policy')['status'] == 'succeeded'
-    assert json.loads((directory / 'policy.json').read_text())['params']['model_config_path'] == str(model)
+    assert read_config(directory / 'policy.yaml')['params']['model_config_path'] == str(model)

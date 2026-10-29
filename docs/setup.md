@@ -9,13 +9,42 @@
 ./setup.sh --config-only
 ```
 
-setup 使用系统 Python 标准库和 Docker CLI，无 Conda。正式 `policy.json` 是发现依据，`.example` 只是补齐缺失配置的模板；只有模板时目录显示 needs_config。无效目录会显示原因。通用校验不解释 provider、model.json、GPU 或 HF 业务字段，真正业务校验由目标策略执行。
+setup 使用宿主 Python 3.9+、venv 和 Docker CLI，无 Conda。`SETUP_PYTHON` 可选择宿主解释器；setup 在忽略的 `.setup/tools-venv` 中按版本与 hash 锁准备 YAML 工具依赖，仅首次使用或锁/解释器变化时安装，不修改全局 Python。正式 `policy.yaml` 是发现依据，`.example` 只是补齐缺失配置的模板；只有模板时目录显示 needs_config。无效目录会显示原因。通用校验不解释 provider、model.json、GPU 或 HF 业务字段，真正业务校验由目标策略执行。
 
 setup 先合并、验证，再以原子写入更新本机文件。既有值保留，发生变更的文件备份到 `.setup/backups/`，权限为 0600。配置、密钥、输出与运行账本都被 Git 和镜像构建上下文忽略。
 
 每个策略的 `compose.yaml` 只能有一个 `policy` 服务，必须显式指定 image。setup 对 build 声明构建镜像，直接复用已准备好的本地镜像，仅对缺少的预构建镜像执行 pull。相同 image tag 只有在 Dockerfile 内容、context、args、target 与其他有效输入一致时才能去重；不同输入报错。两个 Qwen 各有完整 build 声明与依赖锁，通过内容相同的私有依赖上下文共享镜像；单独选择 twostage 不依赖 single 的文件。
 
 运行期间只使用准备好的本地 image ID。模型权重与外部 mount 目录应提前准备，setup 不下载权重、不访问供应商、不验证真实推理。
+
+## YAML 主配置与手动迁移
+
+RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。`model.json`、provider JSON、checkpoint 元数据、机器运行记录、状态快照、`global.env` 和部署 env 保持原格式。
+
+旧主配置 JSON 必须手动迁移。先正常 `down`，再将原值填写到新 YAML（JSON 内容本身也是合法 YAML，可先手动改扩展名），并将旧主配置移出活动配置位置。setup 检测到旧文件或新旧并存时会报错，不会自动转换，也不会为它另建默认 YAML。实施更新不会改动本机已有配置。迁移后执行 setup 重建 RC 依赖镜像一次，再按原覆盖参数启动；policy 运行镜像无需新增 YAML 依赖。
+
+YAML 使用 1.2 语义，数据仍限于字符串、有限数字、布尔值、null、列表和字符串键字典。重复键、多文档、YAML 1.1 指令、自定义标签、合并键和循环引用均拒绝；日期文本需加引号。普通别名按独立值进入运行时。错误只给出文件、位置与类别，不打印配置原文。
+
+`save-config` 和 manage-policy 保存保留未改动节点的注释、键顺序、引号及多行文本样式；列表评论按值及出现次序匹配。setup 只补缺失默认键，保留当前列表和显式 null；运行时保存完整有效快照。保存前重新解析输出并严格校验类型，再逐文件原子替换。终端 `set` 和 MCP 参数仍采用 JSON 语法。宿主 `compose.sh down` 无需 YAML 库，也不会触发依赖安装。
+
+## 依赖镜像与只读源码
+
+所有默认部署使用依赖环境镜像加只读源码挂载。镜像只保留 Python、ROS、CUDA、系统工具、锁定的第三方依赖和两个 ROS 消息包的编译产物。RC、SDK、策略实现、Qwen vendor、项目补丁、启动/anchor 脚本、Python 仿真程序和测试代码均从宿主读取；容器启动不执行 pip 安装。镜像构建上下文仅允许依赖锁、Dockerfile 和 ROS 消息包输入。
+
+RC 从 `/workspace/src` 导入，SDK 从 `/workspace/packages/policy-sdk/src` 导入。模型实现路径由各策略 Compose 声明，只有 Qwen 的 PYTHONPATH 包含 vendor；Pi05 使用镜像内锁定的官方 LeRobot。启动会验证声明的模块来源；目录缺失、不可读、来源错误都失败，不回退到旧安装包。所有源码 bind 都是只读且 `create_host_path: false`。字节码缓存统一写入容器 `/tmp/rc-pycache`，不会读取或写入宿主源码目录里的缓存。
+
+| 修改内容 | 生效操作 |
+| --- | --- |
+| RC、SDK、基础 entrypoint 或 anchor | 正常 `down` 后重新 `up -d --no-build`，连同策略运行组一起重新创建 |
+| 策略 main.py 或实现包 | `switch <当前策略>`；在链中则 `switch <当前链>` |
+| Qwen vendor 或 Transformers 补丁 | 重新 switch，创建新的策略容器 |
+| Python ROS 仿真程序 | 重新创建 ros-sim 容器 |
+| 第三方依赖、Python/CUDA/系统环境 | 修改对应依赖声明并重建相关镜像 |
+| ROS 消息定义 | 重建 RC 镜像，重新编译消息包 |
+
+首次迁移需要一次完整构建：先用原部署的 `./scripts/compose.sh down` 正常收尾，再更新源码、执行 `./setup.sh --policies <需要的策略>`，最后使用原有 Compose 覆盖参数 `up -d --no-build`。两个 Qwen 仍按相同构建输入去重。以后普通源码修改无需 setup/build。迁移前的旧镜像仍含旧实现，不能作为“源码已外置”的验收镜像。
+
+不会监视文件或主动替换已导入模块；运行中编辑源码不保证立即生效。冷切换仍先证明完整旧组退出，再启动新组。
 
 ## 基础设施元数据
 

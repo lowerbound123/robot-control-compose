@@ -1,9 +1,10 @@
 """Local editor transactions; model and file work runs on the lifecycle manager."""
 import copy
-import json
 from collections import Counter
 
 from .config import validate_policy
+from .config_paths import policy_config_path
+from .yaml_config import load_yaml_config
 from .operations import ControlRequest
 
 
@@ -68,10 +69,10 @@ class ChainManagement:
         if job['kind'] == 'chain_save':
             path = self.registry.save_chain(job['policies'])
             return {'editor': {'saved': job['policies'], 'path': str(path), 'token': job['edit_token']}}
-        path = self.registry.directory / 'default_chain' / 'policy.json'
+        path = policy_config_path(self.registry.directory / 'default_chain')
         saved = []
         if path.exists():
-            definition = json.loads(path.read_text(encoding='utf-8'))
+            definition = load_yaml_config(path)
             validate_policy(definition, "default_chain")
             if definition.get('kind') != 'chain' or definition.get('id', 'default_chain') != 'default_chain':
                 raise ValueError('default_chain is occupied by an ordinary policy')

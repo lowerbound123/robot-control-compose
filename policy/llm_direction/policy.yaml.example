@@ -1,0 +1,26 @@
+schema_version: 3
+id: llm_direction
+execution:
+  mode: sync
+  call_every_actions: 1
+  control_mode: epos
+params:
+  task: ''
+  prompt: 根据当前头部、左腕、右腕三路图像和任务，选择左右手下一步动作。每只手只选一个动作，使用小步移动；无需动作时选择
+    noop。仅在图像明确表明任务已经完成时报告 done。
+  request_when_remaining: 0
+  chunk_size: 30
+  translation_m: 0.05
+  rotation_rad: 0.1
+  gripper_open: -3.4
+  gripper_close: 0.0
+  image_max_side: 1024
+  jpeg_quality: 85
+  provider:
+    type: deepseek
+    model: deepseek-flash
+    base_url: https://api.deepseek.com
+    output_format: json_object
+    timeout_s: 30.0
+    api_key: ''
+hot_reloadable: []

@@ -115,7 +115,7 @@ scale 必须非零且有限。这个变换发生在归一化前、反归一化�
 可以先在不连接机器人、不启动 RC 的情况下检查 GPU 加载和预热。以下命令在仓库根目录执行，会读取本策略 `deployment.env` 的挂载和 GPU 设置：
 
 ```bash
-docker compose --env-file policy/pi05/deployment.env -f policy/pi05/compose.yaml \
+RC_HOST_PROJECT_ROOT="$PWD" docker compose --env-file policy/pi05/deployment.env -f policy/pi05/compose.yaml \
   run --rm --no-deps --user "$(id -u):$(id -g)" \
   -v "$PWD/policy/pi05:/workspace/policy/pi05:ro" --entrypoint python policy \
   -m rc_pi05_policy.probe --config /workspace/policy/pi05/model.json

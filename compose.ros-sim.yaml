@@ -4,10 +4,29 @@ services:
     user: "${RC_UID}:${RC_GID}"
     environment:
       HOME: /tmp
+      PYTHONPATH: /workspace/packages/policy-sdk/src:/workspace/ros_ws/src/robot_control_test_sim
+      PYTHONPYCACHEPREFIX: /tmp/rc-pycache
+      RC_SOURCE_MODULES: '{"rc_policy_sdk":"/workspace/packages/policy-sdk/src","robot_control_test_sim":"/workspace/ros_ws/src/robot_control_test_sim"}'
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
       ROS_LOCALHOST_ONLY: "0"
+    volumes:
+      - type: bind
+        source: ./packages/policy-sdk/src
+        target: /workspace/packages/policy-sdk/src
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./docker
+        target: /workspace/docker
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./ros_ws/src/robot_control_test_sim
+        target: /workspace/ros_ws/src/robot_control_test_sim
+        read_only: true
+        bind: {create_host_path: false}
     command: ["python3", "-m", "robot_control_test_sim.simulator", "--namespace", "/robot_control_test"]
   robot-control:
-    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.ros-test.json", "--mcp", "0.0.0.0:4000"]
+    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.ros-test.yaml", "--mcp", "0.0.0.0:4000"]
     depends_on:
       ros-sim: {condition: service_started}

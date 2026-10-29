@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import json
 import time
 import uuid
@@ -34,7 +35,7 @@ def test_foreign_record_and_unconfirmed_anchor_are_retained(tmp_path):
     identity = uuid.uuid4().hex[:24]
     runtime.record_global(identity, runtime.state_dir.parent / 'ipc')
     path = runtime.state_dir / f'global-{identity}.json'
-    data = json.loads(path.read_text())
+    data = read_config(path)
     with pytest.raises(BlockedCleanup):
         runtime.finish_global_namespace_cleanup(set())
     assert path.exists()

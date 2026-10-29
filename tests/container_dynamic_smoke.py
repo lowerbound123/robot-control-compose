@@ -29,7 +29,7 @@ def command(controller,line,expected='succeeded'):
 
 
 def make():
-    controller=RobotController(ROOT/'configs/rc.mock.json')
+    controller=RobotController(ROOT/'configs/rc.mock.yaml')
     original=controller.runtime.runner
     def runner(args,**kwargs):
         result=original(args,**kwargs)

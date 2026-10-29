@@ -27,7 +27,7 @@
 
 ## 配置 task、prompt 和供应商
 
-编辑 `policy/llm_direction/policy.json` 的 `params`。出厂 `task` 为空，必须填写后才能加载该策略；基础 hold 启动不受影响。
+编辑 `policy/llm_direction/policy.yaml` 的 `params`。出厂 `task` 为空，必须填写后才能加载该策略；基础 hold 启动不受影响。
 
 | 字段 | 默认值 / 要求 |
 | --- | --- |
@@ -42,7 +42,7 @@
 
 模型不接收历史图像或历史对话。图像以 JPEG data URL 直接通过 HTTPS/HTTP 发给配置的供应商，三张分别携带相机名称；不会上传到另一个图床。编码总长度上限 16 MiB。共享内存视图只在回调期间借用，lease 要等回调释放确认或进程树退出证明才能回收。
 
-供应商模板位于 `policy/llm_direction/providers/`：
+下方 Python 配置编辑示例应在 RC 环境，或设置好 `PYTHONPATH=src:packages/policy-sdk/src` 的 setup 工具环境中运行。供应商模板位于 `policy/llm_direction/providers/`：
 
 | 文件 | API | 密钥字段 | 输出方式 |
 | --- | --- | --- | --- |
@@ -56,19 +56,17 @@
 在启动 RC 前，可以从项目根目录运行以下示例，原子更新 task 和供应商对象：
 
 ```bash
-python3 - <<'PY'
-import json, os, tempfile
+PYTHONPATH=src:packages/policy-sdk/src .setup/tools-venv/bin/python - <<'PY'
+import json
 from pathlib import Path
-path = Path('policy/llm_direction/policy.json')
-config = json.loads(path.read_text())
+from robot_control.yaml_config import load_yaml_config, save_yaml_config
+
+path = Path('policy/llm_direction/policy.yaml')
+config = load_yaml_config(path)
 config['params']['task'] = '把左侧的方块放入托盘，完成后停止'
 config['params']['provider'] = json.loads(
     Path('policy/llm_direction/providers/deepseek.json').read_text())
-fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.policy-', suffix='.json')
-with os.fdopen(fd, 'w') as stream:
-    json.dump(config, stream, ensure_ascii=False, indent=2)
-    stream.write('\n')
-os.replace(temporary, path)
+save_yaml_config(path, config)
 PY
 ```
 
@@ -84,7 +82,7 @@ Decisions 使用单题 226 个联合选项（左右手 15×15，再加完成）�
 
 ```bash
 ./setup.sh --policies hold,llm_direction
-# 编辑 policy/llm_direction/policy.json 的 task 和 provider.api_key
+# 编辑 policy/llm_direction/policy.yaml 的 task 和 provider.api_key
 ./scripts/compose.sh up -d
 ./scripts/compose.sh attach robot-control
 ```
@@ -129,7 +127,7 @@ save-config policy
 resume
 ```
 
-更换供应商和密钥时编辑 policy.json 中的 params.provider 并重新加载策略。密钥字段禁止在线 set；show 输出掩码，save-config 保留实际值。
+更换供应商和密钥时编辑 policy.yaml 中的 params.provider 并重新加载策略。密钥字段禁止在线 set；show 输出掩码，save-config 保留实际值。
 
 原生链通过 `manage-policy` 编排，所有成员须为 `epos`。默认 hold 和两个 Qwen 都是 `qpos`，不能直接加入同一链。`A → B → A` 复用 A 实例；若 A 生成的动作长度大于触发阈值，第二次 A 调用仅透传，不再请求 LLM。后续成员可以加工动作，但最终输出仍必须满足 epos 契约。
 

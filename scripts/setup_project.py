@@ -13,10 +13,11 @@ import sys
 import uuid
 from urllib.parse import urlparse
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT/'src'), str(ROOT/'packages/policy-sdk/src')]
+
 from config_files import configuration_updates, merge_rc_env, read_json, write_updates
 from config_validation import validate_documents, load
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_command(command, root, *, capture=False, env=None):
@@ -25,7 +26,7 @@ def run_command(command, root, *, capture=False, env=None):
 
 
 def select_policies(root, selected):
-    catalog = load('packages/policy-sdk/src/rc_policy_sdk/catalog.py')
+    from robot_control import policy_catalog as catalog
     records = {r['id']:r for r in catalog.discover(Path(root)/'policy')}
     result = []
     for identity in selected:
@@ -168,7 +169,7 @@ def setup(root, policies=None, *, config_only=False):
     write_updates(root,changes)
     for name in ('outputs/runtime','snapshot'):
         (root/name).mkdir(parents=True,exist_ok=True)
-    catalog=load('packages/policy-sdk/src/rc_policy_sdk/catalog.py')
+    from robot_control import policy_catalog as catalog
     requested = policies if policies is not None else [r['id'] for r in catalog.discover(root/'policy') if r['valid']]
     selected=select_policies(root,requested)
     if not config_only:

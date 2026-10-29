@@ -16,7 +16,7 @@
 ./scripts/compose.sh attach robot-control
 ```
 
-setup 从 `policy.json.example` 生成本机 `policy.json`，构建 `robot-control-compose-example:local`；不会启动策略。已有 RC 可以直接使用下面的命令。基础栈按现有 `startup_policy` 启动，example 不改变该设置。
+setup 从 `policy.yaml.example` 生成本机 `policy.yaml`，构建 `robot-control-compose-example:local`；不会启动策略。已有 RC 可以直接使用下面的命令。基础栈按现有 `startup_policy` 启动，example 不改变该设置。
 
 ```text
 help example
@@ -88,14 +88,14 @@ save-config policy
 
 ## 放在原生链中
 
-创建本机 `policy/hold_example/policy.json`：
+创建本机 `policy/hold_example/policy.yaml`：
 
-```json
-{
-  "schema_version": 3,
-  "kind": "chain",
-  "policies": ["hold", "example"]
-}
+```yaml
+schema_version: 3
+kind: chain
+policies:
+- hold
+- example
 ```
 
 准备成员镜像并在 RC 中切换：

@@ -73,8 +73,11 @@ def validate_policy(config, identity=None):
 def validate_documents(documents):
     for path, value in documents.items():
         location = Path(path)
-        if (location.parent in (Path('.'), Path('configs')) and
-                (location.name == 'rc.json' or location.name.startswith('rc.') and location.suffix == '.json')):
-            validate_rc(value)
-        elif path.endswith('/policy.json'):
-            validate_policy(value, Path(path).parent.name)
+        try:
+            if (location.suffix in ('.yaml', '.yml') and location.parent in (Path('.'), Path('configs')) and
+                    (location.stem == 'rc' or location.name.startswith('rc.'))):
+                validate_rc(value)
+            elif len(location.parts) == 3 and location.parts[0] == 'policy' and location.name == 'policy.yaml':
+                validate_policy(value, location.parent.name)
+        except (ValueError, TypeError, KeyError):
+            raise ValueError(f'{path}: invalid main configuration schema') from None

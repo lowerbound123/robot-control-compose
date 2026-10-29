@@ -55,12 +55,12 @@ def reload_controller(tmp_path, request):
                   "patch": {"handler": "patch", "args": ["str"], "effect": "reload_policy"},
                   "current": {"handler": "current", "args": []},
                   "wait-command": {"handler": "wait_command", "args": []}}}
-    (root / "policy.json").write_text(json.dumps(config))
+    (root / "policy.yaml").write_text(json.dumps(config))
     rc = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first",
           "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
           "reset_qpos": [0]*14, "outputs_directory": "outputs",
           "timeouts": {"initialize_s": getattr(request, "param", 3), "inference_s": .1, "release_s": .3}}
-    path = tmp_path / "rc.json"
+    path = tmp_path / "rc.yaml"
     path.write_text(json.dumps(rc))
     def factory(*args, **kwargs): return PolicyProcess(*args, python_command=[sys.executable], **kwargs)
     controller = RobotController(path, robot=MockRobot(), process_factory=factory)

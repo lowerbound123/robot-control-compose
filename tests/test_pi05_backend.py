@@ -1,4 +1,5 @@
 """Native LeRobot serialization/processors; real tiny-model smoke is explicitly synthetic."""
+from config_helpers import read_config
 import importlib
 import importlib.util
 import json
@@ -94,7 +95,7 @@ def test_missing_action_statistics_fail_during_load(tmp_path, monkeypatch):
     module = implementation()
     path, _, _ = native_checkpoint_fixture(tmp_path, monkeypatch)
     from safetensors.torch import save_file
-    post = json.loads((tmp_path / 'weights/policy_postprocessor.json').read_text())
+    post = read_config(tmp_path / 'weights/policy_postprocessor.json')
     step = next(s for s in post['steps'] if s['registry_name'] == 'unnormalizer_processor')
     save_file({'observation.state.mean': torch.ones(14)}, tmp_path / 'weights' / step['state_file'])
     from rc_pi05_policy.configuration import load_model_config
@@ -121,7 +122,7 @@ def test_saved_normalization_filter_covers_required_features(tmp_path, monkeypat
     cfg.normalization_mapping['VISUAL'] = NormalizationMode(visual)
     cfg.save_pretrained(tmp_path / 'weights')
     pre_path = tmp_path / 'weights/policy_preprocessor.json'
-    saved = json.loads(pre_path.read_text())
+    saved = read_config(pre_path)
     normalizer = next(s for s in saved['steps'] if s['registry_name'] == 'normalizer_processor')
     normalizer['config']['normalize_observation_keys'] = keys
     normalizer['config']['norm_map']['VISUAL'] = visual

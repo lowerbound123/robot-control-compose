@@ -137,3 +137,5 @@ uvicorn==0.54.0
     # via
     #   -r requirements/rc.in
     #   mcp
+ruamel.yaml==0.19.1
+    # via -r requirements/rc.in

@@ -1,3 +1,4 @@
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 import copy
 import json
@@ -44,14 +45,14 @@ def native_controller(tmp_path):
             'change': {'handler':'change', 'args':['int'], 'effect':'reload_policy'},
         })
         config['hot_reloadable'] = []
-        (root / identity / 'policy.json').write_text(json.dumps(config))
+        (root / identity / 'policy.yaml').write_text(json.dumps(config))
         (root / identity / 'main.py').write_text(SOURCE)
         (root / identity / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     add_chain(root, ['a','b','a'])
-    config = json.loads((template_path(Path(__file__).resolve().parents[1] / 'rc.json')).read_text())
+    config = read_config(template_path(Path(__file__).resolve().parents[1] / 'rc.yaml'))
     config.update(policy_directory='policy', startup_policy='default_chain', outputs_directory='outputs', frequency_hz=100)
     config['timeouts'] = {'initialize_s':5, 'inference_s':3, 'release_s':.5}
-    path = tmp_path / 'rc.json'
+    path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(config))
     children = []
     def factory(*args, **kwargs):
@@ -83,7 +84,7 @@ def test_native_chain_start_edit_save_apply_and_invalid_draft(native_controller)
     operation(controller, controller.manage_policy('save', ['b','a'], token=token))
     assert controller._worker is worker
     assert controller.registry.get('default_chain').config['policies'] == ['a','b','a']
-    assert json.loads((root / 'policy/default_chain/policy.json').read_text())['policies'] == ['b','a']
+    assert read_config(root / 'policy/default_chain/policy.yaml')['policies'] == ['b','a']
     operation(controller, controller.manage_policy('apply', [], token=token), 'failed')
     assert controller._worker is worker and worker.alive
     assert controller.status()['state'] == 'paused'
@@ -117,7 +118,7 @@ def test_chain_commands_and_member_reload_and_explicit_save(native_controller):
     assert controller.registry.get('a').config['params']['value'] == 9
     assert controller.registry.get('b').config['params']['value'] == 1
     operation(controller, controller.submit('save-config policy a'))
-    assert json.loads((root / 'policy/a/policy.json').read_text())['params']['value'] == 9
+    assert read_config(root / 'policy/a/policy.yaml')['params']['value'] == 9
     operation(controller, controller.submit('set policy.params.value 10'), 'failed')
 
 

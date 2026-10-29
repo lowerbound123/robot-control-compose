@@ -30,3 +30,11 @@ ros_ws/log/
 
 /policy/**/.runtime/
 /policy/**/deployment.env
+
+# Private YAML main configurations; JSON business/legacy rules above remain.
+/rc*.yaml
+/rc*.yml
+/configs/rc*.yaml
+/configs/rc*.yml
+/policy/*/policy.yaml
+/policy/*/policy.yml

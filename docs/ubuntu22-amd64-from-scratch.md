@@ -4,7 +4,7 @@
 
 1. 按 [Docker 官方 Ubuntu 安装文档](https://docs.docker.com/engine/install/ubuntu/) 安装 Docker Engine 与 Compose 插件。让日常用户能够访问 Unix socket，重新登录后验证 docker info；不要把 socket chmod 为 666。
 2. 将本独立仓库放到稳定路径，用普通用户运行 `./setup.sh --config-only`。确认 configs、policy、outputs、snapshot 可由此用户读写。
-3. 编辑 `configs/rc.mock.json`，初次建议 startup_policy 为 null；真实配置在 `configs/rc.acone.json`。不填旧 host/socket 表。
+3. 编辑 `configs/rc.mock.yaml`，初次建议 startup_policy 为 null；真实配置在 `configs/rc.acone.yaml`。不填旧 host/socket 表。
 4. `./setup.sh --policies hold` 构建基础镜像和 Python 3.14 策略镜像。其他策略按目录选择；Qwen 需先准备 GPU、NVIDIA Container Toolkit、模型和缓存目录，参见 Qwen 文档。
 5. `./scripts/compose.sh up -d --no-build` 启动两个基础容器，再 `./scripts/compose.sh attach robot-control`。先检查 status 和 policies，再 switch hold；初始化后暂停，只有 resume 才推理。
 6. 使用 exit 退出 RC，再 `./scripts/compose.sh down` 完成动态容器与外部资源收尾。

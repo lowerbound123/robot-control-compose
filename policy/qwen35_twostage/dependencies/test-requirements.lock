@@ -10,3 +10,5 @@ pygments==2.21.0
     # via pytest
 pytest==9.1.1
     # via -r requirements/qwen35-test.in
+ruamel.yaml==0.19.1
+    # via test YAML fixtures

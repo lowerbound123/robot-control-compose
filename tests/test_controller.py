@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import json
 import queue
 import threading
@@ -79,9 +80,9 @@ def setup_controller(tmp_path):
         directory.mkdir(parents=True)
         (directory / "main.py").write_text("\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"]))
         (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
-        (directory / "policy.json").write_text(json.dumps({"schema_version": 3, "id": identity,  "execution": {"mode": "sync", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"value": 1}, "hot_reloadable": ["params.value", "execution.mode"]}))
+        (directory / "policy.yaml").write_text(json.dumps({"schema_version": 3, "id": identity,  "execution": {"mode": "sync", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"value": 1}, "hot_reloadable": ["params.value", "execution.mode"]}))
     config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first", "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [0.1]*14}, "reset_qpos": [0]*14, "outputs_directory": "outputs", "timeouts": {"initialize_s": 2, "inference_s": 2, "release_s": 1}}
-    path = tmp_path / "rc.json"
+    path = tmp_path / "rc.yaml"
     path.write_text(json.dumps(config))
     robot = MockRobot()
     controller = RobotController(path, robot=robot, process_factory=FakeProcess)
@@ -164,7 +165,7 @@ def test_state_save_load_and_fifo_resume_then_load(setup_controller):
     until(lambda: controller.get_operation(operation)["status"] == "succeeded")
     assert controller.status().get("hold_name") == "pose"
     assert controller.status()["state"] == "paused"
-    assert json.loads(path.read_text())["qpos"] == expected
+    assert read_config(path)["qpos"] == expected
 
 
 def test_rc_cold_parameter_is_rejected_without_change(setup_controller):

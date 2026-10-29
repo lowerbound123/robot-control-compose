@@ -199,34 +199,33 @@ def test_vendor_is_self_contained_and_patch_is_pinned():
     assert (ROOT / "scripts/install_qwen35_patches.py").is_file()
 
 
-def test_patch_installer_rejects_wrong_version_and_preserves_backup(
-    tmp_path, monkeypatch
-):
-    path = ROOT / "scripts/install_qwen35_patches.py"
-    spec = importlib.util.spec_from_file_location("qwen_patch_test", path)
-    patch = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(patch)
+def test_patch_validation_is_read_only_and_requires_current_source(tmp_path, monkeypatch):
+    from rc_qwen35_policy import patches as patch
     package = tmp_path / "transformers"
     target = package / "models/qwen3_5/modeling_qwen3_5.py"
     target.parent.mkdir(parents=True)
     target.write_text("original")
     monkeypatch.setattr(patch.metadata, "version", lambda name: "5.3.0")
     with pytest.raises(RuntimeError, match="5.2.0"):
-        patch.install()
+        patch.check()
     assert target.read_text() == "original"
     monkeypatch.setattr(patch.metadata, "version", lambda name: "5.2.0")
-    monkeypatch.setattr(
-        patch.util,
-        "find_spec",
-        lambda name: SimpleNamespace(origin=str(package / "__init__.py")),
-    )
+    monkeypatch.setattr(patch.util, "find_spec", lambda name: SimpleNamespace(origin=str(package / "__init__.py")))
     with pytest.raises(RuntimeError, match="missing or differs"):
-        patch.install(check=True)
-    patch.install()
-    patch.install(check=True)
-    patch.install()
-    assert target.read_bytes() == patch.SOURCE.read_bytes()
-    assert target.with_suffix(".py.pre-rc-qwen35").read_text() == "original"
+        patch.check()
+    assert target.read_text() == "original"
+    # Simulate a direct file mount without asking the validator to copy anything.
+    target.write_bytes(patch.SOURCE.read_bytes())
+    assert patch.check() == target
+    assert not target.with_suffix(".py.pre-rc-qwen35").exists()
+    source = tmp_path / "new-source.py"
+    source.write_text("updated patch")
+    monkeypatch.setattr(patch, 'SOURCE', source)
+    with pytest.raises(RuntimeError, match="missing or differs"):
+        patch.check()
+    target.unlink()
+    with pytest.raises(FileNotFoundError):
+        patch.check()
 
 
 def test_empty_generated_subtask_and_fast_prompt_stripping(cpu_torch, monkeypatch):

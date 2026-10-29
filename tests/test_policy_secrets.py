@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import copy
 import json
 from pathlib import Path
@@ -53,7 +54,7 @@ def test_public_configuration_and_pending_status_hide_keys_but_save_preserves_th
     assert 'private-pending-key' not in json.dumps(controller.status())
     controller.submit('show policy')
     path = controller.registry.save(controller._identity)
-    assert json.loads(path.read_text())['params']['provider']['api_key'] == 'private-saved-key'
+    assert read_config(path)['params']['provider']['api_key'] == 'private-saved-key'
     assert record.config['params']['provider']['api_key'] == 'private-saved-key'
 
 

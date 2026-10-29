@@ -3,6 +3,7 @@
 After preparing RC, anchor, hold and example images:
     python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence
 """
+from config_helpers import read_config
 import argparse
 import json
 import os
@@ -33,7 +34,7 @@ def in_container():
 
     root = Path("/workspace")
     report = {"rc_python": platform.python_version(), "checks": []}
-    controller = RobotController(root / "configs/rc.mock.json")
+    controller = RobotController(root / "configs/rc.mock.yaml")
     router = TerminalCommandRouter(controller)
     router.panel_handler = lambda name, desired: controller.policy_monitors.set_enabled(
         name.removeprefix("monitor-"), desired)
@@ -95,8 +96,9 @@ def in_container():
         current = containers()
         assert len(current) == 2 and not set(first) & set(current)
         assert controller.status()["state"] == "paused"
+        consumed_before = controller.status()["consumed"]
         command("resume")
-        wait(lambda: controller.status()["consumed"] >= 4)
+        wait(lambda: controller.status()["consumed"] > consumed_before)
         assert command("policy example example")["calls"] > 0
         assert command("example-example")["image_count"] == 3
         assert all(abs(value - .125) < 1e-6 for value in controller.robot.read_state()["qpos"])
@@ -117,6 +119,7 @@ def in_container():
 
 
 def on_host(evidence):
+    from source_helpers import copy_runtime_sources, anchor_override
     # All generated configuration and deployment identity belong to this temp project.
     from project_templates import copy_templates
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -124,37 +127,43 @@ def on_host(evidence):
 
     evidence.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="rc-example-smoke-"))
+    copy_runtime_sources(directory)
     (directory / "configs").mkdir()
     shutil.copyfile(ROOT / ".env.example", directory / ".env.example")
     for identity in ("hold", "example"):
         copy_templates(ROOT / "policy" / identity, directory / "policy" / identity)
+        if os.environ.get('RC_TEST_WORKER314_IMAGE'):
+            compose_file = directory / 'policy' / identity / 'compose.yaml'
+            model = json.loads(subprocess.check_output(['docker','compose','-f',str(compose_file),'config','--format','json']))
+            model['services']['policy']['image'] = os.environ['RC_TEST_WORKER314_IMAGE']
+            compose_file.write_text(json.dumps(model))
     chain = directory / "policy/hold_example"
     chain.mkdir()
-    (chain / "policy.json").write_text(json.dumps({
+    (chain / "policy.yaml").write_text(json.dumps({
         "schema_version": 3, "kind": "chain", "policies": ["hold", "example"],
     }))
-    config = json.loads((ROOT / "configs/rc.mock.json.example").read_text())
+    config = read_config(ROOT / "configs/rc.mock.yaml.example")
     config.update(startup_policy=None, frequency_hz=30)
     config["robot"]["initial_qpos"] = [.125] * 14
     config["timeouts"] = dict(initialize_s=30, inference_s=5, release_s=3, shutdown_s=25)
-    (directory / "configs/rc.mock.json").write_text(json.dumps(config))
+    (directory / "configs/rc.mock.yaml").write_text(json.dumps(config))
     assert setup(directory, ["hold_example"], config_only=True) == ["hold", "example"]
     context_path = directory / ".setup/runtime.json"
-    context = json.loads(context_path.read_text())
+    context = read_config(context_path)
     # Docker Desktop may map the socket to a different GID inside Linux.
     context["docker_gid"] = int(subprocess.check_output([
         "docker", "run", "--rm", "--network", "none", "--entrypoint", "stat",
         "--mount", f"type=bind,source={context['docker_socket']},target=/socket",
-        "robot-control-compose-example:local", "-c", "%g", "/socket"], text=True, timeout=30).strip())
+        os.environ.get("RC_TEST_WORKER314_IMAGE", "robot-control-compose-example:local"), "-c", "%g", "/socket"], text=True, timeout=30).strip())
     context_path.write_text(json.dumps(context))
     override = {"services": {"robot-control": {
         "command": ["python3", "/validation/example_docker_smoke.py", "--container"],
-        "environment": {"PYTHONPATH": "/current/src:/current/packages/policy-sdk/src"},
         "volumes": [
             {"type": "bind", "source": str(ROOT / "tests"), "target": "/validation", "read_only": True},
-            {"type": "bind", "source": str(ROOT), "target": "/current", "read_only": True},
         ],
     }}}
+    anchor_override(override["services"])
+    override["services"]["robot-control"]["image"] = os.environ.get("RC_TEST_RC_IMAGE", "robot-control-compose-rc:local")
     (directory / "override.json").write_text(json.dumps(override))
     env = dict(os.environ, RC_BASE_PROJECT=context["base_project"], RC_UID=str(context["uid"]),
                RC_GID=str(context["gid"]), RC_DOCKER_GID=str(context["docker_gid"]),
@@ -173,7 +182,7 @@ def on_host(evidence):
         if output.exists():
             shutil.copyfile(output, evidence / "result.json")
         assert code == "0", logs[-6000:]
-        report = json.loads(output.read_text())
+        report = read_config(output)
         assert len(report["checks"]) == 5, report
         print(json.dumps(report, ensure_ascii=False, indent=2))
     finally:

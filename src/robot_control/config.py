@@ -45,7 +45,10 @@ def dotted_set(config: dict, path: str, value: Any) -> None:
     parent[parts[-1]] = value
 
 
-from rc_policy_sdk.catalog import validate_policy, read_descriptor, discover
+from rc_policy_sdk.catalog import validate_policy
+from .policy_catalog import read_descriptor, discover
+from .config_paths import rc_config_path, policy_config_path
+from .yaml_config import load_yaml_config, save_yaml_config
 
 
 def changed_config(config: dict, path: str, value: Any) -> tuple[dict, bool]:
@@ -58,8 +61,15 @@ def changed_config(config: dict, path: str, value: Any) -> tuple[dict, bool]:
 
 
 def load_rc(path: Path) -> dict:
-    with path.open(encoding="utf-8") as stream:
-        config = json.load(stream)
+    path = rc_config_path(path)
+    config = load_yaml_config(path)
+    try:
+        return _validate_rc(config)
+    except (ValueError, TypeError, KeyError):
+        raise ValueError(f'{path}: invalid RC schema') from None
+
+
+def _validate_rc(config):
     if config.get("schema_version") != 3:
         raise ValueError("RC schema_version 必须为 3")
     if {'policy_hosts', 'conda_executable'} & config.keys():
@@ -191,9 +201,9 @@ class PolicyRegistry:
         if ((existing is not None and existing.directory != folder)
                 or any(row['id'] == 'default_chain' and Path(row['directory']) != folder for row in self.list())):
             raise ValueError("default_chain must be the native chain in policy/default_chain")
-        path = folder / 'policy.json'
+        path = policy_config_path(folder)
         if path.exists():
-            on_disk = json.loads(path.read_text(encoding='utf-8'))
+            on_disk = load_yaml_config(path)
             validate_policy(on_disk, folder.name)
             if on_disk.get('kind') != 'chain' or on_disk.get('id', folder.name) != 'default_chain':
                 raise ValueError('policy/default_chain is occupied by another policy')
@@ -204,8 +214,8 @@ class PolicyRegistry:
 
     def save_chain(self, identities):
         record = self.propose_chain(identities)
-        path = record.directory / "policy.json"
-        atomic_json(path, record.config)
+        path = policy_config_path(record.directory)
+        save_yaml_config(path, record.config)
         return path
 
     def commit(self, identity: str, config: dict) -> PolicyRecord:
@@ -219,6 +229,6 @@ class PolicyRegistry:
 
     def save(self, identity: str) -> Path:
         record = self.get(identity)
-        path = record.directory / "policy.json"
-        atomic_json(path, record.config)
+        path = policy_config_path(record.directory)
+        save_yaml_config(path, record.config)
         return path

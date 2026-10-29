@@ -88,11 +88,11 @@ def test_native_chain_duplicate_members_share_one_store(tmp_path):
         folder.mkdir(parents=True)
         (folder / 'main.py').write_text(SOURCE)
         (folder / 'compose.yaml').write_text('services:\n  policy:\n    image: fixture:local\n')
-        (folder / 'policy.json').write_text(json.dumps(dict(schema_version=3, params={},
+        (folder / 'policy.yaml').write_text(json.dumps(dict(schema_version=3, params={},
             execution=dict(mode='sync', call_every_actions=1, control_mode='qpos'))))
     chain = tmp_path / 'policy' / 'chain'
     chain.mkdir()
-    (chain / 'policy.json').write_text(json.dumps(dict(schema_version=3, kind='chain', policies=['a','b','a'])))
+    (chain / 'policy.yaml').write_text(json.dumps(dict(schema_version=3, kind='chain', policies=['a','b','a'])))
     service = GlobalStateService(tmp_path / 'global.env', tmp_path / 'ipc', run_id='run')
     service.start()
     worker = ChainProcess(PolicyRegistry(tmp_path / 'policy').get('chain'),

@@ -1,5 +1,7 @@
 # robot-control-compose
 
+默认采用依赖镜像＋只读源码挂载。修改 RC、SDK、策略实现或 Qwen vendor/补丁后，按范围重新创建运行组或 switch 即可，无需 build；第三方依赖、系统环境和 ROS 消息变化仍需重建。首次迁移步骤及生效范围见 [部署准备](docs/setup.md#依赖镜像与只读源码)。
+
 独立的 Docker 机器人控制框架。RC 使用 ROS 2 Humble / Python 3.10，hold 和 example 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
 
 ## 准备与运行
@@ -40,7 +42,7 @@ exit
 
 ```text
 policy/my_policy/
-  policy.json
+  policy.yaml
   main.py
   compose.yaml        # 恰好一个服务 policy，明确 image
   deployment.env      # 可选，本机部署参数
@@ -55,7 +57,9 @@ policy/my_policy/
 
 ## 配置与权限
 
-`.json.example` 和 `deployment.env.example` 用于生成缺失配置。本机 JSON、密钥、部署 env、`.setup` 和运行产物不提交。setup 保留现有配置值并备份变更；不会把未知模型格式解释为 Qwen。
+RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。model/provider JSON 和通信格式保持不变。
+
+主配置 `.yaml.example`、业务配置 `.json.example` 和 `deployment.env.example` 用于生成缺失配置。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。setup 保留现有配置值并备份变更；不会把未知模型格式解释为 Qwen。
 
 RC 持有 Docker daemon 管理权限，用于管理同一 daemon 下的兄弟容器。setup 探测 Unix socket 路径与 GID；不假定固定组号、不修改 socket 为全员可写。策略不会得到 Docker socket 或 host PID namespace。anchor 仅初始化通信卷，然后降权；常驻进程使用宿主用户 UID/GID。
 

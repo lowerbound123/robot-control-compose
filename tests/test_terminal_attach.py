@@ -1,4 +1,5 @@
 """Exercise terminal modes and mouse bytes, rather than injecting Pilot events."""
+from config_helpers import read_config
 import base64
 import json
 import os
@@ -46,7 +47,7 @@ def test_late_terminal_can_expand_and_copy_json_after_missing_startup_modes(tmp_
                 pass
 
     def observation():
-        return json.loads(state_file.read_text()) if state_file.exists() else {}
+        return read_config(state_file) if state_file.exists() else {}
 
     def wait_for(predicate, *, allow_exit=False):
         deadline = time.monotonic() + 5

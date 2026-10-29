@@ -13,6 +13,11 @@ services:
     shm_size: ${RC_SHM_SIZE:-512m}
     volumes:
       - rpc:/run/robot-control
+      - type: bind
+        source: ./docker
+        target: /workspace/docker
+        read_only: true
+        bind: {create_host_path: false}
     stop_grace_period: 5s
     restart: "no"
   robot-control:
@@ -30,6 +35,9 @@ services:
     tty: true
     environment:
       HOME: /tmp
+      PYTHONPATH: /workspace/src:/workspace/packages/policy-sdk/src
+      PYTHONPYCACHEPREFIX: /tmp/rc-pycache
+      RC_SOURCE_MODULES: '{"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}'
       TERM: ${TERM:-xterm-256color}
       COLORTERM: ${COLORTERM:-truecolor}
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
@@ -38,10 +46,25 @@ services:
       ROBOT_CONTROL_MCP_TOKEN: ${ROBOT_CONTROL_MCP_TOKEN:-}
       RC_RUNTIME_CONTEXT: /workspace/.setup/runtime.json
       DOCKER_HOST: unix:///var/run/docker.sock
-    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.mock.json", "--mcp", "0.0.0.0:4000"]
+    command: ["python3", "-m", "robot_control", "--config", "/workspace/configs/rc.mock.yaml", "--mcp", "0.0.0.0:4000"]
     ports: ["127.0.0.1:${RC_MCP_PORT:-4000}:4000"]
     volumes:
       - rpc:/run/robot-control
+      - type: bind
+        source: ./src
+        target: /workspace/src
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./packages
+        target: /workspace/packages
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./docker
+        target: /workspace/docker
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ${RC_DOCKER_SOCKET:?Run setup.sh first}
         target: /var/run/docker.sock

@@ -1,4 +1,5 @@
 """Opt-in full RC / production Conda policy / genuine ROS simulator acceptance."""
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 import importlib.util
 import json
@@ -83,8 +84,8 @@ def ros_rc(tmp_path, monkeypatch):
     namespace = "/robot_control_test/rc_" + uuid.uuid4().hex[:8]
     policies = tmp_path / "policy"
     copy_templates(ROOT / "policy", policies)
-    manifest_path = policies / "delayed_hold" / "policy.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest_path = policies / "delayed_hold" / "policy.yaml"
+    manifest = read_config(manifest_path)
     manifest["params"]["delay_s"] = 0.8
     manifest_path.write_text(json.dumps(manifest))
     proof = tmp_path / "policy-proof.json"
@@ -109,11 +110,11 @@ def policy(context, state, action_chunk, images, config):
         path.write_text(json.dumps({"prefix":sys.prefix, "images":sorted(images)}))
     return _original_policy(context, state, action_chunk, images, config)
 ''')
-    hold_manifest = policies / "hold" / "policy.json"
-    hold_config = json.loads(hold_manifest.read_text())
+    hold_manifest = policies / "hold" / "policy.yaml"
+    hold_config = read_config(hold_manifest)
     hold_config["params"]["proof_path"] = str(proof)
     hold_manifest.write_text(json.dumps(hold_config))
-    config = json.loads((template_path(ROOT / "configs" / "rc.ros-test.json")).read_text())
+    config = read_config(template_path(ROOT / "configs" / "rc.ros-test.yaml"))
     robot_config = config["robot"]
     robot_config["namespace"] = namespace
     for key in ("feedback_left_topic", "feedback_right_topic", "command_left_topic", "command_right_topic"):
@@ -125,7 +126,7 @@ def policy(context, state, action_chunk, images, config):
     config.update(conda_executable=CONDA, policy_directory=str(policies),
                   outputs_directory=str(tmp_path / "outputs"), reset_qpos=np.linspace(-0.15, 0.15, 14).tolist())
     config["timeouts"] = {"initialize_s": 15, "inference_s": 5, "release_s": 3}
-    path = tmp_path / "rc.json"
+    path = tmp_path / "rc.yaml"
     path.write_text(json.dumps(config))
 
     context = Context()
@@ -186,7 +187,7 @@ def test_actual_ros_rc_policy_images_pose_switch_and_exit(ros_rc, tmp_path, mode
     controller = ros_rc.controller
     controller.submit("resume")
     until(lambda: controller.status()["consumed"] >= 4 and ros_rc.proof.exists(), controller)
-    proof = json.loads(ros_rc.proof.read_text())
+    proof = read_config(ros_rc.proof)
     assert Path(proof["prefix"]).name == "rc-policy-demo"
     assert Path(proof["prefix"]).resolve() != Path(sys.prefix).resolve()
     assert proof["images"] == ["head", "left_wrist", "right_wrist"]
@@ -195,7 +196,7 @@ def test_actual_ros_rc_policy_images_pose_switch_and_exit(ros_rc, tmp_path, mode
     controller.submit("save home")
     saved_path = controller.outputs / "state_saves" / "home.json"
     until(lambda: saved_path.exists() and controller.status()["hold_name"] == "home", controller)
-    saved = json.loads(saved_path.read_text())["qpos"]
+    saved = read_config(saved_path)["qpos"]
     pose_consumed = controller.status()["consumed"]
     controller.submit("reset")
     until(lambda: controller.status()["state"] == "paused" and controller.status()["hold_name"] == "reset", controller)

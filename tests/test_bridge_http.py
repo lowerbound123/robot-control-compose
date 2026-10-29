@@ -1,4 +1,5 @@
 """Real HTTP + managed policy subprocess; optional production Conda/ROS paths."""
+from config_helpers import read_config
 from project_templates import template_path, copy_templates
 import json
 import os
@@ -72,19 +73,19 @@ def build_controller(endpoint,path,mode,transport,*,delay=.15,load_delay=0.,ros_
     copy_templates(ROOT/'policy',policies)
     # Retired HTTP policy: regression coverage for external image leases.
     shutil.copytree(ROOT/'tests/fixtures/legacy_model_server', policies/'model_server')
-    manifest=policies/'model_server/policy.json'
-    config=json.loads(manifest.read_text())
+    manifest=policies/'model_server/policy.yaml'
+    config=read_config(manifest)
     config['params'].update(endpoint=endpoint,mode=mode,image_transport=transport,continuous_observations=True)
     config['params']['request_when_remaining']=2
     config['params']['load_overrides']={'model':{'chunk_size':8,'delay_s':delay,'load_delay_s':load_delay}}
     config['params']['timeouts']={'connect_s':1.,'request_s':5.,'load_s':10.,'release_s':3.}
     manifest.write_text(json.dumps(config))
-    rc=json.loads((template_path(ROOT/'rc.json')).read_text())
+    rc=read_config(template_path(ROOT/'rc.yaml'))
     rc.update(policy_directory=str(policies),startup_policy='model_server',outputs_directory=str(path/'outputs'))
     rc['frequency_hz']=50
     rc['timeouts']={'initialize_s':15.,'inference_s':10.,'release_s':2.}
     rc['conda_executable']=CONDA or 'conda'
-    config_path=path/'rc.json'; config_path.write_text(json.dumps(rc))
+    config_path=path/'rc.yaml'; config_path.write_text(json.dumps(rc))
     if CONDA:
         factory=PolicyProcess
     else:
@@ -147,8 +148,8 @@ def test_exit_during_bridge_initialization_revokes_remote_load(http_model):
 def test_remote_model_release_timeout_reports_nonzero_rc_exit(http_model):
     endpoint,path=http_model
     controller=build_controller(endpoint,path,'sync','shm')
-    manifest=path/'policy/model_server/policy.json'
-    profile=json.loads(manifest.read_text())
+    manifest=path/'policy/model_server/policy.yaml'
+    profile=read_config(manifest)
     profile['params']['load_overrides']['model']['release_delay_s']=5.
     profile['params']['timeouts']['release_s']=5.
     controller.config['timeouts']['release_s']=5.
@@ -196,8 +197,8 @@ def test_bridge_hot_config_cold_reload_and_failure_cleanup(http_model):
         until(lambda:controller.status()['config_version']==2)
         assert controller._worker is first
         controller.submit('save-config policy')
-        manifest=path/'policy/model_server/policy.json'
-        until(lambda:json.loads(manifest.read_text())['params']['request_when_remaining']==3)
+        manifest=path/'policy/model_server/policy.yaml'
+        until(lambda:read_config(manifest)['params']['request_when_remaining']==3)
         controller.submit('set policy.params.mode "sync"')
         until(lambda:controller._worker is not first and controller.status()['state']=='paused',timeout=10)
         assert not first.alive

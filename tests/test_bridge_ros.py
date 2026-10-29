@@ -1,4 +1,5 @@
 """Actual rclpy simulator + three isolated Conda processes + HTTP bridge."""
+from config_helpers import read_config
 import importlib.util
 import json
 import os
@@ -21,8 +22,8 @@ def test_actual_ros_http_bridge_pose_modes_switch_exit(ros_rc,http_model,mode):
     endpoint,path=http_model
     controller=ros_rc.controller
     directory=controller.registry.directory/'model_server'
-    manifest=directory/'policy.json'
-    config=json.loads(manifest.read_text())
+    manifest=directory/'policy.yaml'
+    config=read_config(manifest)
     config['params'].update(endpoint=endpoint,mode=mode,continuous_observations=True)
     config['params']['request_when_remaining']=3
     config['params']['load_overrides']={'model':{'chunk_size':12,'delay_s':.25}}
@@ -47,7 +48,7 @@ def initialize(config,*,runtime):
     until(lambda:controller.status()['policy']=='model_server' and controller.status()['state']=='paused',controller)
     worker=ros_rc.remember_worker()
     assert not old.alive
-    assert Path(json.loads(proof.read_text())['prefix']).name=='rc-policy-model-server'
+    assert Path(read_config(proof)['prefix']).name=='rc-policy-model-server'
     assert Path(sys.prefix).name=='robot-control'
     assert Path(httpx.get(endpoint+'/v1/status').json()['worker_runtime']['prefix']).name=='model-server-mock'
     assert controller._pool.directory.parent==Path('/dev/shm')

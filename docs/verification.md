@@ -1,5 +1,7 @@
 # Schema 3 动态策略容器验收
 
+本文保留 2026-10-27 的历史验收记录；源码外置后的复现命令已更新，最新验收见下方“源码挂载验收”。
+
 日期：2026-10-27。代码与部署结构已重构为基础 RC/anchor 两服务、按目录发现的独立策略容器。本页区分自动化测试、真实容器、模型和硬件证据。
 
 ## 已执行的验证
@@ -54,7 +56,8 @@ docker run --rm --shm-size=512m \
   --user "$(id -u):$(id -g)" --workdir /workspace \
   --mount "type=bind,source=$PWD,target=/workspace,readonly" \
   -e HOME=/tmp \
-  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/qwen35-policy/src:/workspace/packages/llm-direction-policy/src \
+  -e RC_SOURCE_MODULES='{"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}' \
+  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/qwen35-policy/src:/workspace/packages/llm-direction-policy/src:/workspace/packages/llm-failure-policy/src:/workspace/packages/pi05-policy/src:/workspace/ros_ws/src/robot_control_test_sim \
   -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   robot-control-compose-dynamic-tests:local \
   python3 -m pytest -p pytest_asyncio.plugin -q -p no:cacheprovider
@@ -75,3 +78,22 @@ python3 tests/dynamic_docker_smoke.py
 ## 未执行的验收
 
 未连接实体机器人、未启动厂商硬件驱动、未调用真实付费供应商、未进行真实 Qwen/GPU 推理。本轮没有构建或验证新的 Qwen CUDA 镜像运行实例；Qwen 本机子进程测试使用轻量 backend。实际权重、CUDA/NVIDIA runtime、模型延迟、真实相机和动作保持/显式复位仍需在目标机器按现场安全流程验收。
+
+## 源码挂载验收
+
+`tests/source_mount_docker_smoke.py` 创建独立临时部署，检查新依赖镜像在无源码挂载时无法导入项目包，然后修改临时实现包、冷切换 policy、完整退出并重建 RC/anchor。它核对源码行为变化而镜像 ID 不变，包含原子替换编辑、故意保留的旧宿主字节码、只读挂载、缺失源码拒绝和失败后的清理。
+
+可通过 `RC_TEST_RC_IMAGE`、`RC_TEST_ANCHOR_IMAGE`、`RC_TEST_WORKER314_IMAGE` 指定本次新建的依赖镜像；全局字典夹具另接收 `RC_TEST_WORKER311_IMAGE`。这些变量只选择验收镜像，不修改本机部署配置。测试 RC 镜像应选 `docker/rc.Dockerfile --target test`。默认动态镜像名称与上方构建命令一致。
+
+```bash
+docker build -f policy/llm_failure/Dockerfile --target runtime -t robot-control-compose-llm-failure:local .
+export RC_TEST_RC_IMAGE=robot-control-compose-dynamic-tests:local
+export RC_TEST_ANCHOR_IMAGE=robot-control-compose-anchor:local
+export RC_TEST_WORKER314_IMAGE=robot-control-compose-policy:local
+export RC_TEST_WORKER311_IMAGE=robot-control-compose-llm-failure:local
+python3 tests/source_mount_docker_smoke.py
+python3 tests/global_state_docker_smoke.py
+python3 tests/dynamic_docker_smoke.py
+```
+
+Qwen 导入探针 `tests/qwen_image_probe.py` 必须使用与策略 Compose 相同的 SDK、实现包、vendor 和直接补丁挂载；它核对第三方版本、源码位置和当前源文件哈希，不要求本项目包的已安装发行元数据。Pi05 的 PYTHONPATH 不包含 Qwen vendor，使用镜像中锁定的官方 LeRobot。GPU 和真机测试仍需在目标设备另行执行。

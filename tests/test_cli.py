@@ -93,7 +93,7 @@ def test_headless_does_not_wait_for_blocked_stdin_after_shutdown():
             unblock.wait()
             return iter(())
 
-    controller = FakeController("rc.json")
+    controller = FakeController("rc.yaml")
     controller.start()
 
     def finish():
@@ -113,7 +113,7 @@ def test_headless_does_not_wait_for_blocked_stdin_after_shutdown():
 
 
 def test_log_batches_yield_and_keep_all_final_events():
-    controller = FakeController("rc.json")
+    controller = FakeController("rc.yaml")
     for count in range(600):
         controller.events.put({"level": "INFO", "message": f"line {count}"})
     stdout = io.StringIO()

@@ -44,6 +44,9 @@ class Qwen35Backend:
         }[self.config.get("dtype", "bfloat16")]
 
     def load(self) -> None:
+        from .patches import check
+        check()
+
         import torch
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.dataset_schemas import get_schema

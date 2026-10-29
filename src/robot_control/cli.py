@@ -121,7 +121,7 @@ def make_mcp_service(controller, override=None):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Robot control terminal")
-    parser.add_argument("--config", default="rc.json", help="RC JSON config (default: rc.json)")
+    parser.add_argument("--config", default="rc.yaml", help="RC YAML config (default: rc.yaml)")
     parser.add_argument("--headless", action="store_true", help="read commands from stdin and log to stdout")
     parser.add_argument("--mcp", metavar="HOST:PORT", help="MCP listen override (default: 127.0.0.1:4000)")
     args = parser.parse_args(argv)

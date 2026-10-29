@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import json
 import time
 
@@ -75,7 +76,7 @@ def test_sdk_failure_still_removes_container_and_preserves_forced_fact(runtime_c
 
 def test_new_initialize_failure_cleans_container_and_leaves_empty(runtime_controller):
     controller,engine,root=ready(runtime_controller)
-    path=root/'policy/second/policy.json';value=json.loads(path.read_text());value['params']['init_fail']=True;path.write_text(json.dumps(value))
+    path=root/'policy/second/policy.yaml';value=read_config(path);value['params']['init_fail']=True;path.write_text(json.dumps(value))
     operation(controller,'switch second','failed')
     assert not engine.containers
     assert controller.status()['policy'] is None
@@ -99,7 +100,7 @@ def test_unconfirmed_cleanup_blocks_new_group_and_keeps_mcp_owner(runtime_contro
 def test_chain_intersection_is_destroyed_and_duplicate_member_uses_one_container(runtime_controller):
     controller,engine,root=ready(runtime_controller)
     directory=root/'policy/default_chain';directory.mkdir()
-    path=directory/'policy.json';path.write_text(json.dumps(dict(schema_version=3,kind='chain',policies=['first','second','first'])))
+    path=directory/'policy.yaml';path.write_text(json.dumps(dict(schema_version=3,kind='chain',policies=['first','second','first'])))
     operation(controller,'switch default_chain')
     assert len(engine.containers)==2
     old_ids=set(engine.containers)

@@ -23,6 +23,7 @@ from rc_policy_sdk.images import ImagePool
 from .external import ExternalResources
 from .log_format import format_log_time
 from .buffer import ActionBuffer
+from .yaml_config import save_yaml_config
 from .config import PolicyRegistry, atomic_json, changed_config, dotted_get, load_rc, validate_entry
 from .process import PolicyProcess
 from .robots import make_robot
@@ -1277,7 +1278,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 raise ValueError("配置路径必须以 rc. 或 policy. 开头")
             if scope == "rc":
                 dotted_get(self.config, path)
-                raise ValueError(f"rc.{path} 是冷参数，请编辑 rc.json 后重启")
+                raise ValueError(f"rc.{path} 是冷参数，请编辑 RC YAML 配置后重启")
             if scope != "policy" or self._identity is None or self._worker is None or not getattr(self._worker, "runnable", self._worker.alive):
                 raise ValueError("需要已激活的 policy")
             value = json.loads(parts[2])
@@ -1309,7 +1310,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             self._operation_start('save_member', identity=args[1])
         elif command == "save-config" and args in [["rc"], ["policy"]]:
             if args[0] == "rc":
-                atomic_json(self.config_path, self.config)
+                save_yaml_config(self.config_path, self.config)
                 path = self.config_path
             else:
                 path = self.registry.save(self._identity)

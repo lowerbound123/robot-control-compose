@@ -64,7 +64,7 @@ def setup_chain(tmp_path):
                 'delay': {'handler':'delay', 'args':['float'], 'timeout_s':.05},
             })
             config['params'].update(events=str(events), delay=delays[index], fail=identity == fail, fail_init=identity == fail_init)
-            (tmp_path / identity / 'policy.json').write_text(json.dumps(config))
+            (tmp_path / identity / 'policy.yaml').write_text(json.dumps(config))
             (tmp_path / identity / 'main.py').write_text(SOURCE)
             (tmp_path / identity / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         add_chain(tmp_path, ['a', 'b', 'a'])

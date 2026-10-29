@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import copy
 import json
 
@@ -12,7 +13,7 @@ def add_policy(root, identity, *, mode="qpos", commands=None):
     config = {"schema_version": 3, "id": identity,
               "execution": {"mode": "async", "call_every_actions": 3, "control_mode": mode},
               "params": {"value": 1}, "hot_reloadable": ["params.value"], "tui_commands": commands or {}}
-    (folder / "policy.json").write_text(json.dumps(config))
+    (folder / "policy.yaml").write_text(json.dumps(config))
     (folder / "main.py").write_text("def initialize(config): pass\ndef policy(*args): pass\ndef reset_context(context): pass\ndef release(context): pass\n")
     (folder / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
     return config
@@ -22,7 +23,7 @@ def add_chain(root, identities):
     folder = root / "default_chain"
     folder.mkdir(exist_ok=True)
     config = {"schema_version": 3, "id": "default_chain", "kind": "chain", "policies": identities}
-    (folder / "policy.json").write_text(json.dumps(config))
+    (folder / "policy.yaml").write_text(json.dumps(config))
     return config
 
 
@@ -44,7 +45,7 @@ def test_chain_resolves_unique_members_without_imports_and_follows_head(tmp_path
     assert next(row for row in registry.list() if row["id"] == "default_chain")["valid"]
 
 
-@pytest.mark.parametrize("ids, error", [([], "nonempty"), (["missing"], "missing"), (["default_chain"], "chain")])
+@pytest.mark.parametrize("ids, error", [([], "invalid policy schema"), (["missing"], "missing"), (["default_chain"], "chain")])
 def test_invalid_chain_references_rejected(tmp_path, ids, error):
     add_chain(tmp_path, ids)
     with pytest.raises(ValueError, match=error):
@@ -62,7 +63,7 @@ def test_mixed_control_modes_rejected_and_draft_save_does_not_change_effective_c
         registry.propose_chain(["a", "c"])
     path = registry.save_chain(["b", "a", "b"])
     assert registry.get("default_chain").config["policies"] == ["a"]
-    assert json.loads(path.read_text())["policies"] == ["b", "a", "b"]
+    assert read_config(path)["policies"] == ["b", "a", "b"]
     assert PolicyRegistry(tmp_path).get("default_chain").config["policies"] == ["b", "a", "b"]
 
 
@@ -93,7 +94,7 @@ def test_failed_atomic_save_keeps_disk_and_session(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         registry.save_chain(["b"])
     assert registry.get("default_chain").config["policies"] == ["a"]
-    assert json.loads((tmp_path / "default_chain/policy.json").read_text())["policies"] == ["a"]
+    assert read_config(tmp_path / "default_chain/policy.yaml")["policies"] == ["a"]
 
 
 def test_renamed_chain_is_invalid_and_cannot_alias_original_id(tmp_path):
@@ -103,7 +104,7 @@ def test_renamed_chain_is_invalid_and_cannot_alias_original_id(tmp_path):
     registry = PolicyRegistry(tmp_path)
     with pytest.raises(ValueError, match='missing'):
         registry.get('default_chain')
-    with pytest.raises(ValueError, match='directory'):
+    with pytest.raises(ValueError, match='invalid policy schema'):
         registry.get('renamed')
 
 
@@ -113,7 +114,7 @@ def test_cached_default_does_not_overwrite_replaced_destination(tmp_path):
     registry = PolicyRegistry(tmp_path)
     registry.get('default_chain')
     foreign = add_policy(tmp_path, 'foreign')
-    path = tmp_path / 'default_chain' / 'policy.json'
+    path = tmp_path / 'default_chain' / 'policy.yaml'
     path.write_text(json.dumps(foreign))
     before = path.read_bytes()
     with pytest.raises(ValueError, match='occupied|directory'):

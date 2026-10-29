@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import asyncio
 from concurrent.futures import Future
 from io import StringIO
@@ -49,7 +50,7 @@ def test_snapshot_preserves_three_original_images_and_complete_state(snapshot_ro
     assert not (controller.root / "snapshot").exists()
     assert {path.name for path in folder.iterdir()} == {
         "head.png", "left_wrist.png", "right_wrist.png", "state.json"}
-    payload = json.loads((folder / "state.json").read_text())
+    payload = read_config(folder / "state.json")
     assert payload["state"]["raw"] == {"left": {"diagnostic": {"temperatures": [21, 22]}}}
     assert payload["state"]["extra_feedback"] == {"enabled": True}
     assert {"qpos", "qvel", "effort", "eef", "timestamp", "sequences"} <= payload["state"].keys()

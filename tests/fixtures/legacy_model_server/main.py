@@ -1,4 +1,4 @@
-"""Generic model-server policy. See policy.json and docs/model-server-policy.md."""
+"""Generic model-server policy. See policy.yaml and docs/model-server-policy.md."""
 from bridge import Bridge
 import math
 

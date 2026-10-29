@@ -1,8 +1,6 @@
-"""Schema 3 plugin catalog. Stdlib only; never imports a policy's Python code."""
+"""Schema 3 policy identity and dictionary validation; standard library only."""
 from __future__ import annotations
 
-import copy
-import hashlib
 import importlib.util
 import json
 import math
@@ -76,54 +74,3 @@ def validate_policy(config, identity=None):
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError('policy timeouts must be finite and positive')
     json.dumps(config, allow_nan=False)
-
-
-def read_descriptor(directory):
-    directory = Path(directory)
-    if directory.is_symlink():
-        raise ValueError('symlink policy directories are not supported')
-    directory = directory.resolve()
-    identity = policy_id(directory.name)
-    try:
-        raw = (directory / 'policy.json').read_bytes()
-    except OSError as exc:
-        raise ValueError(f'{identity}: missing or unreadable policy.json') from exc
-    config = json.loads(raw)
-    validate_policy(config, identity)
-    config = copy.deepcopy(config)
-    config['id'] = identity
-    if config.get('kind') != 'chain':
-        for name in ('main.py', 'compose.yaml'):
-            if not (directory / name).is_file():
-                raise ValueError(f'{identity}: missing {name}')
-    return dict(id=identity, directory=str(directory), config=config,
-                digest=hashlib.sha256(raw).hexdigest(), socket=socket_path(identity))
-
-
-def discover(root):
-    root = Path(root)
-    rows = []
-    if not root.is_dir():
-        return rows
-    for folder in sorted(root.iterdir()):
-        if not folder.is_dir() or not any((folder / name).is_file() for name in ('policy.json', 'policy.json.example')):
-            continue
-        row = dict(id=folder.name, directory=str(folder), valid=False)
-        try:
-            policy_id(folder.name)
-            if not (folder / 'policy.json').is_file():
-                row.update(state='needs_config', error='policy.json has not been configured')
-            else:
-                descriptor = read_descriptor(folder)
-                config = descriptor['config']
-                if config.get('kind') == 'chain':
-                    for member in dict.fromkeys(config['policies']):
-                        child = read_descriptor(root / member)
-                        if child['config'].get('kind') == 'chain':
-                            raise ValueError('nested native chains are not supported')
-                row.update(valid=True, state='discovered', kind=config.get('kind', 'python'),
-                           control_mode=config.get('execution', {}).get('control_mode'))
-        except (ValueError, OSError, TypeError) as exc:
-            row.update(state='invalid', error=str(exc))
-        rows.append(row)
-    return rows

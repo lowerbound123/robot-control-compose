@@ -1,4 +1,5 @@
 """Small checkpoint metadata fixtures; the byte placeholders are not model weights."""
+from config_helpers import read_config
 import json
 from pathlib import Path
 
@@ -46,7 +47,7 @@ def checkpoint_fixture(root, horizon=50, execute=None):
     write_json(tokenizer / 'tokenizer.json', {})
     model = {'model': {'checkpoint': 'weights', 'tokenizer_path': 'tokenizer'},
              'runtime': {'instruction': 'pick up the object'},
-             'observations': {'camera_map': CAMERAS},
+             'observations': {'camera_map': dict(CAMERAS)},
              'actions': {'representation': 'absolute'}, 'execution': {}}
     path = root / 'model.json'
     write_json(path, model)
@@ -93,7 +94,7 @@ def native_checkpoint_fixture(root, monkeypatch, *, relative=False, normalizatio
     # Loading must replace the training-machine/Hub tokenizer reference with our
     # configured local tokenizer. No network access should be necessary.
     pre_path = root / 'weights/policy_preprocessor.json'
-    saved = json.loads(pre_path.read_text())
+    saved = read_config(pre_path)
     for step in saved['steps']:
         if step.get('registry_name') == 'tokenizer_processor':
             step['config']['tokenizer_name'] = 'not-a-local-tokenizer/do-not-fetch'

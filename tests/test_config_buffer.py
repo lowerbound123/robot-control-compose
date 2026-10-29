@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import copy
 import json
 from pathlib import Path
@@ -46,14 +47,14 @@ def test_registry_keeps_session_changes_and_atomic_save(tmp_path):
     folder.mkdir()
     (folder / "main.py").write_text("\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"]))
     (folder / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
-    (folder / "policy.json").write_text(json.dumps(manifest()))
+    (folder / "policy.yaml").write_text(json.dumps(manifest()))
     registry = PolicyRegistry(tmp_path)
     record = registry.get("hold")
     updated, _ = changed_config(record.config, "params.nested.value", 9)
     registry.commit("hold", updated)
     assert registry.get("hold").config["params"]["nested"]["value"] == 9
     registry.save("hold")
-    assert json.loads((folder / "policy.json").read_text())["params"]["nested"]["value"] == 9
+    assert read_config(folder / "policy.yaml")["params"]["nested"]["value"] == 9
 
 
 def test_invalid_manifest_and_entry_do_not_break_policy_discovery(tmp_path):
@@ -62,11 +63,11 @@ def test_invalid_manifest_and_entry_do_not_break_policy_discovery(tmp_path):
     source = "\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"])
     (valid / "main.py").write_text(source + "\nraise RuntimeError('static check must not import')\n")
     (valid / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
-    (valid / "policy.json").write_text(json.dumps({**manifest(), "id": "valid"}))
+    (valid / "policy.yaml").write_text(json.dumps({**manifest(), "id": "valid"}))
     for name, payload in [("malformed", {**manifest(), "execution": []}), ("missing_entry", {**manifest(), "id": "missing_entry"})]:
         folder = tmp_path / name
         folder.mkdir()
-        (folder / "policy.json").write_text(json.dumps(payload))
+        (folder / "policy.yaml").write_text(json.dumps(payload))
         if name != "missing_entry":
             (folder / "main.py").write_text("def policy(*args): pass\n")
             (folder / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")

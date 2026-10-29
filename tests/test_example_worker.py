@@ -1,4 +1,5 @@
 """Shipped example through actual SDK workers, shared images and native chains."""
+from config_helpers import read_config
 import copy
 import json
 from pathlib import Path
@@ -38,7 +39,7 @@ def image_readers():
 @pytest.fixture
 def example_worker(tmp_path, frame_request, image_readers):
     directory = copy_templates(ROOT / "policy" / "example", tmp_path / "policy" / "example")
-    config = json.loads((directory / "policy.json").read_text())
+    config = read_config(directory / "policy.yaml")
     worker = worker_factory(directory, config, init_timeout_s=10, inference_timeout_s=5, release_timeout_s=2)
     image_readers.append(worker)
     try:
@@ -129,7 +130,7 @@ def test_native_hold_example_chain_preserves_upstream_actions(tmp_path, frame_re
         copy_templates(ROOT / "policy" / identity, root / identity)
     chain = root / "demo"
     chain.mkdir()
-    (chain / "policy.json").write_text(json.dumps({
+    (chain / "policy.yaml").write_text(json.dumps({
         "schema_version": 3, "kind": "chain", "policies": ["hold", "example", "example"],
     }))
     record = PolicyRegistry(root).get("demo")

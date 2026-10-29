@@ -7,3 +7,12 @@ services:
       target: runtime
     restart: "no"
     extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      PYTHONPATH: /workspace/packages/llm-failure-policy/src
+      RC_SOURCE_MODULES: '{"rc_llm_failure":"/workspace/packages/llm-failure-policy/src"}'
+    volumes:
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/packages/llm-failure-policy/src
+        target: /workspace/packages/llm-failure-policy/src
+        read_only: true
+        bind: {create_host_path: false}

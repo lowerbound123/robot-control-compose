@@ -10,18 +10,21 @@ SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享�
 
 ```text
 policy/example/
-  policy.json
+  policy.yaml
   main.py
   compose.yaml
 ```
 
-```json
-{
-  "schema_version": 3,
-  "execution": {"mode": "sync", "call_every_actions": 1, "control_mode": "qpos"},
-  "params": {"gain": 1.0},
-  "hot_reloadable": ["params.gain"]
-}
+```yaml
+schema_version: 3
+execution:
+  mode: sync
+  call_every_actions: 1
+  control_mode: qpos
+params:
+  gain: 1.0
+hot_reloadable:
+- params.gain
 ```
 
 ```yaml
@@ -30,9 +33,25 @@ services:
     image: your-prepared-policy-image:tag
 ```
 
-image 包含本项目兼容 SDK 与自己的依赖，并提供 `python` 命令。可添加 build、环境、GPU 和 bind mounts；部署配置归本目录。管理器注入唯一 host ID、socket、run/generation、用户身份、共享 rpc 卷、IPC anchor 与只读本策略目录。不要声明 sidecar、host PID、Docker socket 或 privileged。
+image 只包含策略的第三方依赖并提供 `python` 命令；SDK 由管理器只读挂载。可添加 build、环境、GPU 和 bind mounts；部署配置归本目录。管理器注入唯一 host ID、socket、run/generation、用户身份、共享 rpc 卷、IPC anchor 、只读 SDK 及本策略目录。不要声明 sidecar、host PID、Docker socket 或 privileged。
 
 相对 bind source 以策略目录为基准，由框架转换到宿主路径。Compose env 为本目录的 `deployment.env`。需要外部目录时写清宿主路径并提前创建。发现只读声明与文件是否存在，不 import main.py；新 Python 语法只由目标容器预检。
+
+策略有独立实现包时，在自己的 Compose 中声明来源。例如：
+
+```yaml
+    environment:
+      PYTHONPATH: /workspace/packages/my-policy/src
+      RC_SOURCE_MODULES: '{"my_policy":"/workspace/packages/my-policy/src"}'
+    volumes:
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT}/packages/my-policy/src
+        target: /workspace/packages/my-policy/src
+        read_only: true
+        bind: {create_host_path: false}
+```
+
+`RC_SOURCE_MODULES` 是顶层 Python 模块名到源码根目录的 JSON 对象。管理器保留策略的 PYTHONPATH，统一加入 SDK；启动器在运行 host 前校验实际导入来源，错误则走现有失败收尾流程。主脚本和包修改后重新 switch 当前策略或整条链；依赖变更才重建镜像。不要在 entrypoint 中 pip install 或复制源码，详见 [部署准备](setup.md#依赖镜像与只读源码)。
 
 ## 回调
 
@@ -73,16 +92,18 @@ def policy(context, state, action_chunk, images, config, *, runtime):
 
 有未结束的 `return_and_wait` 任务时，RC 将控制权交还 MCP，并返回 `result={"outcome":..., "message":..., "source":{"policy_id":...}}`，原生链来源还含从 1 开始的 `cell`。MCP 超时或断连不会撤销这个资格。没有等待任务时只暂停，所有权仍属于 policy，可显式 resume。普通 `runtime.pause` 会取消等待任务，回执 `reason="人工接管"`；原始 pause reason 仍记录在日志中。
 
-RC 与 worker 通过 `runtime_tools` 协商 finish 能力。未协商时调用会明确报错，不会降级成 pause 或伪造完成。使用此 API 前同步更新 RC 和对应 policy 镜像。SDK 仍仅依赖 NumPy 与 posix-ipc。
+RC 与 worker 通过 `runtime_tools` 协商 finish 能力。未协商时调用会明确报错，不会降级成 pause 或伪造完成。使用此 API 前同步更新 RC/SDK 源码并完整重建运行组；依赖变化时才重建镜像。SDK 仍仅依赖 NumPy 与 posix-ipc。
 
 ## 命令
 
-```json
-{
-  "tui_commands": {
-    "set-gain": {"handler": "set_gain", "args": ["float"], "help": "设置任务参数", "timeout_s": 5}
-  }
-}
+```yaml
+tui_commands:
+  set-gain:
+    handler: set_gain
+    args:
+    - float
+    help: 设置任务参数
+    timeout_s: 5
 ```
 
 在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<policy_id>-<command>`。策略命令不自动向 MCP 开放。

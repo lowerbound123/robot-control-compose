@@ -1,3 +1,4 @@
+from config_helpers import read_config
 import copy
 import importlib.util
 import json
@@ -102,7 +103,7 @@ def test_async_background_trim_and_return_old_without_waiting():
 @pytest.mark.parametrize('smooth',[False,True])
 def test_fusion_matches_frozen_source_golden(mode,smooth):
     module=bridge_module()
-    fixture=json.loads((ROOT/'tests/fixtures/async_add_golden.json').read_text())
+    fixture=read_config(ROOT/'tests/fixtures/async_add_golden.json')
     result=module.TrajectoryAddTransition(trunk_mode=mode,trunk_smoothing=smooth,
                                          max_smoothing_steps=5,exponential_factor=5.,exponential_smoothing=.25).apply(
                                              np.array(fixture['old'],np.float32),np.array(fixture['new'],np.float32))
