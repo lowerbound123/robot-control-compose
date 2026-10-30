@@ -1,12 +1,12 @@
 # 异步视觉失败检测策略
 
-`llm_failure` 放在生成动作的 policy 后面，原样返回前序 action chunk，不生成动作、不修改数值或控制模式。它在独立 Python 3.11 容器中使用 DeepSeek 检查 task 是否已进入失败状态。
+`llm_failure` 放在生成动作的 policy 后面，原样返回前序 action chunk，不生成动作、不修改数值或控制模式。它在独立 Python 3.11 容器中使用 DeepSeek 或 GPT Decisions 检查 task 是否已进入失败状态。
 
 ## 60 步与图像历史
 
 步数来自 RC 的 `runtime.consumed_actions`：只有一个完整动作目标成功发送并消费，才增加一步。它不是控制循环次数、policy 回调次数或经过的秒数。首次回调记录基线和初始三路图像，不调用 API；累计执行 60 步后，在下一次链回调中发起首个检查。
 
-最多一个后台请求。等待 DeepSeek 时仍立即返回前序动作。若上一请求结束时又执行了至少 60 步，下一次回调用当时最新图像补做一次；不排队旧快照，也不为跨过的多个阈值补发请求。下一阈值从实际提交时的步数重新累计。链调用本身较慢时，检查步数可能超过 60 的精确倍数。
+最多一个后台请求。等待供应商时仍立即返回前序动作。若上一请求结束时又执行了至少 60 步，下一次回调用当时最新图像补做一次；不排队旧快照，也不为跨过的多个阈值补发请求。下一阈值从实际提交时的步数重新累计。链调用本身较慢时，检查步数可能超过 60 的精确倍数。
 
 每次检查取最近最多 5 组图像（含当前），每组有 `head`、`left_wrist`、`right_wrist`，按相对执行步数排列。初始图像参与前几次判断，超过容量后丢弃最早组。只有初始与实际提交检查时编码图像，普通透传回调不编码。
 
@@ -14,21 +14,21 @@
 
 ## 判断结果与控制权
 
-模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。系统提示词明确说明：正常过渡、尚未完成、暂时遮挡或证据不足不能单独判定失败。
+默认 DeepSeek 后端的模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。开启 `decision_api.enabled` 后，改用单次 `POST /v1/decisions`，只提一个名为 `failed` 的 choice 问题，在 `not_failed` / `failed` 两个字符串选项中选择，再严格映射为布尔值。返回多个答案、错误名称、其他答案类型、未提供的选项或非字符串值均判为协议错误；拒答按供应商故障处理。两种后端的系统契约都明确说明：正常过渡、尚未完成、暂时遮挡或证据不足不能单独判定失败。
 
 `failed=true` 在下一次有效 `policy()` 回调调用：
 
 ```python
-runtime.finish("llm_failure：DeepSeek 判断任务已进入失败状态", outcome="terminated")
+runtime.finish("llm_failure：<当前供应商> 判断任务已进入失败状态", outcome="terminated")
 ```
 
 之后仍返回合法的前序动作；RC 在整链成功和图像释放确认后丢弃该轮动作并暂停。建议把检查器放在链尾，缩短结果提交前的等待。后台检查期间动作继续，检查器不是独立的即时急停通道。
 
 - 有 `return_and_wait` 任务时：交还 MCP，回执 `status=succeeded`、`result.outcome=terminated`，附带固定 message 和来源位置。
 - 没有等待任务时：暂停并保留 policy 所有权。
-- API 超时、断连、拒答、HTTP 错误或无效 JSON：抛出策略故障，不伪造 `failed=true`；有等待任务时回执为 `failed` 并交还 MCP。
+- API 超时、断连、拒答、HTTP 错误或违反响应契约：抛出策略故障，不伪造 `failed=true`；有等待任务时回执为 `failed` 并交还 MCP。
 
-请求不自动重试，不切换模型或接口。每个请求有提交时开始计算的 `provider.timeout_s` 预算，后续回调检查超时；迟到响应不能成为有效判断。暂停/恢复、MCP 归还及 reset 会清空历史和计数并丢弃旧结果。reset/release 先使结果失效，再等待旧请求收尾，卡死请求由现有 host 的统一生命周期期限和进程树清理兜底。
+请求不自动重试，不切换模型或接口。每个请求有提交时开始计算的 所选后端的 `timeout_s` 预算，后续回调检查超时；迟到响应不能成为有效判断。暂停/恢复、MCP 归还及 reset 会清空历史和计数并丢弃旧结果。reset/release 先使结果失效，再等待旧请求收尾，卡死请求由现有 host 的统一生命周期期限和进程树清理兜底。
 
 ## 配置
 
@@ -36,20 +36,39 @@ runtime.finish("llm_failure：DeepSeek 判断任务已进入失败状态", outco
 ./setup.sh --policies llm_failure
 ```
 
-编辑生成的 `policy/llm_failure/policy.yaml`，必须填写 `params.task` 和 `params.provider.api_key`。出厂留空，初始化时明确拒绝；初始化不会联系 DeepSeek。所有参数均为冷配置，修改后重新加载运行组。
+编辑生成的 `policy/llm_failure/policy.yaml`，必须填写 `params.task` 和所选后端的 `api_key`。默认 `params.decision_api.enabled: false` 使用原有 `params.provider` DeepSeek 设置；设为 `true` 时使用 `params.decision_api` 子组的 GPT Decisions 设置。只要求当前后端的密钥非空，另一个可留空；两个子组始终严格检查字段结构、类型、模型、URL 和超时。密钥来自该实例配置，不读取全局环境凭证，初始化不会联系供应商。所有参数均为冷配置，修改后重新加载运行组。
 
 | 字段 | 默认值 / 要求 |
 |---|---|
 | `task` | 必填任务文本 |
-| `prompt` | 可编辑的失败判断提示词；程序追加固定 JSON 契约 |
+| `prompt` | 可编辑的失败判断提示词；程序追加所选后端契约；用户文本保持原样，建议不要在自定义提示中限定 JSON 格式 |
 | `check_every_steps` | 60，正整数 |
 | `history_size` | 5，范围 2–16，包含当前组 |
 | `image_max_side` | 1024，范围 1–4096，保持比例，不放大小图 |
 | `jpeg_quality` | 85，范围 1–95 |
 | `provider.model` | `deepseek-flash` |
 | `provider.base_url` | `https://api.deepseek.com` |
-| `provider.api_key` | 必填，不使用全局环境凭证 |
+| `provider.api_key` | DeepSeek 启用时必填 |
 | `provider.timeout_s` | 30，有限正数 |
+| `decision_api.enabled` | `false`，严格布尔值；启用 GPT Decisions |
+| `decision_api.model` | `gpt-6-luna`，可配置为账户实际可用的 Decisions 模型 |
+| `decision_api.base_url` | `https://api.openai.com/v1` |
+| `decision_api.api_key` | GPT Decisions 启用时必填 |
+| `decision_api.timeout_s` | 30，有限正数；启用后用于 HTTP 与提交期限 |
+
+例如开启 GPT Decisions：
+
+```yaml
+params:
+  decision_api:
+    enabled: true
+    model: gpt-6-luna
+    base_url: https://api.openai.com/v1
+    api_key: '<本实例密钥>'
+    timeout_s: 30.0
+```
+
+上面仅展示子组选项，保留配置中的 task、prompt、图像参数及 provider 组。旧配置省略整个 `decision_api` 组时继续使用 DeepSeek；显式提供子组时需填写该组完整字段。Decisions 官方参考目前列出 `gpt-6-luna`，具体模型权限与服务可用性取决于供应商和账户；不支持时明确报错，不回退 Chat Completions。沿用策略锁定的 OpenAI SDK，不增加模型依赖或额外容器。
 
 默认 `control_mode=qpos`，可改为 `epos` 或 `mixed`，但必须与链首策略一致。检查器要求非空前序动作，因此应作为链成员使用，不能单独启动后依靠它生成保持动作。
 
@@ -81,8 +100,8 @@ runtime.finish("llm_failure：DeepSeek 判断任务已进入失败状态", outco
 | `started_wall_s`、`started_mono_s`、`finished_wall_s`、`finished_mono_s`、`elapsed_s` | 后台查询开始、结束时间及查询总耗时 |
 | `http_started_wall_s`、`http_started_mono_s`、`http_finished_wall_s`、`http_finished_mono_s`、`http_duration_s` | 真实 HTTP 调用两端的时间及耗时，在 `.create()` 周围测量，不包括解析响应或等候下次策略回调 |
 | `collected_wall_s`、`collected_mono_s`、`collection_wait_s` | 采集时间及后台完成到采集之间的等待；请求尚未完成时等待值为 `null` |
-| `provider`、`model`、`response_model`、`provider_request_id`、`http_status` | 供应商、请求模型、响应模型、供应商请求 ID 与 HTTP 状态；不可取得时为 `null` |
-| `usage`、`finish_reason` | 响应 token 统计与终结原因；原始响应中也保留供应商附加字段 |
+| `provider`、`model`、`response_model`、`provider_request_id`、`http_status` | 实际后端（`deepseek` / `openai_decisions`）、请求模型、响应模型、供应商请求 ID 与 HTTP 状态；不可取得时为 `null` |
+| `usage`、`finish_reason` | 响应 token 统计与终结原因；DeepSeek 保留 prompt/completion 及缓存计数，Decisions 保留 input/output/total 及缓存、reasoning 明细（供应商有返回时）；Decisions 的 finish_reason 为 choice/refusal 等答案类型，原始响应保留其他附加字段 |
 | `raw_response`、`parsed_failed`、`error` | 脱敏响应正文、解析布尔值、脱敏错误；JSON 响应正文规范化为 JSON 字符串，非 JSON 正文保留文本 |
 | `late`、`invalidated` | 是否超出提交期限、是否已因上下文变化或已报告的超时而失效 |
 | `truncated`、`truncated_fields` | 是否因长度上限截断及对应字段路径 |
@@ -112,8 +131,8 @@ mcp get_policy_result
 
 ## 验证与边界
 
-单元测试覆盖动作原对象透传、实际步数与忙碌合并、不可变历史、代次隔离和严格 JSON。本地 HTTP 服务测试使用真实 OpenAI 兼容客户端；真实 SDK host/worker/链测试覆盖异步请求期间图像释放、完成回调和 MCP 所有权。Docker 验收使用隔离的 mock 机器人与本地模型替身。
+单元测试覆盖动作原对象透传、实际步数与忙碌合并、不可变历史、代次隔离和严格 JSON / 二选一响应。本地 HTTP 服务测试使用真实 OpenAI 兼容客户端；真实 SDK host/worker/链测试覆盖异步请求期间图像释放、完成回调和 MCP 所有权。Docker 验收使用隔离的 mock 机器人与本地模型替身。
 
-这些测试证明调用与控制协议，不证明真实 DeepSeek 的失败判断准确率或真机表现。部署后需以实际 task 和相机画面评估误判与漏判。
+这些测试证明调用与控制协议，不证明真实供应商的失败判断准确率或真机表现。部署后需以实际 task 和相机画面评估误判与漏判。
 
-接口参考：[DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)、[JSON Output](https://api-docs.deepseek.com/guides/json_mode/)、[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)。
+接口参考：[OpenAI Decisions](https://developers.openai.com/api/reference/resources/decisions/methods/create)、[OpenAI Python Decisions 类型](https://github.com/openai/openai-python/blob/main/src/openai/types/decision_create_params.py)、[DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)、[JSON Output](https://api-docs.deepseek.com/guides/json_mode/)、[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)。

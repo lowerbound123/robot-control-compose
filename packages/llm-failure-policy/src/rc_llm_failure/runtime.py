@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from rc_policy_sdk.actions import normalize_actions
 
-from .configuration import validate_config
+from .configuration import validate_config, selected_provider
 from .diagnostics import Diagnostics, provider_metadata, sanitize
 from .errors import ProviderError
 from .images import encode_snapshot
@@ -18,11 +18,13 @@ class FailurePolicy:
         self.params = validate_config(config)
         self.instance_id = config['id']
         self.control_mode = config['execution']['control_mode']
-        self._diagnostics = Diagnostics(self.params['provider']['api_key'])
+        self._provider_settings = selected_provider(self.params)
+        self._provider_label = 'GPT Decisions' if self._provider_settings['type'] == 'openai_decisions' else 'DeepSeek'
+        self._diagnostics = Diagnostics(self.params['provider']['api_key'], self.params['decision_api']['api_key'])
         self._diagnostic_context = local()
         if provider is None:
             from .providers import ProviderClient
-            provider = ProviderClient(self.params['provider'], diagnostics=self._provider_diagnostics)
+            provider = ProviderClient(self._provider_settings, diagnostics=self._provider_diagnostics)
         self.provider = provider
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='llm-failure')
         self._history = deque(maxlen=self.params['history_size'])
@@ -65,10 +67,10 @@ class FailurePolicy:
             metadata['error'] = sanitize(str(exc), self._diagnostics.secrets)
             raise ProviderError(metadata['error']) from None
         except Exception:
-            metadata['error'] = 'DeepSeek 检查异常'
+            metadata['error'] = f'{self._provider_label} 检查异常'
             raise ProviderError(metadata['error']) from None
         except BaseException:
-            metadata['error'] = 'DeepSeek 检查被中断'
+            metadata['error'] = f'{self._provider_label} 检查被中断'
             raise
         finally:
             completed = monotonic()
@@ -84,7 +86,7 @@ class FailurePolicy:
         request = self._request
         if not self.pending.done():
             if monotonic() >= request['deadline']:
-                self._failure = ProviderError('DeepSeek 检查超时')
+                self._failure = ProviderError(f'{self._provider_label} 检查超时')
                 if not request.get('timeout_reported'):
                     request['timeout_reported'] = True
                     request['discard_reason'] = 'timeout'
@@ -105,13 +107,13 @@ class FailurePolicy:
             self._collection_event(request, 'llm_failure.collection.discarded', reason='provider_error')
             raise
         if completed > request['deadline']:
-            self._failure = ProviderError('DeepSeek 检查超时')
+            self._failure = ProviderError(f'{self._provider_label} 检查超时')
             self._collection_event(request, 'llm_failure.collection.discarded', reason='deadline_exceeded',
                                    error=str(self._failure))
             raise self._failure
         self._collection_event(request, 'llm_failure.collection.accepted')
         if failed:
-            runtime.finish('llm_failure：DeepSeek 判断任务已进入失败状态', outcome='terminated')
+            runtime.finish(f'llm_failure：{self._provider_label} 判断任务已进入失败状态', outcome='terminated')
             self._finished = True
 
     def policy(self, action_chunk, images, runtime):
@@ -141,9 +143,9 @@ class FailurePolicy:
             started = monotonic()
             self._request = {'generation': self._generation, 'epoch': epoch, 'step': count - self._baseline,
                              'history_size': len(self._history), 'started': started,
-                             'deadline': started + self.params['provider']['timeout_s']}
+                             'deadline': started + self._provider_settings['timeout_s']}
             self._request['diagnostics'] = {
-                **provider_metadata(self.params['provider']['model']),
+                **provider_metadata(self._provider_settings['model'], self._provider_settings['type']),
                 'query_id': uuid4().hex, 'instance_id': self.instance_id,
                 'step': self._request['step'], 'history_size': self._request['history_size'],
                 'history_steps': [sample.step for sample in self._history],

@@ -24,13 +24,17 @@ def setup(tmp_path, monkeypatch):
     root = tmp_path / 'policy'
     root.mkdir()
     with model_server() as server:
-        def create():
+        def create(decision_api=False):
             assert (ROOT / 'policy/llm_failure/main.py').is_file(), 'llm_failure entry point is missing'
             folder = root / 'llm_failure'
             copy_templates(ROOT / 'policy/llm_failure', folder)
             config = read_config(folder / 'policy.yaml')
             config['params']['task'] = 'put the block in the tray'
             config['params']['provider'].update(base_url=server.url, timeout_s=4., api_key='local-test-key')
+            if decision_api:
+                config['params']['decision_api'].update(enabled=True, base_url=server.url,
+                                                        timeout_s=4., api_key='local-decision-key')
+                config['params']['provider']['api_key'] = ''
             (folder / 'policy.yaml').write_text(json.dumps(config))
             return folder, config
         try:
@@ -69,13 +73,19 @@ def response(worker, request):
     return result[0]
 
 
+@pytest.mark.parametrize('decision_api', [False, True])
 @pytest.mark.parametrize('forced_close', [False, True])
-def test_worker_releases_frames_while_http_is_pending(setup, frames, forced_close):
+def test_worker_releases_frames_while_http_is_pending(setup, frames, forced_close, decision_api):
     server, _, create = setup
-    folder, config = create()
+    folder, config = create(decision_api=decision_api)
     _, _, request = frames
     gate = threading.Event()
-    server.responses.append({'wait': gate, 'body': response_for('deepseek', {'failed': True})})
+    body = ({'model': 'gpt-test', 'answers': [
+        {'type': 'choice', 'name': 'failed', 'choice': 'failed', 'confidence': .9,
+         'probabilities': [{'value': 'failed', 'probability': .9}]}],
+        'usage': {'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11}}
+        if decision_api else response_for('deepseek', {'failed': True}))
+    server.responses.append({'wait': gate, 'body': body})
     worker = LocalPolicyProcess(folder, config, init_timeout_s=8, inference_timeout_s=3,
                                 release_timeout_s=.2 if forced_close else 2)
     try:
@@ -105,7 +115,8 @@ def test_worker_releases_frames_while_http_is_pending(setup, frames, forced_clos
                     break
                 time.sleep(.01)
             assert received['control_requests'] == [{'type': 'finish', 'outcome': 'terminated',
-                'message': 'llm_failure：DeepSeek 判断任务已进入失败状态'}]
+                'message': 'llm_failure：' + ('GPT Decisions' if decision_api else 'DeepSeek') + ' 判断任务已进入失败状态'}]
+            assert server.requests[0]['path'] == ('/v1/decisions' if decision_api else '/v1/chat/completions')
     finally:
         gate.set()
         worker.close()

@@ -8,7 +8,7 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from test_controller import setup_controller as setup_controller, ready
+from test_controller import setup_controller as setup_controller, ready, until
 
 
 @asynccontextmanager
@@ -124,6 +124,14 @@ def test_cli_mcp_override_and_remote_shutdown_share_cleanup(setup_controller, mo
         port = probe.getsockname()[1]
     monkeypatch.setattr(cli, "make_controller", lambda path: controller)
     def run_ui(unused, *, router=None):
+        # Listening is ready before the initial policy lifecycle has finished.
+        # This test exercises takeover and shutdown after initialization.
+        def initialized():
+            with controller._lock:
+                status = controller.status()
+                return (status["state"] == "paused" and status["policy"] == "first"
+                        and controller._operation is None)
+        until(initialized)
         async def scenario():
             async with client(f'http://127.0.0.1:{port}/mcp') as session:
                 taken = await session.call_tool("take", {})

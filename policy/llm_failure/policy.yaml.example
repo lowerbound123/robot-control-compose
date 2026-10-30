@@ -7,11 +7,18 @@ execution:
 params:
   task: ''
   prompt:
-    根据task以及按执行步数排列的当前和历史三路相机图像，判断机器人执行是否已经进入失败状态。只有明确证据表明当前执行已经偏离任务且不能正常继续达成目标时才判定失败。尚未完成、正常过渡、短暂遮挡或证据不足不等于失败。只返回一个JSON对象，禁止任何解释、推理过程、Markdown或动作建议。
+    根据task以及按执行步数排列的当前和历史三路相机图像，判断机器人执行是否已经进入失败状态。只有明确证据表明当前执行已经偏离任务且不能正常继续达成目标时才判定失败。尚未完成、正常过渡、短暂遮挡或证据不足不等于失败。禁止任何解释、推理过程、Markdown或动作建议。
   check_every_steps: 60
   history_size: 5
   image_max_side: 1024
   jpeg_quality: 85
+  # 冷开关：开启后仅使用本组 GPT Decisions 设置；关闭使用 provider。
+  decision_api:
+    enabled: false
+    model: gpt-6-luna
+    base_url: https://api.openai.com/v1
+    api_key: ''
+    timeout_s: 30.0
   provider:
     model: deepseek-flash
     base_url: https://api.deepseek.com

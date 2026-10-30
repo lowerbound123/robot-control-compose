@@ -351,3 +351,211 @@ def test_small_raw_response_is_retained_in_full_even_when_contract_is_invalid(se
     terminal = next(value for value in values if value['event'] == 'llm_failure.request.error')
     assert terminal['truncated'] is False
     assert json.loads(terminal['raw_response'])['choices'][0]['message']['content'] == content
+
+
+def decision_settings(server=None, **patch):
+    return {'enabled': True, 'model': 'gpt-test',
+            'base_url': server.url if server else 'https://api.openai.com/v1',
+            'api_key': 'decision-private-key', 'timeout_s': 2., **patch}
+
+
+def decision_response(choice='failed'):
+    return {'model': 'gpt-response', 'answers': [
+        {'type': 'choice', 'name': 'failed', 'choice': choice, 'confidence': .9,
+         'probabilities': [{'value': choice, 'probability': .9}]}],
+        'usage': {'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11}}
+
+
+@pytest.mark.parametrize('choice,expected', [('failed', True), ('not_failed', False)])
+def test_decisions_real_sdk_preserves_history_and_diagnostics(server, monkeypatch, choice, expected):
+    from rc_llm_failure.runtime import FailurePolicy
+    from llm_failure_helpers import Runtime, done
+    original = server.RequestHandlerClass.end_headers
+    def headers(handler):
+        handler.send_header('x-request-id', 'decision-request-123')
+        original(handler)
+    monkeypatch.setattr(server.RequestHandlerClass, 'end_headers', headers)
+    server.responses.append({'body': decision_response(choice)})
+    config = manifest(decision_api=decision_settings(server))
+    config['params']['provider']['api_key'] = ''
+    instance, runtime = FailurePolicy(config), Runtime()
+    events = []
+    instance._diagnostics.emit = events.append
+    chunk = [[0.] * 14]
+    try:
+        instance.policy(chunk, images(), runtime)
+        runtime.consumed_actions = 60
+        instance.policy(chunk, images(), runtime)
+        done(instance)
+        instance.policy(chunk, {}, runtime)
+    finally:
+        instance.close()
+    assert len(server.requests) == 1
+    request = server.requests[0]
+    assert request['path'] == '/v1/decisions'
+    body = request['body']
+    assert set(body) == {'model', 'input', 'questions'}
+    question, = body['questions']
+    assert question['type'] == 'choice' and question['name'] == 'failed'
+    assert [item['value'] for item in question['choices']] == ['not_failed', 'failed']
+    content = body['input'][0]['content']
+    assert len([item for item in content if item['type'] == 'input_image']) == 6
+    text = '\n'.join(item['text'] for item in content if item['type'] == 'input_text')
+    assert text.index('step=0') < text.index('step=60')
+    terminal = next(event for event in events if event['event'] == 'llm_failure.request.completed')
+    assert terminal['provider'] == 'openai_decisions'
+    assert terminal['parsed_failed'] is expected
+    assert terminal['provider_request_id'] == 'decision-request-123'
+    assert terminal['usage'] == {'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11}
+    assert terminal['http_status'] == 200 and terminal['http_duration_s'] >= 0
+    assert json.loads(terminal['raw_response'])['model'] == 'gpt-response'
+    assert bool(runtime.finishes) is expected
+
+
+@pytest.mark.parametrize('choice', [True, False, 1, None, 'true', 'unknown'])
+def test_decisions_rejects_unoffered_choices_without_retry(server, choice):
+    from rc_llm_failure.providers import ProviderClient
+    from rc_llm_failure.errors import ProviderError
+    server.responses.append({'body': decision_response(choice)})
+    settings = decision_settings(server)
+    settings.pop('enabled')
+    provider = ProviderClient({**settings, 'type': 'openai_decisions'})
+    try:
+        with pytest.raises(ProviderError, match='契约'):
+            provider.decide('task', 'prompt', snapshots())
+    finally:
+        provider.close()
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize('patch', [{'enabled': 1}, {'api_key': 1}, {'timeout_s': True},
+                                   {'model': ''}, {'base_url': 1}, {'unknown': 1}])
+def test_inactive_decisions_still_validates_structure(patch):
+    from rc_llm_failure.configuration import validate_config
+    config = manifest(decision_api=decision_settings(**{'enabled': False, **patch}))
+    with pytest.raises(ValueError):
+        validate_config(config)
+
+
+def test_only_active_backend_requires_nonempty_key():
+    from rc_llm_failure.configuration import validate_config
+    config = manifest(decision_api=decision_settings())
+    config['params']['provider']['api_key'] = ''
+    assert validate_config(config)['decision_api']['enabled'] is True
+    config['params']['decision_api']['enabled'] = False
+    with pytest.raises(ValueError, match='api_key'):
+        validate_config(config)
+    config['params']['provider']['api_key'] = 'deepseek-key'
+    config['params']['decision_api']['api_key'] = ''
+    assert validate_config(config)['decision_api']['enabled'] is False
+
+
+@pytest.mark.parametrize('kind', ['http', 'timeout', 'refusal', 'wrong_name', 'extra_answer'])
+def test_decisions_errors_keep_diagnostics_and_never_retry(server, kind):
+    from rc_llm_failure.providers import ProviderClient
+    from rc_llm_failure.errors import ProviderError
+    body = decision_response()
+    item = {'body': body}
+    if kind == 'http':
+        item = {'status': 503, 'body': {'error': {'message': 'decision-private-key'}}}
+    elif kind == 'timeout':
+        item = {'delay': .25}
+    elif kind == 'refusal':
+        body['answers'] = [{'type': 'refusal', 'name': 'failed'}]
+    elif kind == 'wrong_name':
+        body['answers'][0]['name'] = 'other'
+    else:
+        body['answers'].append(body['answers'][0])
+    server.responses.append(item)
+    metadata = []
+    settings = decision_settings(server, timeout_s=.05 if kind == 'timeout' else 2.)
+    settings.pop('enabled')
+    provider = ProviderClient({**settings, 'type': 'openai_decisions'}, diagnostics=metadata.append)
+    try:
+        with pytest.raises(ProviderError) as error:
+            provider.decide('task', 'prompt', snapshots())
+    finally:
+        provider.close()
+    assert 'decision-private-key' not in str(error.value) + json.dumps(metadata)
+    assert len(server.requests) == len(metadata) == 1
+    assert metadata[0]['provider'] == 'openai_decisions'
+    assert metadata[0]['error'] and metadata[0]['http_duration_s'] >= 0
+
+
+def test_decisions_runtime_uses_selected_deadline_and_scrubs_both_keys(server, capsys):
+    from rc_llm_failure.runtime import FailurePolicy
+    from llm_failure_helpers import Runtime, done
+    body = decision_response()
+    body['usage']['input_tokens_details'] = {'cached_tokens': 8, 'cache_write_tokens': 0}
+    body['usage']['output_tokens_details'] = {'reasoning_tokens': 1}
+    body['extra'] = 'inactive-private-key decision-private-key'
+    server.responses.append({'body': body})
+    config = manifest(decision_api=decision_settings(server, timeout_s=7.))
+    config['params']['provider'].update(api_key='inactive-private-key', timeout_s=.001)
+    instance, runtime = FailurePolicy(config), Runtime()
+    chunk = [[0.] * 14]
+    try:
+        instance.policy(chunk, images(), runtime)
+        runtime.consumed_actions = 60
+        instance.policy(chunk, images(), runtime)
+        request = instance._request
+        assert request['deadline'] - request['started'] == pytest.approx(7.)
+        done(instance)
+        instance.policy(chunk, {}, runtime)
+    finally:
+        instance.close()
+    text = capsys.readouterr().out
+    assert 'inactive-private-key' not in text and 'decision-private-key' not in text
+    events = [json.loads(line) for line in text.splitlines()]
+    assert [event['event'] for event in events] == [
+        'llm_failure.request.started', 'llm_failure.request.completed', 'llm_failure.collection.accepted']
+    assert all(event['provider'] == 'openai_decisions' for event in events)
+    assert events[1]['usage']['input_tokens_details']['cached_tokens'] == 8
+    assert events[1]['usage']['output_tokens_details']['reasoning_tokens'] == 1
+
+
+def test_decisions_reset_discards_late_true_and_recording_keeps_backend(server, tmp_path, capsys):
+    import threading
+    from rc_llm_failure.runtime import FailurePolicy
+    from llm_failure_helpers import Runtime, wait
+    from robot_control.recording_writer import SessionFiles
+    gate = threading.Event()
+    server.responses.append({'wait': gate, 'body': decision_response()})
+    instance = FailurePolicy(manifest(decision_api=decision_settings(server)))
+    runtime, chunk = Runtime(), [[0.] * 14]
+    reset = None
+    try:
+        instance.policy(chunk, images(), runtime)
+        runtime.consumed_actions = 60
+        instance.policy(chunk, images(), runtime)
+        assert server.received.wait(2)
+        reset = threading.Thread(target=instance.reset_context)
+        reset.start()
+        wait(lambda: instance._generation == 1)
+        gate.set()
+        reset.join(3)
+        assert not reset.is_alive()
+        instance.policy(chunk, images(), runtime)
+        assert runtime.finishes == []
+    finally:
+        gate.set()
+        if reset:
+            reset.join(3)
+        instance.close()
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [event['event'] for event in events] == [
+        'llm_failure.request.started', 'llm_failure.request.completed', 'llm_failure.collection.discarded']
+    assert events[-1]['reason'] == 'reset' and events[-1]['parsed_failed'] is True
+    session = SessionFiles(tmp_path / 'session', 's', {'run_id': 'decision-run'})
+    try:
+        for event in events:
+            session.event('events', {'event': 'policy.stdout', 'message': json.dumps(event),
+                                    'instance_id': 'llm_failure-0', 'run_id': 'decision-run'})
+    finally:
+        session.close()
+    saved = [json.loads(line) for line in (session.root / 'llm_failure.jsonl').read_text().splitlines()]
+    assert len(saved) == 3
+    assert all(event['provider'] == 'openai_decisions' for event in saved)
+    assert all(event['policy_instance_id'] == 'llm_failure-0' for event in saved)
+    assert saved[1]['parsed_failed'] is True
+    assert len(server.requests) == 1

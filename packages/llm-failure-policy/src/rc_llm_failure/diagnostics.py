@@ -57,8 +57,8 @@ def sanitized_metadata(metadata, secrets=()):
     return value
 
 
-def provider_metadata(model):
-    return {'provider': 'deepseek', 'model': model, 'response_model': None,
+def provider_metadata(model, provider='deepseek'):
+    return {'provider': provider, 'model': model, 'response_model': None,
             'provider_request_id': None, 'http_status': None, 'usage': None,
             'finish_reason': None, 'raw_response': None, 'parsed_failed': None, 'error': None,
             'http_started_wall_s': None, 'http_started_mono_s': None,
@@ -118,8 +118,8 @@ def event_line(event, secrets=()):
 
 
 class Diagnostics:
-    def __init__(self, api_key):
-        self.secrets = (api_key, api_key.strip())
+    def __init__(self, api_key, *other_keys):
+        self.secrets = tuple(value for key in (api_key, *other_keys) for value in (key, key.strip()))
 
     def emit(self, event):
         try:

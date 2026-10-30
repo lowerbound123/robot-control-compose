@@ -139,3 +139,16 @@ Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 poli
 首次全套暴露的旧时间夹具、监控后台发送时序及新增日志缺口断言已更新。一次 Linux TUI 退出非零未在隔离 4 项测试及最终全套中复现；测试现在保留末尾 RC 事件用于诊断，最终运行日志含 `rc.exit`、`writer_drained=true`、`exit_code=0`，没有为此修改退出控制逻辑。
 
 验证没有增加 SDK 依赖、Compose 服务、厂商驱动或模型请求重试。此轮 Mock、ROS 仿真和本地 HTTP 验收不替代真实相机、机器人或外部模型供应商验收。
+
+## llm_failure GPT Decisions 后端（2026-10-30）
+
+新增默认关闭的 `params.decision_api` 配置组，启用后使用独立模型、地址、密钥和超时；关闭或省略时保持 DeepSeek。请求为单个二选一 choice 问题，严格解析为失败布尔值，不重试或回退。详见 [配置与协议说明](llm-failure-policy.md)。
+
+- 锁定 OpenAI SDK 3.37.0 的完整主机套件：1131 passed，29 skipped，363.78 秒。
+- 完整 Linux/ROS 套件：1032 passed，31 skipped，412.74 秒。两套均有 13 条已有 Pillow 弃用警告。
+- Python 3.11 / OpenAI 3.37.0 策略镜像：95 passed，24.86 秒；只读补入已锁定的纯 Python YAML 依赖，不改变模型镜像依赖。RC/worker 集成在主机套件中验证。
+- 覆盖实际本地 HTTP 请求、非法选项、拒答、超时、选中配置的期限、两组密钥脱敏、token 用量、录制日志、reset 后迟到结果和请求期间图像租约释放。独立代码审查未发现待修问题。
+
+首次 Linux 全套触发既有 MCP 测试的启动竞态：HTTP 服务已监听，但 policy 仍在 switch，提前 take 正常返回 `busy: switch`。通过延迟测试 worker 启动 0.2 秒稳定复现，仅修正测试为等待初始化完成；生产控制逻辑不变。相同延迟实验转绿，MCP 模块 7 项通过，随后完整 Linux 套件通过。
+
+证据目录：`/private/tmp/rc-failure-decisions-20261030/`，包括 `host-full.log`、`linux-verified.log`、`policy-linux-verified.log`、`incremental-sdk337.txt` 和 `mcp-delayed-start-red.txt` / `mcp-delayed-start-green.txt`。未调用真实收费 API，也未进行真机准确率验收。
