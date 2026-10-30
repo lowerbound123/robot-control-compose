@@ -96,6 +96,7 @@ mcp get_policy_result <operation_id>
 - [LLM 离散动作策略](docs/llm-direction-policy.md)
 - [LLM 异步失败检测策略](docs/llm-failure-policy.md)：原样透传动作，每 60 个实际执行步用当前与历史图像检查失败，通过 MCP 等待回执返回。
 - [策略监控](docs/policy-monitor.md)
+- [连续录制与推理追踪](docs/recording.md)：`record on/off/status`、三路 30 Hz RGB、状态和成功发布动作、逐实例推理与独立压测。
 - [测试与验收边界](docs/verification.md)
 
 只构建 `ros_ws` 下的消息包，厂商备份原样保留；项目不自动启动硬件驱动。mock、真实 Docker、ROS 仿真与真机验证分别记录，模拟测试通过不代表真机验收。

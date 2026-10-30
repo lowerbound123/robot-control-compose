@@ -1,5 +1,4 @@
 import math
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -37,7 +36,7 @@ def test_tui_settings_reject_invalid_config(raw):
 def test_mock_camera_sequence_is_driven_by_time_not_reads(monkeypatch):
     from robot_control.robots import mock
     now = [100.]
-    monkeypatch.setattr(mock, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(mock.time, "monotonic", lambda: now[0])
     robot = mock.MockRobot()
     robot.connect()
     try:
@@ -56,6 +55,9 @@ def test_mock_camera_sequence_is_driven_by_time_not_reads(monkeypatch):
 
 def test_monitor_has_no_target_until_success_and_invalidates_failed_publish(setup_controller, monkeypatch):
     controller, robot, _ = setup_controller
+    # Keep the background hold publisher outside this deterministic unit test;
+    # only the explicit sends below should establish published targets.
+    monkeypatch.setattr(controller, '_send_hold', lambda: None)
     ready(controller)
     with controller._lock:
         assert controller.monitor_snapshot()["targets"] == {}

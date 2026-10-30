@@ -38,17 +38,16 @@ def test_digit_leading_policy_ids_keep_their_source_label(message):
 
 def test_log_queue_history_and_file_share_iso_timestamp(setup_controller, monkeypatch):
     controller, _, _ = setup_controller
-    stream = io.StringIO()
-    controller._log_stream = stream
+    entries = []
+    monkeypatch.setattr(controller._recorder, 'log', entries.append)
     monkeypatch.setattr('robot_control.controller.time.time', lambda: 57600.125)
     try:
         controller._emit('message')
         event = controller.events.get_nowait()
         assert event['time'] == '1970-01-02T00:00:00.125+08:00'
         assert controller.read_events()['events'][-1] == event
-        assert json.loads(stream.getvalue()) == event
+        assert {key:entries[0][key] for key in event} == event
     finally:
-        controller._log_stream = None
         controller.close_unstarted()
 
 

@@ -112,6 +112,8 @@ class ACOneRobot:
         self._sequences = {"left": 0, "right": 0}
         self._history = {arm: deque(maxlen=512) for arm in self._sequences}
         self._feedback_errors = {}
+        self._recording_state = None
+        self._command_observer = None
         self._images = {}
         self._image_sequences = {}
         self._image_errors = {}
@@ -226,6 +228,8 @@ class ACOneRobot:
             self._history[side].append({"seq": self._sequences[side], "received": sample[2],
                                        "qpos": list(raw["joint_pos"]), "epos": list(raw["end_pos"]) + [raw["joint_pos"][-1]]})
             self._feedback_errors.pop(side, None)
+            if all(arm in self._feedback for arm in ("left", "right")):
+                self._recording_state = self._cached_state_locked()
             self._condition.notify_all()
 
     def _on_image(self, camera, message):
@@ -295,6 +299,10 @@ class ACOneRobot:
                 raise RuntimeError(f"missing {side} arm feedback: {detail}")
             if now - self._feedback[side][2] > self._feedback_timeout:
                 raise RuntimeError(f"stale {side} arm feedback")
+        return self._cached_state_locked(now)
+
+    def _cached_state_locked(self, now=None):
+        now = time.monotonic() if now is None else now
         left, right = (self._feedback[side][0] for side in ("left", "right"))
         timestamps = {side: self._feedback[side][1] for side in ("left", "right")}
         return {
@@ -356,6 +364,42 @@ class ACOneRobot:
             return {name: {"image": sample[0], "sequence": self._image_sequences[name], "received": sample[2]}
                     for name, sample in self._images.items()}
 
+    def recording_snapshot(self):
+        """Read retained sensor caches without imposing the control-read gate."""
+        with self._condition:
+            state_error = None
+            try:
+                if self.closed or self._stop.is_set():
+                    raise RuntimeError("robot is closed")
+                self._read_state_locked()
+            except RuntimeError as error:
+                state_error = str(error)
+            now = time.monotonic()
+            frames = {}
+            for name, (image, timestamp, received) in self._images.items():
+                error = ("robot is closed" if self.closed or self._stop.is_set() else self._fatal_error)
+                error = error or self._image_errors.get(name)
+                if error is None and now - received > self._camera_timeout:
+                    error = f"stale camera {name}"
+                frames[name] = {"image": image, "timestamp": timestamp, "received": received,
+                                "sequence": self._image_sequences[name], "valid": error is None, "error": error}
+            return {"state": copy.deepcopy(self._recording_state), "state_error": state_error, "frames": frames,
+                    "state_valid": state_error is None,
+                    "feedback_age_s": {side: now-sample[2] for side,sample in self._feedback.items()},
+                    "feedback_errors": dict(self._feedback_errors)}
+
+    def set_command_observer(self, callback):
+        self._command_observer = callback
+
+    def _observe_command(self, arm, target):
+        if self._command_observer is not None:
+            try:
+                self._command_observer({"arm": arm, "mode": target["mode"],
+                                        "values7": list(target["values"]),
+                                        "timestamp_ns": time.time_ns(), "monotonic_ns": time.monotonic_ns()})
+            except Exception:
+                pass
+
     def feedback_since(self, arm, seq):
         with self._condition:
             self._check_ready()
@@ -383,6 +427,7 @@ class ACOneRobot:
                     sent.append(side)
                 except Exception as exc:
                     raise RuntimeError(f"publish failed for {side}; already published arms={sent}: {exc}") from exc
+                self._observe_command(side, target)
 
     def close(self):
         # Set cancellation before waiting on resource locks so connect's wait

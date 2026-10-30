@@ -1,4 +1,5 @@
 """Deterministic feedback and synthetic RGB cameras for controller testing."""
+import copy
 import threading
 import time
 from collections import deque
@@ -28,6 +29,9 @@ class MockRobot:
         self._history = {arm: deque(maxlen=512) for arm in ("left", "right")}
         self._images = {}
         self._camera_epoch = None
+        self._camera_wall_epoch = None
+        self._recording_state = None
+        self._command_observer = None
 
     def connect(self, cancel_event=None):
         with self._lock:
@@ -45,7 +49,9 @@ class MockRobot:
                 image.flags.writeable = False
                 self._images[camera] = image
             self._camera_epoch = time.monotonic()
+            self._camera_wall_epoch = time.time()
             self._connected = True
+            self._recording_state = self._state_locked()
 
     def _check_ready(self):
         if self.closed:
@@ -60,20 +66,33 @@ class MockRobot:
             for i, arm in enumerate(("left", "right")):
                 self._history[arm].append({"seq": self._seq, "received": time.monotonic(),
                                           "qpos": self._qpos[i*7:i*7+7].tolist(), "epos": self._epos[i*7:i*7+7].tolist()})
-            return {
-                "qpos": self._qpos.tolist(),
-                "qvel": [0.0] * 14,
-                "effort": [0.0] * 14,
-                "eef": self._epos.tolist(),
-                "timestamp": time.time(),
-                "sequences": {arm: self._seq for arm in self._history},
-            }
+            self._recording_state = self._state_locked()
+            return copy.deepcopy(self._recording_state)
+
+    def _state_locked(self):
+        return {
+            "qpos": self._qpos.tolist(), "qvel": [0.0] * 14,
+            "effort": [0.0] * 14, "eef": self._epos.tolist(),
+            "timestamp": time.time(),
+            "sequences": {arm: self._seq for arm in self._history},
+        }
+
+    def _camera_snapshot_locked(self):
+        if self._camera_epoch is None:
+            return {}
+        # A camera arrival has one identity across control, preview and recording
+        # reads; polling cannot manufacture newer sensor timestamps.
+        tick = max(0, int((time.monotonic() - self._camera_epoch) * 30))
+        return {name: {"image": image, "sequence": tick + 1,
+                       "timestamp": self._camera_wall_epoch + tick / 30,
+                       "received": self._camera_epoch + tick / 30}
+                for name, image in self._images.items()}
 
     def read_images(self):
         with self._lock:
             self._check_ready()
-            now = time.time()
-            return {camera: (image, now) for camera, image in self._images.items()}
+            return {name: (frame["image"], frame["timestamp"])
+                    for name, frame in self._camera_snapshot_locked().items()}
 
     def image_snapshot(self):
         return self.read_images(), {}
@@ -81,12 +100,27 @@ class MockRobot:
     def camera_preview_snapshot(self):
         with self._lock:
             self._check_ready()
-            # Synthetic camera arrivals have their own 30Hz clock. Polling this
-            # API repeatedly does not manufacture new frames or timestamps.
-            tick = max(0, int((time.monotonic() - self._camera_epoch) * 30))
-            received = self._camera_epoch + tick / 30
-            return {name: {"image": image, "sequence": tick + 1, "received": received}
-                    for name, image in self._images.items()}
+            return self._camera_snapshot_locked()
+
+    def recording_snapshot(self):
+        """Read cached feedback and independent synthetic camera arrivals."""
+        with self._lock:
+            error = "robot is closed" if self.closed else (None if self._connected else "robot must connect before use")
+            return {"state": copy.deepcopy(self._recording_state), "state_error": error,
+                    "frames": {name: {**frame, "valid": error is None, "error": error}
+                               for name, frame in self._camera_snapshot_locked().items()}}
+
+    def set_command_observer(self, callback):
+        self._command_observer = callback
+
+    def _observe_command(self, arm, target):
+        if self._command_observer is not None:
+            try:
+                self._command_observer({"arm": arm, "mode": target["mode"],
+                                        "values7": list(target["values"]),
+                                        "timestamp_ns": time.time_ns(), "monotonic_ns": time.monotonic_ns()})
+            except Exception:
+                pass
 
     def feedback_since(self, arm, seq):
         with self._lock:
@@ -106,8 +140,10 @@ class MockRobot:
                 (self._qpos if target["mode"] == "qpos" else self._epos)[start:start+7] = values
                 self._qpos[start+6] = self._epos[start+6] = values[6]
                 command[start:start+7] = values
+                self._observe_command(arm, target)
             self.commands.append(command)
             self.command_modes.append({arm: target["mode"] for arm, target in targets.items()})
+            self._recording_state = self._state_locked()
 
     def close(self):
         with self._lock:

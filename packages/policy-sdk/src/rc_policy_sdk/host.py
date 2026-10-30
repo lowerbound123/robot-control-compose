@@ -35,6 +35,15 @@ class Peer:
         threading.Thread(target=self._write, daemon=True).start()
 
     def send(self, message):
+        if message.get('type') == 'log':
+            packet = encode_message(message)
+            identity = {key: value for key, value in message.items() if key != 'message'}
+            def gap_factory(count, saturated):
+                event = {'event': 'sdk.log_gap', 'count': count}
+                if saturated:
+                    event['count_saturated'] = True
+                return encode_message({**identity, 'message': json.dumps(event, separators=(',', ':'))})
+            return self.outbox.put_log(packet, size=len(packet), gap_factory=gap_factory)
         if message.get('event', {}).get('type') in ('monitor_result', 'monitor_error'):
             return self.outbox.put_monitor(message['session_id'], encode_message(message))
         try: self.outbox.put_nowait(encode_message(message))
@@ -139,7 +148,11 @@ class PolicyHost:
         threading.Thread(target=self._logs, args=(process, runtime_id), daemon=True).start()
 
     def _emit(self, peer, message):
-        try: peer.send({'host_instance_id': self.instance_id, **message})
+        if message.get('type') == 'log':
+            message = {**message, 'host_id': self.host_id, 'policy_instance_id': self.host_id,
+                       'source_policy_id': self.source_policy_id, 'deployment_id': self.deployment_id,
+                       'run_id': self.run_id, 'generation': self.generation}
+        try: peer.send({**message, 'host_instance_id': self.instance_id})
         except (OSError, ValueError): pass
 
     def _broadcast(self, message):

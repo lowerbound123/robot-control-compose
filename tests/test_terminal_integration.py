@@ -46,7 +46,7 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
         await pilot.press("enter")
         await asyncio.to_thread(until, lambda: controller.done.is_set())
         await pilot.pause(.08)
-    assert app.return_code == 0
+    assert app.return_code == 0, controller.read_events()['events'][-30:]
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_tui_can_pause_and_exit_while_tool_waits(local_service):
         await pilot.press("ctrl+c")
         await asyncio.to_thread(until, lambda: controller.done.is_set() and not router.pending)
         await pilot.pause(.08)
-    assert app.return_code == 0
+    assert app.return_code == 0, controller.read_events()['events'][-30:]
 
 
 def test_headless_handles_errors_and_waits_without_blocking_input(local_service):

@@ -43,6 +43,9 @@ class PolicyCommandSupport:
 
     def local_help(self, name=None):
         from .controller import HELP
+        if name == 'record':
+            from .recording_control import RECORD_HELP
+            return RECORD_HELP
         with self._lock:
             specs = self._local_specs()
             if name in specs:

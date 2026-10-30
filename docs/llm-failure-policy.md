@@ -53,7 +53,42 @@ runtime.finish("llm_failure：DeepSeek 判断任务已进入失败状态", outco
 
 默认 `control_mode=qpos`，可改为 `epos` 或 `mixed`，但必须与链首策略一致。检查器要求非空前序动作，因此应作为链成员使用，不能单独启动后依靠它生成保持动作。
 
-供应商只接收 task、prompt 和带相机/步数标注的图片，不接收动作块。请求内容上限 32 MiB，超限明确失败，请减小历史数量、图像尺寸或质量；不上传到图床或 Files API。日志只记录检查步数、历史组数、耗时、布尔结果或脱敏错误，不记录图片、密钥或原始模型响应。
+供应商只接收 task、prompt 和带相机/步数标注的图片，不接收动作块。请求内容上限 32 MiB，超限明确失败，请减小历史数量、图像尺寸或质量；不上传到图床或 Files API。诊断日志保存有界的供应商原始响应，输出前会脱敏配置密钥及 Authorization 凭证；日志不包含请求图片、task、prompt 或配置凭证。
+
+## 请求与采集诊断
+
+策略独立输出单行 JSON 事件，`event` 始终以 `llm_failure.` 开头。启用 RC 录制时，这些策略日志会另存到该次录制的 `llm_failure.jsonl`；诊断本身持续输出，不需要给策略新增启停命令。直接使用 `ProviderClient` 时默认不输出日志，调用者可以传入可选的 `diagnostics` 回调收集脱敏元信息，`decide()` 仍只返回布尔值，HTTP 请求数量与重试设置不变。
+
+每次实际发起检查生成唯一的 `query_id`，由请求、采集和清理事件共同引用。`instance_id` 来自运行配置的 `id`，因此重复出现的策略实例仍能独立关联。供应商返回的请求标识单独存放在 `provider_request_id`，不与本地查询 ID 混用。
+
+| 事件 | 含义 |
+|---|---|
+| `llm_failure.request.started` | 后台线程开始执行这次查询 |
+| `llm_failure.request.completed` | 后台查询成功取得合法布尔判断，尚未表示 RC 已采纳 |
+| `llm_failure.request.error` | 后台查询异常、HTTP 错误、拒答或违反响应契约 |
+| `llm_failure.collection.accepted` | 有效代次内、期限内完成的布尔结果已在策略回调中采集 |
+| `llm_failure.collection.discarded` | 结果因 reset、close、代次变更、超时或供应商错误被丢弃；`reason` 说明原因 |
+| `llm_failure.collection.timeout` | 采集时请求仍未完成且期限已到，仅记录一次；`pending=true` |
+
+即使请求在 reset、close 或采集超时后才结束，后台线程仍记录自己的终结事件，收尾时再记录丢弃事件；旧结果不会调用 `runtime.finish()`。进程树被强制终止或输出通道已失效时，进程内诊断无法保证写出终结行。
+
+| 字段 | 含义 |
+|---|---|
+| `query_id`、`instance_id` | 本地查询及运行实例身份 |
+| `step`、`history_size`、`history_steps` | 提交时的相对已执行步数、图像历史组数及每组步数 |
+| `epoch`、`generation` | 提交时的控制代次及检查器上下文代次 |
+| `submitted_wall_s`、`submitted_mono_s`、`deadline_mono_s` | 提交的 Unix 时间、单调时间及绝对期限 |
+| `started_wall_s`、`started_mono_s`、`finished_wall_s`、`finished_mono_s`、`elapsed_s` | 后台查询开始、结束时间及查询总耗时 |
+| `http_started_wall_s`、`http_started_mono_s`、`http_finished_wall_s`、`http_finished_mono_s`、`http_duration_s` | 真实 HTTP 调用两端的时间及耗时，在 `.create()` 周围测量，不包括解析响应或等候下次策略回调 |
+| `collected_wall_s`、`collected_mono_s`、`collection_wait_s` | 采集时间及后台完成到采集之间的等待；请求尚未完成时等待值为 `null` |
+| `provider`、`model`、`response_model`、`provider_request_id`、`http_status` | 供应商、请求模型、响应模型、供应商请求 ID 与 HTTP 状态；不可取得时为 `null` |
+| `usage`、`finish_reason` | 响应 token 统计与终结原因；原始响应中也保留供应商附加字段 |
+| `raw_response`、`parsed_failed`、`error` | 脱敏响应正文、解析布尔值、脱敏错误；JSON 响应正文规范化为 JSON 字符串，非 JSON 正文保留文本 |
+| `late`、`invalidated` | 是否超出提交期限、是否已因上下文变化或已报告的超时而失效 |
+| `truncated`、`truncated_fields` | 是否因长度上限截断及对应字段路径 |
+| `original_size_bytes`、`raw_response_original_size_bytes` | 截断前脱敏事件载荷的 UTF-8 字节数（不含截断标记）及脱敏响应正文的字节数 |
+
+每条完整 JSON 行（含换行）最多 8000 个 UTF-8 字节，长度计算包含 JSON 转义开销。普通 128 token 响应完整保留；异常长响应按整行预算保留前缀并标记截断，截断后的 `raw_response` 不保证仍能作为独立 JSON 解析。两个策略线程共用输出锁，避免它们各自的 JSON 行交错；诊断输出或可选回调失败不改变布尔判断、策略故障和清理结果。
 
 ## 链与 MCP 用法
 
@@ -63,7 +98,7 @@ runtime.finish("llm_failure：DeepSeek 判断任务已进入失败状态", outco
 {"schema_version":3,"kind":"chain","policies":["qwen35_single","llm_failure"]}
 ```
 
-链由首成员决定 RC 的同步/异步调度设置，检查器的 HTTP 请求始终在其自己的后台线程中执行。重复的 `llm_failure` 成员复用实例，相同步数不会重复提交请求。
+链由首成员决定 RC 的同步/异步调度设置，检查器的 HTTP 请求始终在其自己的后台线程中执行。重复的 `llm_failure` 成员按出现顺序使用 `llm_failure-0/1/2` 等独立实例，各自保持历史、请求与诊断身份。
 
 完成链加载后使用：
 

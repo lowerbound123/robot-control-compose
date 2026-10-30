@@ -279,14 +279,7 @@ def test_stale_feedback_stops_reset_and_holds_last_command(setup_controller):
 def test_log_write_failure_does_not_prevent_exit(setup_controller):
     controller, robot, _ = setup_controller
     ready(controller)
-    class BrokenLog:
-        def write(self, text):
-            raise OSError("disk full")
-        def close(self):
-            pass
-    with controller._log_lock:
-        controller._log_stream.close()
-        controller._log_stream = BrokenLog()
+    controller._recorder._process.kill()
     controller.submit("status")
     until(lambda: controller.exit_code == 1)
     controller.submit("exit")
@@ -311,16 +304,11 @@ def test_failed_publish_keeps_last_successful_target(setup_controller):
 
 
 def test_start_log_failure_cleans_without_waiting_for_unstarted_loop(setup_controller, monkeypatch):
-    from pathlib import Path
     controller, robot, _ = setup_controller
-    original = Path.mkdir
-    def fail_logs(path, *args, **kwargs):
-        if path == controller.outputs / "logs":
-            raise OSError("log directory unavailable")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "mkdir", fail_logs)
+    controller.outputs.mkdir(parents=True)
+    (controller.outputs / 'logs').write_text('blocks log directory creation')
     images = controller._pool
-    with pytest.raises(OSError):
+    with pytest.raises((OSError, RuntimeError)):
         controller.start()
     assert controller.done.is_set() and controller.exit_code == 1
     assert robot.closed and images._closed and images._bytes == 0

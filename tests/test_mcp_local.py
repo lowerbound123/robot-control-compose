@@ -139,7 +139,8 @@ def test_events_results_stay_visible_without_becoming_query_history(local_servic
     queries = [message for message in messages if message.startswith("MCP events:")]
     assert len(queries) == 3 and all("original diagnostic" in message for message in queries)
     log = controller.outputs / "logs" / f"rc_{controller.run_id}.jsonl"
-    assert sum(json.loads(line)["message"].startswith("MCP events:") for line in log.read_text().splitlines()) == 3
+    until(lambda: sum(json.loads(line)["message"].startswith("MCP events:")
+                      for line in log.read_text().splitlines()) == 3)
     assert not router.submit("mcp props").result(2).is_error
     until(lambda: not router.pending)
     assert any(item["message"].startswith("MCP props:") for item in controller.read_events()["events"])

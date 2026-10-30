@@ -32,6 +32,7 @@ from .policy_commands import PolicyCommandSupport
 from .chain_management import ChainManagement
 from .policy_results import PolicyResultSupport
 from .global_state_control import GlobalStateControl
+from .recording_control import RecordingControl, RECORD_HELP
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from .operations import ControlRequest, Operations
 from .direct import DirectMotion
@@ -46,13 +47,14 @@ HELP = "\n".join([
     "take：MCP 接管并暂停推理；return：交还并恢复 policy（接管时 resume 同义）",
     '示例：set policy.params.delay_s 0.2；set policy.execution.mode "async"',
     'show global [key]；set global.<key> <JSON>；unset global.<key>：共享状态，退出自动保存',
+    RECORD_HELP,
 ])
 
 
 from .policy_monitors import PolicyMonitors
 
 
-class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl):
+class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl, RecordingControl):
     def __init__(self, config_path, *, robot=None, process_factory=PolicyProcess, runtime_manager=None):
         self.config_path = Path(config_path).resolve()
         self.config = load_rc(self.config_path)
@@ -124,9 +126,8 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
         self._observe_inflight = None
         self._init_policy_commands()
         self._init_chain_editor()
-        self._log_stream = None
-        self._log_lock = threading.Lock()
         self._init_globals()
+        self._init_recording()
 
     def _emit(self, message, level="info", *, record_history=True):
         entry = {"time": format_log_time(time.time()), "level": level, "message": public_message(message)}
@@ -146,31 +147,15 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 self.events.put_nowait(entry)
             except queue.Full:
                 pass
-        with self._log_lock:
-            if self._log_stream is not None:
-                try:
-                    self._log_stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                    self._log_stream.flush()
-                except OSError as exc:
-                    self.exit_code = 1
-                    try:
-                        self._log_stream.close()
-                    except OSError:
-                        pass
-                    self._log_stream = None
-                    try:
-                        self.events.put_nowait({"time": format_log_time(time.time()), "level": "error", "message": f"日志文件写入失败：{exc}"})
-                    except queue.Full:
-                        pass
+        self._recorder.log({**entry, 'run_id':self.run_id, 'timestamp_ns':time.time_ns(),
+                            'monotonic_ns':time.monotonic_ns()})
 
     def start(self):
         with self._lock:
             if self._thread is not None:
                 return
             try:
-                directory = self.outputs / "logs"
-                directory.mkdir(parents=True, exist_ok=True)
-                self._log_stream = (directory / f"rc_{self.run_id}.jsonl").open("a", encoding="utf-8")
+                self._recorder.start()
                 self._manager = threading.Thread(target=self._manager_loop, name="rc-lifecycle", daemon=False)
                 self._thread = threading.Thread(target=self._control_loop, name="rc-control", daemon=False)
                 self._external.start()
@@ -186,9 +171,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                     self._external.close()
                     self._pool.close()
                 finally:
-                    if self._log_stream is not None:
-                        self._log_stream.close()
-                        self._log_stream = None
+                    self._recorder.shutdown(self._cleanup_deadline())
                     self._state = "stopped"
                     self.done.set()
                 raise
@@ -265,7 +248,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 words = shlex.split(command)
             except ValueError:
                 words = []
-            if origin == "mcp" and words and words[0] in ("mcp", "camera", "monitor", "manage-policy", "snapshot", "policy"):
+            if origin == "mcp" and words and words[0] in ("mcp", "camera", "monitor", "manage-policy", "snapshot", "policy", "record"):
                 raise PermissionError(f"{words[0]} is a local-only terminal command")
             if origin == "mcp" and words and words[0] not in BUILTIN_COMMANDS:
                 raise PermissionError("policy extension commands are local-only")
@@ -278,6 +261,9 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             if origin == "mcp" and self._operation is not None and not readonly and command not in ("pause", "exit", "quit"):
                 raise RuntimeError(f"busy: {self._operation['kind']}")
             identity = self.operations.create(command)
+            if origin == 'tui' and words and words[0] == 'record':
+                self._submit_recording(identity, words)
+                return identity
             if readonly:
                 try:
                     result = self.local_help(words[1] if len(words) == 2 else None) if local_help else self.query(command)
@@ -431,6 +417,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 "control_owner": self.control_owner, "control_epoch": self._control_epoch,
                 "returning": self._return_requested, "direct": self.direct.progress(),
                 "policy_wait_operation_id": self._policy_wait['operation_id'] if self._policy_wait else None,
+                "recording": self._recorder.status(),
             }
 
     def capture_snapshot(self):
@@ -725,6 +712,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             inference_timeout_s=timeouts.get("inference_s", 60),
             release_timeout_s=timeouts.get("release_s", 30),
             on_log=self._emit if record.is_chain else lambda message: self._emit(f"[{record.config['id']}] {message}"),
+            on_trace=self._recorder.policy_event,
         )
         handles = []
         worker = None
@@ -889,10 +877,12 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 if self.runtime:
                     self.runtime.phase = 'PAUSED'
                 self._emit(f"policy {self._identity} ready；等待 resume")
+                self._record_configuration()
             elif job["kind"] == "hot_patch":
                 self.registry.commit(result["identity"], result["config"])
                 self._pending_config = None
                 self._emit("policy 热配置已生效")
+                self._record_configuration()
             elif job["kind"] == "reset_context":
                 if job["cancel"].is_set():
                     self._pause()
@@ -1030,12 +1020,16 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
 
     def _snapshot(self):
         observation = self.robot.read_state()
-        for name, (image,timestamp) in self.robot.read_images().items():
-            self._pool.publish(name,image,timestamp)
+        images = self.robot.read_images()
+        published = {}
+        for name, (image,timestamp) in images.items():
+            if self._pool.publish(name,image,timestamp):
+                published[name] = (image,timestamp)
         lease = self._pool.acquire()
         self._observation_serial += 1
         runtime = {'observation_id': f'{self.run_id}:{self.buffer.generation}:{self._observation_serial}',
                    'control_epoch':self.buffer.generation,'consumed_actions':self.buffer.consumed}
+        self._recorder.observation(runtime['observation_id'], observation, published, descriptors=lease.descriptors)
         return observation,lease,runtime
 
     def _observe_tick(self):
@@ -1155,12 +1149,15 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
     def _send_limited(self, target, mode="qpos"):
         previous = self.limiter.checkpoint()
         command, consumed = self.limiter.apply(target, mode, self.robot.read_state())
+        attempt = self._recorder.control_attempt({'requested':target, 'limited':command,
+            'mode':mode, 'owner':self.control_owner, 'generation':self.buffer.generation})
         try:
             if mode == "qpos":
                 self.robot.execute(command)
             else:
                 self.robot.execute(command, mode=mode)
-        except Exception:
+        except Exception as exc:
+            self._recorder.event('control', {'event':'control.error', 'attempt_id':attempt, 'error':str(exc)}, priority=True)
             self.limiter.restore(previous)
             self._published_targets.clear()
             self._publish_fault = True
@@ -1171,9 +1168,12 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
     def _send_direct(self, targets, state):
         previous = self.limiter.checkpoint()
         commands, complete = self.limiter.apply_arms(targets, state)
+        attempt = self._recorder.control_attempt({'requested':targets, 'limited':commands,
+            'owner':self.control_owner, 'generation':self.buffer.generation})
         try:
             self.robot.execute_arms(commands)
-        except Exception:
+        except Exception as exc:
+            self._recorder.event('control', {'event':'control.error', 'attempt_id':attempt, 'error':str(exc)}, priority=True)
             self.limiter.restore(previous)
             for arm in commands:
                 self._published_targets.pop(arm, None)
@@ -1378,19 +1378,19 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
         if self.runtime:
             self.runtime.release()
         self._state = "stopped"
+        self.operations.cancel_pending("controller stopped", exclude=self._exit_operations)
+        self._emit('控制与 policy 已退出；等待日志写入收尾')
+        final_entry = {'event':'rc.exit', 'time':format_log_time(time.time()), 'level':'info',
+            'exit_code':self.exit_code, 'exit_operations':list(self._exit_operations),
+            'message':("安全退出完成，退出码 0" if self.exit_code == 0 else
+                       f"退出完成，存在强制终止或清理错误，退出码 {self.exit_code}")}
+        if self._recorder.shutdown(self._cleanup_deadline(), final_entry=final_entry):
+            self.exit_code = 1
         # Finish priority shutdown receipts after the cancellation batch, so
         # a full queue cannot immediately prune the final exit acknowledgement.
-        self.operations.cancel_pending("controller stopped", exclude=self._exit_operations)
         for identity in self._exit_operations:
             self.operations.update(identity, "succeeded" if self.exit_code == 0 else "failed", result={"exit_code": self.exit_code})
         self._emit("安全退出完成，退出码 0" if self.exit_code == 0 else f"退出完成，存在强制终止或清理错误，退出码 {self.exit_code}")
-        with self._log_lock:
-            if self._log_stream is not None:
-                try:
-                    self._log_stream.close()
-                except OSError:
-                    self.exit_code = 1
-            self._log_stream = None
         self.done.set()
 
     def _control_loop(self):

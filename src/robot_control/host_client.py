@@ -149,7 +149,9 @@ class HostClient:
                         if member.runtime_id == message['runtime_id']: member._record_failure(message['error'])
                 elif kind == 'log':
                     for member in members:
-                        if member.runtime_id == message['runtime_id']: member._log(message['message'])
+                        if member.runtime_id == message['runtime_id']:
+                            if hasattr(member, '_log_packet'): member._log_packet(message)
+                            else: member._log(message['message'])
                 else: raise ValueError(f'unexpected host message: {kind}')
         except (OSError, EOFError, ValueError) as exc:
             if not self.closed: self._fail(f'host disconnected: {exc}')

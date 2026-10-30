@@ -1,5 +1,5 @@
 """Remote policy session; liveness never substitutes for reader exit proof."""
-from collections import deque
+from collections import OrderedDict, deque
 import math
 from pathlib import Path
 import threading
@@ -17,9 +17,44 @@ from .monitor_client import MonitorClient
 from rc_policy_sdk.outbox import PriorityOutbox
 
 
+def _trace_payload(value):
+    """Snapshot mutable containers, leaving immutable sensor/action values alone."""
+    if isinstance(value, dict):
+        return {key: _trace_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_trace_payload(item) for item in value]
+    return value
+
+
+def _inference_trace_context(request):
+    runtime = request.get('runtime', {})
+    runtime = runtime if isinstance(runtime, dict) else {}
+    context = {key: request.get(key) for key in ('request_id', 'generation', 'config_version')}
+    context['observation_id'] = runtime.get('observation_id', str(request.get('request_id')))
+    context.update({key: runtime[key] for key in ('chain_id', 'chain_request_id', 'cell') if key in runtime})
+    context['started_at'] = time.monotonic()
+    return context
+
+
+def _emit_inference_trace(callback, instance_id, source_id, kind, context, data, **extras):
+    """The caller supplies a nonblocking sink; instrumentation never owns I/O."""
+    if callback is None:
+        return
+    try:
+        event = {'event': 'policy.' + kind, 'instance_id': instance_id, 'source_id': source_id,
+                 **{key: value for key, value in context.items() if key != 'started_at'},
+                 'timestamp_ns': time.time_ns(), 'monotonic_ns': time.monotonic_ns(),
+                 'data': _trace_payload(data), **extras}
+        if kind != 'start':
+            event['elapsed_s'] = max(0., time.monotonic() - context['started_at'])
+        callback(event)
+    except Exception:
+        pass
+
+
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
-                 init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None):
+                 init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None, on_trace=None):
         from rc_policy_sdk.catalog import instance_id
         instance_id(config.get('id'))
         self.endpoint = endpoint
@@ -33,6 +68,8 @@ class PolicyProcess(MonitorClient):
         self.policy_dir, self.config, self.config_version = Path(policy_dir), config, config_version
         self.init_timeout_s, self.inference_timeout_s, self.release_timeout_s = init_timeout_s, inference_timeout_s, release_timeout_s
         self.on_log = on_log
+        self.on_trace = on_trace
+        self._trace_requests = OrderedDict()
         self.global_state = global_state
         self.host_socket = host_socket or (endpoint.socket if endpoint else None)
         if not self.host_socket: raise ValueError('policy host socket is not configured')
@@ -79,6 +116,41 @@ class PolicyProcess(MonitorClient):
         if self.on_log:
             try: self.on_log(message)
             except Exception: pass
+
+    def _log_packet(self, packet):
+        if self.on_trace:
+            try:
+                self.on_trace({**packet, 'event':'policy.stdout', 'instance_id':self.config['id'],
+                    'source_id':self.policy_dir.name, 'config_version':self.config_version,
+                    'timestamp_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns()})
+            except Exception:
+                pass
+        self._log(packet['message'])
+
+    def _trace_key(self, message, runtime_id=None):
+        return (self.runtime_id if runtime_id is None else runtime_id,
+                *(message.get(key) for key in ('request_id', 'generation', 'config_version')))
+
+    def _trace(self, kind, message, *, runtime_id=None, **extras):
+        if self.on_trace is not None:
+            try:
+                try:
+                    context = self._trace_requests.get(self._trace_key(message, runtime_id))
+                except TypeError:
+                    context = None  # Malformed stale identity remains discardable.
+                if context is None:
+                    context = _inference_trace_context(message)
+                _emit_inference_trace(self.on_trace, self.config['id'], self.policy_dir.name,
+                                      kind, context, message, **extras)
+            except Exception:
+                pass
+
+    def _trace_close(self):
+        with self._condition:
+            if self._inflight and not self._inflight.get('timed_out') and not self._inflight.get('trace_cancelled'):
+                self._trace('cancel', {**{key: self._inflight[key] for key in ('request_id', 'generation', 'config_version')},
+                                       'type': 'cancelled', 'reason': 'policy closing'})
+                self._inflight['trace_cancelled'] = True
 
     def start(self, cancel_event=None):
         try:
@@ -128,7 +200,10 @@ class PolicyProcess(MonitorClient):
 
     def _receive(self, packet):
         with self._condition:
-            if self.runtime_id is not None and packet['runtime_id'] != self.runtime_id: return
+            if self.runtime_id is not None and packet['runtime_id'] != self.runtime_id:
+                if packet['event'].get('type') in ('result', 'error') and 'request_id' in packet['event']:
+                    self._trace('stale', packet['event'], runtime_id=packet['runtime_id'], discarded=True, reason='runtime_id')
+                return
             self.runtime_id = packet['runtime_id']
             message = packet['event']; kind = message['type']
             if kind == 'ready':
@@ -156,6 +231,8 @@ class PolicyProcess(MonitorClient):
                 self._acks[message['operation_id']] = message
             elif kind in ('result','error') and 'request_id' in message:
                 if self._inflight and all(message.get(k) == self._inflight[k] for k in ('request_id','generation','config_version')):
+                    late = self._inflight.get('timed_out') or self._inflight.get('trace_cancelled')
+                    self._trace('late' if late else kind, message, discarded=bool(late))
                     if not self._inflight.get('timed_out'):
                         if kind == 'result':
                             controls = control_requests(message.get('control_requests', []))
@@ -163,6 +240,8 @@ class PolicyProcess(MonitorClient):
                                 raise ValueError('control_requests requires negotiated runtime_tools ' + controls[0]['type'])
                         self._responses.append(message)
                     self._inflight = None
+                else:
+                    self._trace('stale', message, discarded=True, reason='inference_identity')
             elif kind in ('fatal','error'): self._record_failure(message.get('error','policy failed'))
             elif kind == 'closed':
                 self.release_error = message.get('release_error')
@@ -195,6 +274,8 @@ class PolicyProcess(MonitorClient):
 
     def close_group(self, members, *, deadline=None):
         with self._close_lock, self._launch_lock:
+            for member in members:
+                member._trace_close()
             if self.cleanup_confirmed:
                 self._state = 'closed'
                 if self.host and all(p.cleanup_confirmed or not p._submitted_load for p in self.host.members.values()):
@@ -235,7 +316,10 @@ class PolicyProcess(MonitorClient):
                 self._failure = error
                 if self._inflight:
                     if not self._inflight.get("timed_out"):
-                        self._responses.append({"type": "error", **{key: self._inflight[key] for key in ("request_id", "generation", "config_version")}, "error": error})
+                        response = {"type": "error", **{key: self._inflight[key] for key in ("request_id", "generation", "config_version")}, "error": error}
+                        if not self._inflight.get('trace_cancelled'):
+                            self._trace('timeout' if error in ('policy infer timeout', 'policy inference timeout') else 'error', response)
+                        self._responses.append(response)
                     self._inflight = None
             self._condition.notify_all()
 
@@ -271,6 +355,11 @@ class PolicyProcess(MonitorClient):
             self._enqueue({**request, "type": "infer"})
             self._inflight = {key: request[key] for key in ("request_id", "generation", "config_version")}
             self._inflight["deadline"] = time.monotonic() + self.inference_timeout_s
+            if self.on_trace is not None:
+                self._trace_requests[self._trace_key(request)] = _inference_trace_context(request)
+                while len(self._trace_requests) > 256:
+                    self._trace_requests.popitem(last=False)
+                self._trace('start', {**request, 'type': 'infer'})
 
     def observe(self, request):
         with self._condition:
@@ -292,7 +381,9 @@ class PolicyProcess(MonitorClient):
                 return self._responses.popleft()
             if self._inflight and not self._inflight.get("timed_out") and time.monotonic() >= self._inflight["deadline"]:
                 self._inflight["timed_out"] = True
-                return {"type": "error", **{key: self._inflight[key] for key in ("request_id", "generation", "config_version")}, "error": "policy inference timeout"}
+                response = {"type": "error", **{key: self._inflight[key] for key in ("request_id", "generation", "config_version")}, "error": "policy inference timeout"}
+                self._trace('timeout', response)
+                return response
             return None
 
     def _operation(self, kind, extras, cancel_event):

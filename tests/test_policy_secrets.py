@@ -135,12 +135,12 @@ def test_worker_log_syntaxes_hide_keys_in_events_and_persistent_log(style, setup
         text = text.replace('api_key', chr(92) + 'u0061pi_key')
     elif style == 'fully_escaped':
         text = text.replace('api_key', ''.join(chr(92) + 'u%04x' % ord(c) for c in 'api_key'))
-    stream = io.StringIO()
-    previous = controller._log_stream
-    controller._log_stream = stream
+    entries = []
+    previous = controller._recorder.log
+    controller._recorder.log = entries.append
     try:
         controller._emit('[worker] ' + text)
-        assert 'review-private-canary' not in stream.getvalue()
+        assert 'review-private-canary' not in json.dumps(entries)
         assert 'review-private-canary' not in json.dumps(controller.read_events())
     finally:
-        controller._log_stream = previous
+        controller._recorder.log = previous

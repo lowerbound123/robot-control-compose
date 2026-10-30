@@ -8,7 +8,7 @@ from rc_policy_sdk.actions import normalize_actions
 from rc_policy_sdk.control import control_requests, merge_control_requests
 
 from .chain_config import chain_commands
-from .process import PolicyProcess
+from .process import PolicyProcess, _emit_inference_trace, _inference_trace_context
 
 
 class _MemberResources:
@@ -27,7 +27,7 @@ class _MemberResources:
 
 class ChainProcess:
     def __init__(self, record, *, process_factory=PolicyProcess, init_timeout_s=600,
-                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None):
+                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None, on_trace=None):
         self.record = record
         self.config = copy.deepcopy(record.config)
         self.config_version = record.version
@@ -42,6 +42,7 @@ class ChainProcess:
         self._factory, self._endpoints, self._log = process_factory, endpoints or {}, on_log
         self._exit_authority = exit_authority
         self.global_state = global_state
+        self.on_trace = on_trace
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -104,7 +105,8 @@ class ChainProcess:
                                            inference_timeout_s=min(self.inference_timeout_s, member.config.get('timeouts', {}).get('inference_s', self.inference_timeout_s)),
                                            release_timeout_s=min(self.release_timeout_s, member.config.get('timeouts', {}).get('release_s', self.release_timeout_s)), endpoint=self._endpoints.get(identity),
                                            exit_authority=self._exit_authority,
-                                           on_log=(lambda message, name=identity: self._log(f'[{name}] {message}') if self._log else None), global_state=self.global_state)
+                                           on_log=(lambda message, name=identity: self._log(f'[{name}] {message}') if self._log else None), global_state=self.global_state,
+                                           **({'on_trace': self.on_trace} if self.on_trace is not None else {}))
                     worker.resources = _MemberResources(self, identity)
                     with self._condition:
                         if self._stop.is_set():
@@ -133,9 +135,21 @@ class ChainProcess:
     def _identity(request):
         return {key: request[key] for key in ('request_id', 'generation', 'config_version')}
 
-    def _child_request(self, message, worker):
+    def _child_request(self, message, worker, cell=None):
         self._serial += 1
-        return {**message, 'request_id': self._serial, 'config_version': worker.config_version}
+        runtime = {**message.get('runtime', {}), 'chain_id': self.config['id'],
+                   'chain_request_id': message['request_id']}
+        if cell is not None:
+            runtime['cell'] = cell
+        return {**message, 'request_id': self._serial, 'config_version': worker.config_version, 'runtime': runtime}
+
+    def _trace(self, kind, data, *, cell=None, **extras):
+        if self._request is not None:
+            context = dict(self._request['trace'])
+            if cell is not None:
+                context['cell'] = cell
+            _emit_inference_trace(self.on_trace, self.record.instance_id, self.record.source_id,
+                                  kind, context, data, **extras)
 
     def submit(self, request):
         with self._condition:
@@ -145,9 +159,12 @@ class ChainProcess:
             if request['config_version'] != self.config_version:
                 raise ValueError('chain config version differs')
             chunk = normalize_actions(request['action_chunk'], self.execution['control_mode'], allow_empty=True)
+            context = {**_inference_trace_context(request), 'chain_id': self.config['id'],
+                       'chain_request_id': request['request_id']}
             self._request = {'message': {**request, 'action_chunk': chunk.payload(self.execution['control_mode'])},
                              'index': 0, 'child': None, 'cancel': False, 'control_requests': [],
-                             'deadline': time.monotonic() + self.inference_timeout_s}
+                             'deadline': time.monotonic() + self.inference_timeout_s, 'trace': context}
+            self._trace('start', {**self._request['message'], 'type': 'infer'})
             self._condition.notify_all()
 
     def cancel_inference(self):
@@ -156,9 +173,11 @@ class ChainProcess:
                 self._request['cancel'] = True
             self._condition.notify_all()
 
-    def _finish(self, kind, **extras):
+    def _finish(self, kind, *, trace_kind=None, **extras):
         if kind in ('result', 'cancelled'): extras['images_released'] = True
-        self._responses.append({'type': kind, **self._identity(self._request['message']), **extras})
+        response = {'type': kind, **self._identity(self._request['message']), **extras}
+        self._trace(trace_kind or ('cancel' if kind == 'cancelled' else kind), response, cell=self._request['index'] + 1)
+        self._responses.append(response)
         self._request = None
         self._condition.notify_all()
 
@@ -178,14 +197,19 @@ class ChainProcess:
                 if request['cancel']:
                     self._finish('cancelled')
                     return
-                child = self._child_request(request['message'], worker)
+                child = self._child_request(request['message'], worker, cell=index + 1)
+                self._trace('stage_start', child, cell=index + 1, child_instance_id=identity)
                 worker.submit(child)
                 request['child'] = child
             response = worker.poll()
             if response is None:
                 return
             if any(response.get(key) != request['child'][key] for key in ('request_id', 'generation', 'config_version')):
+                self._trace('stale', response, cell=index + 1, child_instance_id=identity, discarded=True,
+                            child_request_id=response.get('request_id'))
                 return  # A stale response must not advance the chain.
+            self._trace('stage_result' if response['type'] == 'result' else 'stage_error', response,
+                        cell=index + 1, child_instance_id=identity, child_request_id=request['child']['request_id'])
             if response['type'] != 'result' or response.get('images_released') is not True:
                 raise RuntimeError(response.get('error', 'invalid child response'))
             payload = ({'actions': response['actions'], 'modes': response['modes']}
@@ -208,7 +232,10 @@ class ChainProcess:
             self._failure = f'chain cell {index + 1} ({identity}): {exc}'
             # Error is not a lease-release acknowledgement. The controller keeps
             # the frame pinned until close confirms all readers have exited.
-            self._finish('error', error=self._failure)
+            timed_out = (isinstance(exc, TimeoutError) or time.monotonic() >= request['deadline']
+                         or str(exc) in ('policy infer timeout', 'policy inference timeout')
+                         or getattr(worker, '_failure', None) in ('policy infer timeout', 'policy inference timeout'))
+            self._finish('error', trace_kind='timeout' if timed_out else 'error', error=self._failure)
 
     def _coordinate(self):
         with self._condition:
@@ -234,9 +261,9 @@ class ChainProcess:
             if not self._ready or self._stop.is_set() or self._failure or self._observation is not None:
                 return False
             pending, errors = {}, []
-            for identity, worker in self._workers.items():
+            for cell, (identity, worker) in enumerate(self._workers.items(), 1):
                 if worker.supports_observe:
-                    child = self._child_request(request, worker)
+                    child = self._child_request(request, worker, cell=cell)
                     try:
                         if not worker.observe(child):
                             raise RuntimeError('observation is busy')
@@ -337,6 +364,10 @@ class ChainProcess:
         self._stop.set()
         with self._condition:
             self._ready = False
+            if self._request is not None and not self._request.get('trace_cancelled'):
+                self._trace('cancel', {**self._identity(self._request['message']), 'type': 'cancelled',
+                                       'reason': 'chain closing'}, cell=self._request['index'] + 1)
+                self._request['trace_cancelled'] = True
             self._condition.notify_all()
         with self._close_lock:
             if self._closed:

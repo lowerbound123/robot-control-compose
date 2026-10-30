@@ -39,6 +39,7 @@ class ControlRequest:
 
 class Operations:
     def __init__(self, history=256, max_pending=256):
+        self.on_event = None
         self._condition = threading.Condition()
         self._items = OrderedDict()
         self.history, self.max_pending = history, max_pending
@@ -52,7 +53,16 @@ class Operations:
             identity = uuid.uuid4().hex
             self._items[identity] = {"operation_id": identity, "command": command, "status": "queued", "created_at": time.time()}
             self._prune()
-            return identity
+            event = dict(self._items[identity])
+        self._notify(event)
+        return identity
+
+    def _notify(self, item):
+        if self.on_event:
+            try:
+                self.on_event(item)
+            except Exception:
+                pass
 
     def _prune(self):
         terminal = [key for key, value in self._items.items() if value["status"] in TERMINAL]
@@ -78,7 +88,9 @@ class Operations:
                 # episode may have been created before hundreds of short calls.
                 self._items.move_to_end(identity)
             self._condition.notify_all()
+            event = dict(item)
             self._prune()
+        self._notify(event)
 
     def get(self, identity):
         with self._condition:
@@ -96,6 +108,6 @@ class Operations:
 
     def cancel_pending(self, reason, *, exclude=()):
         with self._condition:
-            for identity in list(self._items):
-                if identity not in exclude:
-                    self.update(identity, "cancelled", error=reason)
+            identities = [identity for identity in self._items if identity not in exclude]
+        for identity in identities:
+            self.update(identity, "cancelled", error=reason)

@@ -110,3 +110,32 @@ Qwen 导入探针 `tests/qwen_image_probe.py` 必须使用与策略 Compose 相�
 - 独立审查发现的重新应用链读取旧来源缓存问题已补失败回归并修复。真实 Docker 暴露的 Compose 默认网络重名问题已修复，自有网络名称随实例项目隔离。
 
 本轮证据目录为 `/private/tmp/rc-chain-instances-20261030/`：`host-final.log`、`linux-verified.log`、`dynamic-final/container-smoke.json`、`result/cross-container.json`、`global-final/cross-container.json`。验收仅使用隔离测试部署，结束后清理所属容器、网络和卷；未进行真实机器人、GPU 模型或外部供应商验收。
+
+## 连续录制验收（2026-10-30）
+
+`record` 增加本地异步启停、独立 30 Hz 三路 PNG 与四份 CSV、完整状态／控制／逐实例推理日志、配置历史及 LLM 请求诊断。格式、容量和复现命令见 [连续录制文档](recording.md)。
+
+- 最终完整主机套件：**1107 passed，29 skipped**，Python 3.11，366.58 秒。
+- 最终完整 Linux/ROS 套件：**1032 passed，31 skipped**，ROS 2 Humble / Python 3.10，494.54 秒。两套各有 13 条既有 Pillow 弃用警告。
+- 录制专项覆盖真实 SIGSTOP、真实 EFBIG、字节／条数满、SDK 日志洪泛、反复启停、跨会话缺口归属、绝对退出期限和 SIGTERM。采样额度保留到 writer ACK；强制退出后核对进程、管道和线程清理。无发送、混合模式、逐臂部分失败、MCP 控制权和推理等待均有回归。
+- 独立审查发现并修复两项问题：图像池所有槽都被租约占用时，记录实际推理 lease 对应帧；普通日志条数达到上限时，仍给关键回执和 LLM 事件保留额度。另补齐最终退出摘要和诊断缺口的会话归属。
+
+最终性能验收在其他 CPU 测试暂停后顺序运行，源码哈希与最终生产代码一致：
+
+| 指标 | 动态 Mock，三路 640×480 | 真实 ROS，三路 64×48 |
+| --- | ---: | ---: |
+| 时长／采样数 | 60.002473 秒／1801 | 10.007046 秒／301 |
+| 每路有效写入频率 | 30.015430 Hz | 30.078807 Hz |
+| 采样截止缺口／缺失帧／附加丢弃 | 0／0／0 | 0／0／0 |
+| 在途信用峰值／观察到的采样队列峰值 | 149797208 bytes／8 | 2590160 bytes／7 |
+| 控制发送调用耗时 P99／最大 | 0.591678／3.159562 ms | 2.724691／15.702186 ms |
+| 含尝试记录的控制调用耗时 P99／最大 | 1.605949／5.437733 ms | 3.900286／15.935230 ms |
+| 实际逐臂发布／HTTP 和 SDK 请求对 | 5998／59 | 1000／10 |
+
+Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 policy 输入图像。每路重复帧和来源序号跳跃均为 3，均保留在采样元数据中。ROS 的 1000 次 ACOne 成功发布与 simulator 收到的模式和数值完全一致；本节调用耗时不代表真实机器人响应延迟。两轮停止后待写入归零，无强制清理或残留容器。
+
+证据位于 `/private/tmp/rc-record-20261030/`：`host-verified.log`、`linux-verified.log`、`manual-mock60-isolated/report.json`、`manual-ros10-isolated/report.json` 及各自的 `teardown.json`。另保留主机套件并发时出现 1 个采样截止缺口的失败压力报告 `manual-mock60-frozen/report.json`，没有改低门槛记为成功。
+
+首次全套暴露的旧时间夹具、监控后台发送时序及新增日志缺口断言已更新。一次 Linux TUI 退出非零未在隔离 4 项测试及最终全套中复现；测试现在保留末尾 RC 事件用于诊断，最终运行日志含 `rc.exit`、`writer_drained=true`、`exit_code=0`，没有为此修改退出控制逻辑。
+
+验证没有增加 SDK 依赖、Compose 服务、厂商驱动或模型请求重试。此轮 Mock、ROS 仿真和本地 HTTP 验收不替代真实相机、机器人或外部模型供应商验收。
