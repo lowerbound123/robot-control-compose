@@ -49,11 +49,15 @@ policy/my_policy/
   Dockerfile          # 可选，准备镜像时使用
 ```
 
-目录名是唯一身份，格式 `[a-z0-9][a-z0-9_-]{0,47}`；manifest 的 `id` 可省略，存在时必须同名。socket 自动派生为 `/run/robot-control/<id>.sock`。正式 manifest 没有 `.example` 也能发现；发现和帮助不会导入策略 Python。
+目录名是策略来源身份，格式 `[a-z0-9][a-z0-9_-]{0,47}`；manifest 的 `id` 可省略，存在时必须同名。运行实例的 socket 自动派生为 `/run/robot-control/<instance_id>.sock`，实例名最长 64 字符。正式 manifest 没有 `.example` 也能发现；发现和帮助不会导入策略 Python。
 
 新增目录后运行 `./setup.sh --policies my_policy` 准备镜像，再 `switch my_policy`。无须修改 RC、setup 名单或基础 Compose。部署、模型和供应商配置都在策略目录内；运行切换不构建镜像、不安装依赖、不下载模型。
 
-原生 chain 只是成员列表，不增加容器；`[a,b,a]` 创建两个容器，复用 a 的 context。SDK 内部 `PolicyChain` 仍是单 worker 内模块组合。
+原生 chain 只是成员列表，自身不增加容器；`[a,b,a]` 展开为 `a-0 → b → a-1`，创建三个独立容器、host、执行进程和 context。只有重复策略编号，单例保持原名；编号按同一策略在当前链中的出现顺序从 0 开始。多个实例使用原策略目录和同一镜像，容器内源码路径保持 `/workspace/policy/a`。生成的实例名冲突时，在停止旧组前拒绝应用。SDK 内部 `PolicyChain` 仍是单 worker 内模块组合。
+
+命令与监控按实例注册，例如 `policy a-0 <command>`、`a-0-<command>`、`monitor-a-0` 和 `monitor-a-1`。`a-0` 发起的配置重载仅改变自身参数，仍通过整条链冷重建生效，其他实例保留当前配置。
+
+`save-config a-0`（兼容 `save-config policy a-0`）将该实例配置保存到原目录 `policy/a/`，落盘 `id` 仍为 `a`；当前 `a-1` 不变。同时存在多个 a 实例时，`save-config a` 会报错并要求指定实例。多个实例依次保存到同一个来源文件时，最后一次成功保存成为下次加载的默认配置。链 YAML 和编辑器保存仍记录原策略顺序 `[a,b,a]`；显式 switch 或重新应用链会从来源默认配置重新生成实例。
 
 ## 配置与权限
 

@@ -11,6 +11,15 @@ TERMINAL = {"succeeded", "failed", "cancelled"}
 
 
 @dataclass(frozen=True)
+class PolicySaveTarget:
+    identity: str
+    record: object = None
+    worker: object = None
+    version: int | None = None
+    generation: int | None = None
+
+
+@dataclass(frozen=True)
 class ControlRequest:
     operation_id: str
     line: str
@@ -25,6 +34,7 @@ class ControlRequest:
     chain_action: str | None = None
     chain_policies: tuple = ()
     edit_token: int | None = None
+    save_target: PolicySaveTarget | None = None
 
 
 class Operations:

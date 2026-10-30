@@ -52,6 +52,8 @@ def discover(root):
                 descriptor = read_descriptor(folder)
                 config = descriptor['config']
                 if config.get('kind') == 'chain':
+                    from .chain_config import chain_instance_ids
+                    chain_instance_ids(config['policies'])
                     for member in dict.fromkeys(config['policies']):
                         child = read_descriptor(root / member)
                         if child['config'].get('kind') == 'chain':

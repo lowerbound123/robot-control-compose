@@ -93,18 +93,18 @@ class ChainProcess:
                     raise RuntimeError('cannot start chain more than once')
             try:
                 for member in self.record.members:
-                    identity = member.config['id']
+                    identity = member.instance_id
                     if self._stop.is_set() or (cancel_event and cancel_event.is_set()):
                         raise RuntimeError('chain initialization cancelled')
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError(f'{identity}: chain initialization timeout')
-                    worker = self._factory(member.directory, copy.deepcopy(member.config), member.version,
+                    worker = self._factory(member.directory, member.runtime_config, member.version,
                                            init_timeout_s=min(remaining, member.config.get('timeouts', {}).get('initialize_s', remaining)),
                                            inference_timeout_s=min(self.inference_timeout_s, member.config.get('timeouts', {}).get('inference_s', self.inference_timeout_s)),
                                            release_timeout_s=min(self.release_timeout_s, member.config.get('timeouts', {}).get('release_s', self.release_timeout_s)), endpoint=self._endpoints.get(identity),
                                            exit_authority=self._exit_authority,
-                                           on_log=self._log, global_state=self.global_state)
+                                           on_log=(lambda message, name=identity: self._log(f'[{name}] {message}') if self._log else None), global_state=self.global_state)
                     worker.resources = _MemberResources(self, identity)
                     with self._condition:
                         if self._stop.is_set():
@@ -167,7 +167,7 @@ class ChainProcess:
         if request is None:
             return
         index = request['index']
-        identity = self.config['policies'][index]
+        identity = self.record.members[index].instance_id
         worker = self._workers[identity]
         try:
             if self._failure:

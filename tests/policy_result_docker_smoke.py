@@ -31,7 +31,7 @@ def initialize(config):
 def policy(context, state, action_chunk, images, config, *, runtime):
     context['calls'] += 1
     assert images and all(not image.flags.writeable for image in images.values())
-    if config['id'] == 'a':
+    if Path(__file__).resolve().parent.name == 'a':
         runtime.finish('container result')
     else:
         while not Path(__file__).with_name('allow').exists(): time.sleep(.01)
@@ -80,6 +80,8 @@ def container():
     def pending_chain():
         wait(lambda: controller.status()['in_flight'])
         wait(lambda: command('policy b info')['calls'] == 1)
+        assert command('policy a-0 info')['calls'] == 1
+        assert command('policy a-1 info')['calls'] == 0
         assert not controller._inflight['lease']._released
 
     controller.start()
@@ -87,9 +89,10 @@ def container():
         wait(lambda: controller.status()['state'] in ('paused', 'fault'))
         assert controller.status()['state'] == 'paused', controller.read_events()
         members = controller._worker.monitor_members()
-        assert len(members) == 2
-        assert members['a'].host.instance_id != members['b'].host.instance_id
-        assert command('policy a info')['python'] == [3, 14]
+        assert list(members) == ['a-0', 'b', 'a-1']
+        assert len({worker.host.instance_id for worker in members.values()}) == 3
+        assert command('policy a-0 info')['python'] == [3, 14]
+        assert command('policy a-1 info')['python'] == [3, 14]
         service.start()
         assert not tool('take').is_error
         waiting = service.submit_tool('return_and_wait', {})
@@ -99,11 +102,12 @@ def container():
         gate.touch()
         result = waiting.result(35).structured_content
         assert result['result'] == {'outcome': 'completed', 'message': 'container result',
-                                    'source': {'policy_id': 'a', 'cell': 1}}
+                                    'source': {'policy_id': 'a-0', 'cell': 1}}
         assert result['controller']['control_owner'] == 'mcp'
-        assert command('policy a info')['calls'] == 2
+        assert command('policy a-0 info')['calls'] == 1
+        assert command('policy a-1 info')['calls'] == 1
         assert controller.status()['consumed'] == 0
-        outcomes.append('source Py3.10/Py3.14; A/B/A reuses two containers; deferred result and readonly frames')
+        outcomes.append('source Py3.10/Py3.14; a-0/b/a-1 uses three containers and independent counters; deferred first-instance result and readonly frames')
 
         gate.unlink()
         result = tool('return_and_wait', timeout_s=0).structured_content
@@ -157,8 +161,8 @@ def host():
     root = Path(__file__).resolve().parents[1]
     token = uuid.uuid4().hex[:12]
     project = 'rc-policy-result-' + token
-    evidence = Path('/private/tmp/rc-policy-result-20261028')
-    evidence.mkdir(exist_ok=True)
+    evidence = Path(os.environ.get('RC_RESULT_EVIDENCE', '/private/tmp/rc-policy-result-20261028'))
+    evidence.mkdir(parents=True, exist_ok=True)
     endpoint = json.loads(subprocess.check_output(['docker', 'context', 'inspect']))[0]['Endpoints']['docker']['Host'][7:]
     endpoint = str(Path(endpoint).resolve())
     gid = subprocess.check_output(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'stat',

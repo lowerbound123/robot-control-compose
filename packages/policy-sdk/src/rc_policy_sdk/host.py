@@ -58,10 +58,11 @@ class Peer:
 
 
 class PolicyHost:
-    def __init__(self, root, host_id):
+    def __init__(self, root, host_id, *, source_policy_id=None):
         self.root = Path(root).resolve()
-        from .catalog import policy_id
-        self.host_id = policy_id(host_id)
+        from .catalog import instance_id, policy_id
+        self.host_id = instance_id(host_id)
+        self.source_policy_id = policy_id(host_id if source_policy_id is None else source_policy_id)
         self.deployment_id = os.environ.get('RC_DEPLOYMENT_ID', '')
         self.run_id = os.environ.get('RC_RUN_ID', '')
         self.generation = int(os.environ.get('RC_GENERATION', '0'))
@@ -88,7 +89,7 @@ class PolicyHost:
             raise ValueError('host accepts only its assigned policy ID')
         if self.cleanup_failed or self.closing or self.shutting_down:
             raise RuntimeError('host unavailable: cleanup/closing')
-        directory = (self.root / policy_id).resolve()
+        directory = (self.root / self.source_policy_id).resolve()
         if directory.parent != self.root:
             raise ValueError('policy directory escapes the configured root')
         source = (directory / 'main.py').read_text(encoding='utf-8')
@@ -258,8 +259,8 @@ class PolicyHost:
             if kind == 'load':
                 if peer.owner in self.revoked_owners: raise RuntimeError('RC owner revoked; create a new session')
                 directory = self.preflight(message['policy_id'])['directory']
-                from .catalog import validate_policy
-                validate_policy(message['event']['config'], self.host_id)
+                from .catalog import validate_runtime_policy
+                validate_runtime_policy(message['event']['config'], self.source_policy_id, self.host_id)
                 self.owner_seen = time.monotonic()
                 if self.process is None: self._start(peer.owner)
                 sid = message['session_id']
@@ -392,6 +393,7 @@ def main():
     parser.add_argument('--socket', required=True)
     parser.add_argument('--policy-root', required=True)
     parser.add_argument('--host-id', required=True)
+    parser.add_argument('--source-policy-id')
     parser.add_argument('--healthcheck', action='store_true')
     args = parser.parse_args()
     if args.healthcheck:
@@ -407,7 +409,7 @@ def main():
     with open(str(path) + '.lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         path.unlink(missing_ok=True)
-        host = PolicyHost(args.policy_root, args.host_id)
+        host = PolicyHost(args.policy_root, args.host_id, source_policy_id=args.source_policy_id)
         stop = threading.Event()
         for signum in (signal.SIGINT, signal.SIGTERM): signal.signal(signum, lambda *_: stop.set())
         with socket.socket(socket.AF_UNIX) as listener:

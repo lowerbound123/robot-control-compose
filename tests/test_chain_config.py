@@ -27,7 +27,7 @@ def add_chain(root, identities):
     return config
 
 
-def test_chain_resolves_unique_members_without_imports_and_follows_head(tmp_path):
+def test_chain_resolves_independent_occurrences_and_keeps_active_snapshot(tmp_path):
     add_policy(tmp_path, "a")
     add_policy(tmp_path, "b")
     definition = add_chain(tmp_path, ["a", "b", "a"])
@@ -35,12 +35,12 @@ def test_chain_resolves_unique_members_without_imports_and_follows_head(tmp_path
     record = registry.get("default_chain")
     assert record.config == definition
     assert record.is_chain
-    assert [item.config["id"] for item in record.members] == ["a", "b"]
+    assert [item.instance_id for item in record.members] == ["a-0", "b", "a-1"]
     assert record.execution == {"mode": "async", "call_every_actions": 3, "control_mode": "qpos"}
     updated = copy.deepcopy(registry.get("a").config)
     updated["execution"]["call_every_actions"] = 7
     registry.commit("a", updated)
-    assert registry.get("default_chain").execution["call_every_actions"] == 7
+    assert registry.get("default_chain").execution["call_every_actions"] == 3
     assert record.execution["call_every_actions"] == 3
     assert next(row for row in registry.list() if row["id"] == "default_chain")["valid"]
 
@@ -75,8 +75,8 @@ def test_commands_use_unique_load_order_and_reject_ambiguous_exact_aliases(tmp_p
     record = PolicyRegistry(tmp_path).get("default_chain")
     from robot_control.chain_config import chain_commands
     specs, targets = chain_commands(record.members)
-    assert set(specs) == {"a-test", "b-test"}
-    assert targets == {"a-test": ("a", "test"), "b-test": ("b", "test")}
+    assert set(specs) == {"a-0-test", "b-test", "a-1-test"}
+    assert targets == {"a-0-test": ("a-0", "test"), "b-test": ("b", "test"), "a-1-test": ("a-1", "test")}
     add_policy(tmp_path, "c", commands={"a-test": command})
     with pytest.raises(ValueError, match="collision"):
         PolicyRegistry(tmp_path).propose_chain(["a", "c"])
@@ -120,3 +120,53 @@ def test_cached_default_does_not_overwrite_replaced_destination(tmp_path):
     with pytest.raises(ValueError, match='occupied|directory'):
         registry.save_chain(['a'])
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("sources,expected", [(["a"],["a"]), (["a","a"],["a-0","a-1"]), (["a","b","a","b","a"],["a-0","b-0","a-1","b-1","a-2"])])
+def test_instance_names_follow_each_source_occurrence(sources, expected):
+    from robot_control.chain_config import chain_instance_ids
+    assert chain_instance_ids(sources) == expected
+
+
+def test_instance_name_collision_is_rejected(tmp_path):
+    for name in ("a", "a-0"): add_policy(tmp_path, name)
+    with pytest.raises(ValueError, match="collision"):
+        PolicyRegistry(tmp_path).propose_chain(["a", "a", "a-0"])
+
+
+def test_instance_reload_and_save_preserve_siblings_and_source_identity(tmp_path):
+    from dataclasses import replace
+    add_policy(tmp_path, "a")
+    add_chain(tmp_path, ["a", "a"])
+    registry = PolicyRegistry(tmp_path)
+    original = registry.get("default_chain")
+    changed = copy.deepcopy(original.members[0])
+    changed.config["params"]["value"] = 9
+    changed.version += 1
+    proposed = registry.resolve_chain(replace(original, version=original.version+1), {"a-0": changed})
+    registry.install(proposed)
+    assert [m.config["params"]["value"] for m in registry.get("default_chain").members] == [9,1]
+    assert registry.get("a").config["params"]["value"] == 1
+    assert proposed.members[0].runtime_config["id"] == "a-0"
+    with pytest.raises(ValueError, match="a-0.*a-1"):
+        registry.resolve_member(proposed, "a")
+    registry.save_record(registry.resolve_member(proposed, "a-0"))
+    saved = read_config(tmp_path / "a/policy.yaml")
+    assert saved["id"] == "a" and saved["params"]["value"] == 9
+    assert not (tmp_path / "a-0").exists()
+    assert [m.config["params"]["value"] for m in registry.get("default_chain").members] == [9,1]
+    assert [m.config["params"]["value"] for m in registry.snapshot("default_chain").members] == [9,9]
+
+
+def test_reapply_reads_current_source_defaults_after_cached_source_and_switch(tmp_path):
+    original = add_policy(tmp_path, 'a')
+    add_chain(tmp_path, ['a', 'a'])
+    registry = PolicyRegistry(tmp_path)
+    assert registry.get('a').config['params']['value'] == 1
+    original['params']['value'] = 9
+    (tmp_path / 'a/policy.yaml').write_text(json.dumps(original))
+    switched = registry.snapshot('default_chain')
+    registry.install(switched)
+    assert [m.config['params']['value'] for m in switched.members] == [9, 9]
+    reapplied = registry.propose_chain(['a', 'a'])
+    assert [m.config['params']['value'] for m in reapplied.members] == [9, 9]

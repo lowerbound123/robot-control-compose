@@ -40,7 +40,7 @@ from rc_policy_sdk.control import control_requests
 
 
 HELP = "\n".join([
-    "set rc.path <JSON> / set policy.path <JSON>；show rc|policy；save-config rc / save-config policy [policy-id]",
+    "set rc.path <JSON> / set policy.path <JSON>；show rc|policy；save-config rc / save-config policy [instance-id] / save-config <instance-id>",
     "reset/r；save <名称>；load <名称或路径>；pause；resume",
     "policies；switch <id> [--reset]；status；help；exit/quit",
     "take：MCP 接管并暂停推理；return：交还并恢复 policy（接管时 resume 同义）",
@@ -298,6 +298,16 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                     self._commands.put(custom)
                     self._wake.set()
                     return identity
+            try:
+                save_request = self._policy_save_request(identity, command, words, origin)
+            except Exception as exc:
+                self.operations.update(identity, 'failed', error=exc)
+                self._emit(f'保存失败：{exc}', 'error')
+                return identity
+            if save_request is not None:
+                self._commands.put(save_request)
+                self._wake.set()
+                return identity
             if command in {"exit", "quit"}:
                 if self._shutdown_deadline is None:
                     self._shutdown_deadline = time.monotonic() + self.config.get("timeouts", {}).get("shutdown_s", 115)
@@ -365,6 +375,9 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 return
             self.operations.update(identity, "running")
             self._dispatch_id = identity
+            if request.save_target is not None:
+                self._dispatch_policy_save(request)
+                return
             if self._dispatch_global(request):
                 return
             if request.chain_action is not None:
@@ -591,7 +604,13 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
         if kind in ('chain_open', 'chain_save'):
             return self._run_chain_editor_job(job)
         if kind == 'save_member':
-            return {'saved_path': str(self.registry.save(job['identity']))}
+            target = job['save_target']
+            with self._lock:
+                if cancel.is_set() or not self._save_target_current(target):
+                    raise RuntimeError('policy instance/configuration changed before save')
+            path = (self.registry.save_record(target.record) if target.record is not None
+                    else self.registry.save(target.identity))
+            return {'saved_path': str(path)}
         if kind == "connect":
             if self.runtime:
                 from .runtime_manager import BlockedCleanup, BlockedInfrastructure
@@ -705,7 +724,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             init_timeout_s=timeouts.get("initialize_s", 600),
             inference_timeout_s=timeouts.get("inference_s", 60),
             release_timeout_s=timeouts.get("release_s", 30),
-            on_log=lambda message: self._emit(f"[{record.config['id']}] {message}"),
+            on_log=self._emit if record.is_chain else lambda message: self._emit(f"[{record.config['id']}] {message}"),
         )
         handles = []
         worker = None
@@ -760,7 +779,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
                 raise BlockedCleanup(str(cleanup_error)) from cleanup_error
             raise
         return {"worker": worker, "identity": record.config["id"], "config": record.config,
-                "record": record, "commit": job.get("commit", False), 'member_commit': job.get('member_commit')}
+                "record": record, "commit": job.get("commit", False)}
 
     def _clear_finished_lease(self):
         with self._owned_lock:
@@ -986,7 +1005,7 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
             source_info = {'policy_id': self._identity}
             if record.is_chain:
                 member, cell = control['source']['policy_id'], control['source']['cell']
-                if cell > len(record.config['policies']) or record.config['policies'][cell - 1] != member:
+                if cell > len(record.members) or record.members[cell - 1].instance_id != member:
                     raise ValueError('control_requests source does not match the active chain')
                 source = f'{self._identity} cell {cell} ({member})'
                 source_info = dict(control['source'])
@@ -1306,8 +1325,6 @@ class RobotController(PolicyCommandSupport, ChainManagement, PolicyResultSupport
         elif command == "show" and args in [["rc"], ["policy"]]:
             config = self.config if args[0] == "rc" else self.registry.get(self._identity).config
             self._emit(json.dumps(public_value(config), ensure_ascii=False, indent=2))
-        elif command == 'save-config' and len(args) == 2 and args[0] == 'policy':
-            self._operation_start('save_member', identity=args[1])
         elif command == "save-config" and args in [["rc"], ["policy"]]:
             if args[0] == "rc":
                 save_yaml_config(self.config_path, self.config)

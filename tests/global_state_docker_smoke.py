@@ -20,25 +20,26 @@ import sys,time
 def initialize(config,*,runtime):
     g=runtime.globals
     assert g['baseline']==17
-    key=config['id']+'_initialized'
+    # This fixture maps its known instance names to identifier-only global keys.
+    key=config['id'].replace('-','_')+'_initialized'
     g[key]=g.get(key,0)+1
-    return {'g':g,'id':config['id']}
+    return {'g':g,'id':config['id'],'key':config['id'].replace('-','_')}
 def policy(context,state,action_chunk,images,config,*,runtime):
     assert images and all(not x.flags.writeable for x in images.values())
-    key=context['id']+'_inferences'
+    key=context['key']+'_inferences'
     runtime.globals[key]=runtime.globals.get(key,0)+1
     return action_chunk if len(action_chunk) else [state['qpos']]
-def reset_context(context): context['g'][context['id']+'_reset']=True
+def reset_context(context): context['g'][context['key']+'_reset']=True
 def release(context):
     if context:
         time.sleep(1.2)
-        key=context['id']+'_released'
+        key=context['key']+'_released'
         context['g'][key]=context['g'].get(key,0)+1
 def info(context):
     version,data=context['g'].snapshot()
     return {'python':list(sys.version_info[:2]),'version':version,'data':data}
 def write(context):
-    context['g'][context['id']+'_message']={'text':'跨容器 hello','ok':True}
+    context['g'][context['key']+'_message']={'text':'跨容器 hello','ok':True}
     return context['g'].snapshot()[0]
 '''
 
@@ -78,20 +79,24 @@ def container():
         wait(lambda: controller.status()['state'] in ('paused', 'fault'))
         assert controller.status()['state'] == 'paused', controller.read_events()
         members = controller._worker.monitor_members()
-        assert len(members) == 2
-        assert command('policy a info')['python'] == [3, 14]
+        assert list(members) == ['a-0', 'b', 'a-1']
+        assert len({worker.host.instance_id for worker in members.values()}) == 3
+        assert command('policy a-0 info')['python'] == [3, 14]
+        assert command('policy a-1 info')['python'] == [3, 14]
         assert command('policy b info')['python'] == [3, 11]
-        assert controller.globals['a_initialized'] == controller.globals['b_initialized'] == 1
+        assert all(controller.globals[name+'_initialized'] == 1 for name in ('a_0', 'b', 'a_1'))
         command('set global.rc_message "hello world"')
-        command('policy a write')
+        command('policy a-0 write')
         data = command('policy b info')['data']
-        assert data['rc_message'] == 'hello world' and data['a_message']['ok']
+        assert data['rc_message'] == 'hello world' and data['a_0_message']['ok']
+        assert command('policy a-1 info')['data']['a_0_message']['text'] == '跨容器 hello'
         command('policy b write')
-        assert command('policy a info')['data']['b_message']['text'] == '跨容器 hello'
-        outcomes.append('source 3.10 RC / 3.14 A / 3.11 B: initialize, command, readonly snapshots mutually visible')
+        assert command('policy a-0 info')['data']['b_message']['text'] == '跨容器 hello'
+        outcomes.append('source 3.10 RC / 3.14 a-0,a-1 / 3.11 b: three independent initializations and mutually visible globals')
         command('resume')
-        wait(lambda: controller.globals.get('b_inferences', 0) > 0)
+        wait(lambda: all(controller.globals.get(name+'_inferences', 0) > 0 for name in ('a_0', 'b', 'a_1')))
         command('pause')
+        assert all(controller.globals[name+'_reset'] for name in ('a_0', 'b', 'a_1'))
         command('set global.removed null')
         command('unset global.removed')
         assert 'removed' not in controller.globals
@@ -99,9 +104,9 @@ def container():
         command('switch pair')
         members = controller._worker.monitor_members()
         assert all(worker.endpoint.container_id != old[key] for key, worker in members.items())
-        assert controller.globals['a_initialized'] == controller.globals['b_initialized'] == 2
-        assert controller.globals['a_released'] == controller.globals['b_released'] == 1
-        outcomes.append('A/B/A only two instances; inference/normal reset; cold replacement preserves state and slow release commits')
+        assert all(controller.globals[name+'_initialized'] == 2 for name in ('a_0', 'b', 'a_1'))
+        assert all(controller.globals[name+'_released'] == 1 for name in ('a_0', 'b', 'a_1'))
+        outcomes.append('a-0/b/a-1 separate inference/reset/release; three cold replacements preserve shared globals and slow release commits')
         service = MCPService(controller, {'port': 0}, allow_ephemeral=True)
         try:
             service.start()
@@ -118,7 +123,7 @@ def container():
         assert controller.done.wait(35), controller.read_events()
     assert controller.exit_code == 0, controller.read_events()
     saved = read_state(root / 'configs/global.env', 1048576)
-    assert saved['a_released'] == saved['b_released'] == 2
+    assert all(saved[name+'_released'] == 2 for name in ('a_0', 'b', 'a_1'))
     assert saved['mcp'] and saved['baseline'] == 17
     outcomes.append('MCP read-only/take; exit file contains all successful writes including final slow release')
     controller = RobotController(config)
@@ -126,7 +131,7 @@ def container():
         controller.start()
         try:
             wait(lambda: controller.status()['state'] in ('paused', 'fault'))
-            assert controller.globals['a_initialized'] == controller.globals['b_initialized'] == 3
+            assert all(controller.globals[name+'_initialized'] == 3 for name in ('a_0', 'b', 'a_1'))
             assert controller.globals['mcp']
             os.kill(os.getpid(), signal.SIGTERM)
             assert controller.done.wait(35)
@@ -136,7 +141,7 @@ def container():
                 assert controller.done.wait(35)
     assert controller.exit_code == 0, controller.read_events()
     saved = read_state(root / 'configs/global.env', 1048576)
-    assert saved['a_released'] == saved['b_released'] == 3
+    assert all(saved[name+'_released'] == 3 for name in ('a_0', 'b', 'a_1'))
     assert not list((root / 'outputs/runtime').glob('global-*.json'))
     outcomes.append('new RC loads persisted dict; real SIGTERM saves final release; resource journals reclaimed')
     report = dict(outcomes=outcomes, exit_code=0, rc_python=list(sys.version_info[:2]), sources=source_report())

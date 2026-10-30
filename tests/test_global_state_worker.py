@@ -99,8 +99,8 @@ def test_native_chain_duplicate_members_share_one_store(tmp_path):
                           process_factory=LocalPolicyProcess, global_state=service)
     try:
         worker.start()
-        assert len(worker.monitor_members()) == 2
-        assert service.proxy['initialized'] == 2
+        assert len(worker.monitor_members()) == 3
+        assert service.proxy['initialized'] == 3
         assert not worker.close()
         assert service.proxy['released']
     finally:

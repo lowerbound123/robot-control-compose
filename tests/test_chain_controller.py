@@ -25,6 +25,7 @@ def reset_context(context): context['calls'] = 0
 def release(context): pass
 def test(context): return context['config']['id']
 def change(context, value): return {'params.value':value}
+def monitor(context): return {'id':context['config']['id'], 'value':context['config']['params']['value']}
 '''
 
 
@@ -73,7 +74,7 @@ def native_controller(tmp_path):
 
 def test_native_chain_start_edit_save_apply_and_invalid_draft(native_controller):
     controller, children, root = native_controller
-    assert len(children) == 2
+    assert len(children) == 3
     operation(controller, controller.submit('resume'))
     until(lambda: controller.status()['consumed'] >= 2)
     opened = operation(controller, controller.manage_policy('open'))['result']
@@ -91,7 +92,7 @@ def test_native_chain_start_edit_save_apply_and_invalid_draft(native_controller)
     operation(controller, controller.manage_policy('apply', ['b','a'], token=token))
     assert controller.status()['state'] == 'paused'
     assert controller._worker is not worker and not worker.alive
-    assert len(children) == 4
+    assert len(children) == 5
     assert controller.registry.get('default_chain').config['policies'] == ['b','a']
 
 
@@ -109,16 +110,37 @@ def test_disconnect_can_still_shutdown_controller_and_confirm_reader_exit(native
 
 def test_chain_commands_and_member_reload_and_explicit_save(native_controller):
     controller, children, root = native_controller
-    for name, expected in [('a-test','a'), ('b-test','b')]:
+    for name, expected in [('a-0-test','a-0'), ('b-test','b'), ('policy a-1 test', 'a-1')]:
         assert operation(controller, controller.submit(name))['result'] == expected
+    for command in ('a-test', 'policy a test', 'test'):
+        operation(controller, controller.submit(command), 'failed')
+    help_text = controller.local_help()
+    assert 'policy a-0 test' in help_text and 'policy a-1 test' in help_text
+    assert 'policy a test' not in help_text
+    assert '[running]' in controller.local_help('a-0')
     old = controller._worker
-    operation(controller, controller.submit('a-change 9'))
+    old_versions = [member.version for member in old.record.members]
+    operation(controller, controller.submit('a-0-change 9'))
     assert controller.status()['state'] == 'paused'
-    assert not old.alive and len(children) == 4
-    assert controller.registry.get('a').config['params']['value'] == 9
-    assert controller.registry.get('b').config['params']['value'] == 1
-    operation(controller, controller.submit('save-config policy a'))
-    assert read_config(root / 'policy/a/policy.yaml')['params']['value'] == 9
+    assert not old.alive and len(children) == 6
+    record = controller._worker.record
+    assert [member.config['params']['value'] for member in record.members] == [9, 1, 1]
+    assert [member.version for member in record.members] == [old_versions[0]+1, *old_versions[1:]]
+    assert controller.registry.get('a').config['params']['value'] == 1
+    path = root / 'policy/a/policy.yaml'
+    before = path.read_bytes()
+    for command in ('save-config a', 'save-config policy a'):
+        result = operation(controller, controller.submit(command), 'failed')
+        assert 'a-0' in result['error'] and 'a-1' in result['error']
+        assert path.read_bytes() == before
+    operation(controller, controller.submit('save-config a-0'))
+    assert read_config(path)['params']['value'] == 9
+    assert read_config(path)['id'] == 'a'
+    assert not (root / 'policy/a-0').exists()
+    assert [member.config['params']['value'] for member in controller.registry.get('default_chain').members] == [9, 1, 1]
+    operation(controller, controller.submit('save-config policy a-1'))
+    assert read_config(path)['params']['value'] == 1
+    assert controller.registry.get('a').config['params']['value'] == 1
     operation(controller, controller.submit('set policy.params.value 10'), 'failed')
 
 
@@ -138,6 +160,7 @@ def test_chain_uses_head_execution_and_saved_draft_survives_restart(native_contr
     changed = copy.deepcopy(original.config)
     changed['execution'].update(mode='sync', call_every_actions=4)
     controller.registry.commit('a', changed)
+    controller.registry.save('a')
     token = operation(controller, controller.manage_policy('open'))['result']['token']
     operation(controller, controller.manage_policy('apply', ['a','b'], token=token))
     assert controller.registry.get('default_chain').execution['mode'] == 'sync'
@@ -158,6 +181,7 @@ def test_controller_schedules_and_clips_once_per_whole_chain(native_controller, 
         config['params']['delay'] = .035
         config['execution'].update(mode=mode, call_every_actions=3)
         controller.registry.commit(identity, config)
+        controller.registry.save(identity)
     token = operation(controller, controller.manage_policy('open'))['result']['token']
     operation(controller, controller.manage_policy('apply', ['a','b','a'], token=token))
     accepted = []
@@ -207,3 +231,50 @@ def test_cold_set_of_single_policy_invalidates_open_editor(native_controller):
     operation(controller, controller.submit('set policy.params.value 2'))
     with pytest.raises(RuntimeError, match='stale'):
         controller.manage_policy('apply', ['b'], token=token)
+
+
+def test_repeated_instance_monitors_are_independent_and_reset_on_reload(native_controller, monkeypatch):
+    import threading
+    controller, _, _ = native_controller
+    hub = controller.policy_monitors
+    assert hub.available() == ['a-0', 'b', 'a-1']
+    hub.set_enabled('a-0', True)
+    hub.set_enabled('a-1', True)
+    until(lambda: all(row['values'] for row in hub.snapshot().values()))
+    initial = hub.snapshot()
+    assert initial['a-0']['values'] == {'id': 'a-0', 'value': 1}
+    assert initial['a-1']['values'] == {'id': 'a-1', 'value': 1}
+    with pytest.raises(ValueError, match='a-0.*a-1'):
+        hub.set_enabled('a', True)
+    with pytest.raises(ValueError, match='a-0.*a-1'):
+        hub.set_enabled('a', False)
+    old_workers = controller._worker.monitor_members()
+    entered, release = threading.Event(), threading.Event()
+    original = controller.process_factory
+    def delayed_factory(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(controller, 'process_factory', delayed_factory)
+    receipt = controller.submit('a-0-change 9')
+    try:
+        assert entered.wait(5)
+        assert all(row['values'] is None for row in hub.snapshot().values())
+    finally:
+        release.set()
+    operation(controller, receipt)
+    until(lambda: all(row['values'] for row in hub.snapshot().values()))
+    updated = hub.snapshot()
+    assert updated['a-0']['values'] == {'id': 'a-0', 'value': 9}
+    assert updated['a-1']['values'] == {'id': 'a-1', 'value': 1}
+    assert all(controller._worker.monitor_members()[identity] is not worker for identity, worker in old_workers.items())
+    hub.set_enabled('a-0', False)
+    assert list(hub.snapshot()) == ['a-1']
+
+
+def test_chain_ready_logs_are_attributed_to_individual_instances(native_controller):
+    from robot_control.log_format import event_metadata
+    controller, _, _ = native_controller
+    sources = {event_metadata(event)[2] for event in controller.read_events()['events']
+               if 'policy ready host=' in event['message']}
+    assert sources == {'policy:a-0', 'policy:b', 'policy:a-1'}

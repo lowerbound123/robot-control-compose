@@ -97,12 +97,12 @@ def test_unconfirmed_cleanup_blocks_new_group_and_keeps_mcp_owner(runtime_contro
     controller.runtime.stop_and_remove=original
 
 
-def test_chain_intersection_is_destroyed_and_duplicate_member_uses_one_container(runtime_controller):
+def test_chain_intersection_is_destroyed_and_each_occurrence_has_a_container(runtime_controller):
     controller,engine,root=ready(runtime_controller)
     directory=root/'policy/default_chain';directory.mkdir()
     path=directory/'policy.yaml';path.write_text(json.dumps(dict(schema_version=3,kind='chain',policies=['first','second','first'])))
     operation(controller,'switch default_chain')
-    assert len(engine.containers)==2
+    assert len(engine.containers)==3
     old_ids=set(engine.containers)
     operation(controller,'switch default_chain')
     assert not old_ids & set(engine.containers)

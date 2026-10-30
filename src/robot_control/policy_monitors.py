@@ -32,6 +32,11 @@ class PolicyMonitors:
 
     def set_enabled(self, identity, desired):
         members, _ = self.source()
+        if identity not in members:
+            candidates = [name for name, member in members.items()
+                          if getattr(getattr(member, 'policy_dir', None), 'name', None) == identity]
+            if len(candidates) > 1:
+                raise ValueError(f'ambiguous policy {identity}; choose ' + ', '.join(candidates))
         with self.lock:
             enabled = identity in self.entries
             desired = not enabled if desired is None else desired

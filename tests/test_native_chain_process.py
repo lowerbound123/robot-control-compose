@@ -101,20 +101,22 @@ def rows(path):
 
 
 @pytest.mark.parametrize('mode', ['qpos', 'epos', 'mixed'])
-def test_real_chain_reuses_workers_and_maps_versions_and_commands(setup_chain, frames, mode):
+def test_real_chain_isolates_workers_and_maps_versions_and_commands(setup_chain, frames, mode):
     worker, children, events = setup_chain(mode=mode)
     if mode == 'mixed': frames['action_chunk'] = {'actions':[], 'modes':[]}
     try:
         worker.start()
-        assert len(children) == 2
-        assert [child.config['id'] for child in children] == ['a', 'b']
+        assert len(children) == 3
+        assert [child.config['id'] for child in children] == ['a-0', 'b', 'a-1']
+        assert len({child.pid for child in children}) == 3
+        assert len({child.host.instance_id for child in children}) == 3
         worker.submit(frames)
         result = wait_for(worker.poll)
         assert result['type'] == 'result', result
-        assert result['actions'] == [[12.]*14]
+        assert result['actions'] == [[11.]*14]
         assert result['config_version'] == 1 and result['generation'] == 2
-        assert [item[0] for item in rows(events) if item[1] == 'policy'] == ['a','b','a']
-        for name, expected in [('a-test',['a',2]), ('b-test',['b',1])]:
+        assert [item[0] for item in rows(events) if item[1] == 'policy'] == ['a-0','b','a-1']
+        for name, expected in [('a-0-test',['a-0',1]), ('b-test',['b',1]), ('a-1-test',['a-1',1])]:
             worker.submit_command(name, name, [])
             message = wait_for(worker.poll_command)
             if message['type'] == 'command_started': message = wait_for(worker.poll_command)
@@ -124,11 +126,11 @@ def test_real_chain_reuses_workers_and_maps_versions_and_commands(setup_chain, f
         assert wait_for(worker.poll_observation)['type'] == 'observed'
         worker.reset_context()
         worker.submit({**frames, 'request_id':2})
-        assert wait_for(worker.poll)['actions'] == [[12.]*14]
+        assert wait_for(worker.poll)['actions'] == [[11.]*14]
     finally:
         worker.close()
-    assert sorted(item[0] for item in rows(events) if item[1] == 'release') == ['a','b']
-    assert sorted(item[0] for item in rows(events) if item[1] == 'observe') == ['a','b']
+    assert sorted(item[0] for item in rows(events) if item[1] == 'release') == ['a-0','a-1','b']
+    assert sorted(item[0] for item in rows(events) if item[1] == 'observe') == ['a-0','a-1','b']
     assert not worker.alive
     worker.close()
 
@@ -138,13 +140,13 @@ def test_pause_finishes_current_reader_without_starting_next_stage(setup_chain, 
     try:
         worker.start()
         worker.submit(frames)
-        wait_for(lambda: ['a','policy'] in rows(events))
+        wait_for(lambda: ['a-0','policy'] in rows(events))
         worker.cancel_inference()
         assert wait_for(worker.poll)['type'] == 'cancelled'
         assert ['b','policy'] not in rows(events)
         worker.reset_context()
         worker.submit({**frames,'request_id':2})
-        assert wait_for(worker.poll)['actions'] == [[12.]*14]
+        assert wait_for(worker.poll)['actions'] == [[11.]*14]
     finally:
         worker.close()
 
@@ -163,7 +165,7 @@ def test_whole_chain_deadline_and_stage_failure_short_circuit(setup_chain, frame
         assert 'timeout' in result['error'] if failure == 'timeout' else 'model failed' in result['error']
     finally:
         worker.close()
-    assert rows(events).count(['a','policy']) == 1
+    assert rows(events).count(['a-0','policy']) == 1
 
 
 def test_partial_initialization_failure_closes_all_workers(setup_chain):
@@ -172,14 +174,14 @@ def test_partial_initialization_failure_closes_all_workers(setup_chain):
         worker.start()
     worker.close()
     assert not any(child.alive for child in children)
-    assert rows(events).count(['a','release']) == 1
+    assert rows(events).count(['a-0','release']) == 1
 
 
 def test_command_timeout_is_fatal_for_aggregate(setup_chain):
     worker, _, _ = setup_chain()
     try:
         worker.start()
-        worker.submit_command('sleep', 'a-delay', [.3])
+        worker.submit_command('sleep', 'a-0-delay', [.3])
         message = wait_for(worker.poll_command)
         if message['type'] == 'command_started': message = wait_for(worker.poll_command)
         assert message['type'] == 'command_timeout'
@@ -201,7 +203,7 @@ def observe(context, state, images, config, *, runtime):
             assert int(images['head'][0,0,0]) == 0
             time.sleep(.005)
     event(config, 'observe-done')
-    if config['id'] == 'a': raise ValueError('observer failed')
+    if config['id'] == 'a-0': raise ValueError('observer failed')
 '''.replace('GATE', repr(str(gate)))
     for member in worker.record.members:
         (member.directory / 'main.py').write_text(SOURCE + observer)
@@ -210,7 +212,7 @@ def observe(context, state, images, config, *, runtime):
         worker.start()
         wait_for(lambda: worker.supports_observe)
         assert worker.observe(frames)
-        wait_for(lambda: ['a','observe-done'] in rows(events) and ['b','observe-start'] in rows(events))
+        wait_for(lambda: ['a-0','observe-done'] in rows(events) and ['b','observe-start'] in rows(events))
         assert worker.poll_observation() is None, 'failed A cannot acknowledge live B image reader'
         gate.touch()
         response = wait_for(worker.poll_observation)
@@ -249,9 +251,9 @@ def release(context): pass
         worker.submit(frames)
         assert wait_for(worker.poll)['type'] == 'result'
         registered = [msg['remote_id'] for msg in messages if msg['method'] == 'register']
-        assert len(set(registered)) == 2
-        assert [msg['remote_id'] for msg in messages if msg['method'] == 'retain'] == [registered[0],registered[1],registered[0]]
-        assert [msg['remote_id'] for msg in messages if msg['method'] == 'released'] == [registered[0],registered[1],registered[0]]
+        assert len(set(registered)) == 3
+        assert [msg['remote_id'] for msg in messages if msg['method'] == 'retain'] == [registered[0],registered[1],registered[2]]
+        assert [msg['remote_id'] for msg in messages if msg['method'] == 'released'] == [registered[0],registered[1],registered[2]]
     finally:
         worker.close()
 

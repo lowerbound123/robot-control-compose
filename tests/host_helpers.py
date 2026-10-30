@@ -13,20 +13,22 @@ class LocalPolicyProcess(RemotePolicyProcess):
     def __init__(self, directory, config, version=1, *, python_command=None, **kwargs):
         identity = config.setdefault('id', 'test-policy')
         host_id = identity
+        source_id = Path(directory).name
+        host_key = (host_id, source_id)
         config.setdefault('schema_version', 3)
         execution = config.setdefault('execution', {})
         for key,value in dict(mode='sync',call_every_actions=1,control_mode='qpos').items():
             execution.setdefault(key,value)
         config.setdefault('params', {})
-        if host_id not in _hosts:
+        if host_key not in _hosts:
             temporary = tempfile.TemporaryDirectory(prefix='rcp-', dir='/tmp')
-            _hosts[host_id] = (temporary, None)
-        temporary, host = _hosts[host_id]
-        destination = Path(temporary.name) / identity
+            _hosts[host_key] = (temporary, None)
+        temporary, host = _hosts[host_key]
+        destination = Path(temporary.name) / source_id
         shutil.copytree(directory, destination, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
         if host is None:
-            host = Host(temporary.name, host_id)
-            _hosts[host_id] = (temporary, host)
+            host = Host(temporary.name, host_id, source_policy_id=source_id)
+            _hosts[host_key] = (temporary, host)
         kwargs.pop('endpoint', None)
         kwargs.pop('exit_authority', None)
         super().__init__(directory, config, version, host_socket=host.socket, **kwargs)

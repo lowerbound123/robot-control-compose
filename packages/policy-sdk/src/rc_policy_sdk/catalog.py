@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,47}')
+INSTANCE_IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
 
 
 def policy_id(value):
@@ -16,8 +17,23 @@ def policy_id(value):
     return value
 
 
+def instance_id(value):
+    if not isinstance(value, str) or not INSTANCE_IDENTITY.fullmatch(value):
+        raise ValueError('instance ID must match [a-z0-9][a-z0-9_-]{0,63}')
+    return value
+
+
 def socket_path(identity):
-    return f'/run/robot-control/{policy_id(identity)}.sock'
+    return f'/run/robot-control/{instance_id(identity)}.sock'
+
+
+def validate_runtime_policy(config, source_id, runtime_id):
+    """Validate a fixed host/source mapping without changing the live config."""
+    policy_id(source_id)
+    instance_id(runtime_id)
+    if not isinstance(config, dict) or config.get('id') != runtime_id:
+        raise ValueError('policy config ID differs from assigned runtime instance')
+    validate_policy({**config, 'id': source_id}, source_id)
 
 
 def validate_policy(config, identity=None):

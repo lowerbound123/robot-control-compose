@@ -7,6 +7,8 @@ from textual.widget import Widget
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+from .chain_config import chain_instance_ids
+
 
 class PolicyManagerAction(Message):
     def __init__(self, action):
@@ -87,11 +89,14 @@ class PolicyManagerPanel(Widget):
         left = self.query_one('#chain-cells', OptionList)
         if selected is None: selected = left.highlighted or 0
         left.clear_options()
-        seen = set()
-        for index, identity in enumerate(self.policies):
-            suffix = ' ↪ 共享实例' if identity in seen else ''
-            left.add_option(Option(Text(f'{index + 1:02}  {identity}{suffix}')))
-            seen.add(identity)
+        try:
+            identities = chain_instance_ids(self.policies) if self.policies else []
+        except ValueError as exc:
+            # A saved invalid draft must remain editable so the user can repair it.
+            identities = self.policies
+            self.error = str(exc)
+        for index, identity in enumerate(identities):
+            left.add_option(Option(Text(f'{index + 1:02}  {identity}')))
         if not self.policies:
             left.add_option(Option('空草稿：按 u/d 新增', disabled=True))
         left.highlighted = min(selected, max(0, len(self.policies) - 1))
@@ -102,7 +107,7 @@ class PolicyManagerPanel(Widget):
         text = message or self.error or ' · '.join([
             '未应用' if self.policies != self.applied else '已应用',
             '未保存' if self.policies != self.saved else '已保存',
-            '顺序重复项共享 worker/context',
+            '每个环节独立容器和 context',
         ])
         self.query_one('#chain-note', Static).update(Text(text))
 
@@ -122,6 +127,11 @@ class PolicyManagerPanel(Widget):
             candidate = self._candidate(row['id'])
             if not reason and len({modes.get(identity) for identity in candidate}) > 1:
                 reason = 'control_mode 不兼容'
+            if not reason:
+                try:
+                    chain_instance_ids(candidate)
+                except ValueError as exc:
+                    reason = str(exc)
             label = f"{row['id']}  [{row.get('state', '?')} / {row.get('control_mode', '?')}]"
             if reason: label += f' — {reason}'
             right.add_option(Option(Text(label), disabled=bool(reason)))

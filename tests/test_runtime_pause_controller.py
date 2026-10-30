@@ -152,7 +152,7 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     context['calls'] += 1
     with open({str(events)!r}, 'a') as stream:
         stream.write(json.dumps([config['id'], context['calls']]) + '\\n')
-    if config['id'] == 'a' and context['calls'] == 1:
+    if config['id'] == 'a-0' and context['calls'] == 1:
         runtime.pause('native complete')
     if config['id'] == 'b':
         while not Path({str(gate)!r}).exists():
@@ -170,6 +170,7 @@ def change(context, value): return {{'params.value': value}}
         config = copy.deepcopy(controller.registry.get(identity).config)
         config['execution']['mode'] = scheduling
         controller.registry.commit(identity, config)
+        controller.registry.save(identity)
     token = operation(controller, controller.manage_policy('open'))['result']['token']
     operation(controller, controller.manage_policy('apply', ['a', 'b', 'a'], token=token))
     worker = controller._worker
@@ -185,11 +186,11 @@ def change(context, value): return {{'params.value': value}}
             assert not lease._released
         gate.touch()
         until(lambda: controller.status()['state'] == 'paused')
-        assert events.read_text().splitlines() == ['["a", 1]', '["b", 1]', '["a", 2]']
+        assert events.read_text().splitlines() == ['["a-0", 1]', '["b", 1]', '["a-1", 1]']
         assert accepted == [] and controller.status()['consumed'] == 0
         assert lease._released
         assert controller._worker is worker and worker.alive
-        assert len([child for child in children if child.alive]) == 2
+        assert len([child for child in children if child.alive]) == 3
         assert any('native complete' in event['message'] and 'a' in event['message'] and 'cell 1' in event['message']
                    for event in controller.read_events()['events'])
     finally:

@@ -116,3 +116,16 @@ def test_unsupported_and_unknown_and_failure_only_in_panel():
     worker.finish(error="bad value")
     hub.tick()
     assert hub.snapshot()["A"]["error"] == "bad value"
+
+
+@pytest.mark.parametrize('desired', [None, True, False])
+def test_repeated_source_monitor_requires_an_explicit_instance(desired):
+    from pathlib import Path
+    first, second = Worker(lambda: 0), Worker(lambda: 0)
+    first.policy_dir = second.policy_dir = Path('/policies/a')
+    hub = PolicyMonitors(lambda: ({'a-0': first, 'a-1': second}, False), threaded=False)
+    with pytest.raises(ValueError, match='a-0.*a-1'):
+        hub.set_enabled('a', desired)
+    assert hub.snapshot() == {}
+    assert hub.set_enabled('a-0', True)
+    assert list(hub.snapshot()) == ['a-0']

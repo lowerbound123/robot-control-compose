@@ -145,8 +145,9 @@ def test_native_hold_example_chain_preserves_upstream_actions(tmp_path, frame_re
         assert result["images_released"] is True
         assert result["actions"] == [[0.25] * 14] * 50
         assert not result.get("control_requests")
-        assert len(worker.monitor_members()) == 2
-        worker.submit_command("count", "example-example", [])
-        assert command_result(worker)["result"]["calls"] == 2
+        assert len(worker.monitor_members()) == 3
+        for instance in ("example-0", "example-1"):
+            worker.submit_command(instance, instance + "-example", [])
+            assert command_result(worker)["result"]["calls"] == 1
     finally:
         assert not worker.close()

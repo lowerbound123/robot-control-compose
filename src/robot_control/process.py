@@ -20,8 +20,8 @@ from rc_policy_sdk.outbox import PriorityOutbox
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
                  init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None):
-        from rc_policy_sdk.catalog import policy_id
-        policy_id(config.get('id'))
+        from rc_policy_sdk.catalog import instance_id
+        instance_id(config.get('id'))
         self.endpoint = endpoint
         self.exit_authority = exit_authority
         self.expected_host = (dict(deployment_id=endpoint.deployment_id, run_id=endpoint.run_id,

@@ -20,7 +20,7 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     context['calls'] += 1
     with open({str(events)!r}, 'a') as stream:
         stream.write(json.dumps([config['id'], context['calls']]) + '\\n')
-    if config['id'] == 'a': runtime.finish('chain result', outcome='terminated')
+    if config['id'] == 'a-0': runtime.finish('chain result', outcome='terminated')
     if config['id'] == 'b':
         while not Path({str(gate)!r}).exists():
             assert not images['head'].flags.writeable
@@ -58,12 +58,12 @@ def change(context, value): return {{'params.value': value}}
                 assert 'later stage failed' in controller.get_policy_result(identity)['reason']
         else:
             until(lambda: controller.status()['state'] == 'paused')
-            assert [json.loads(line) for line in events.read_text().splitlines()] == [['a', 1], ['b', 1], ['a', 2]]
-            assert len([child for child in children if child.alive]) == 2
+            assert [json.loads(line) for line in events.read_text().splitlines()] == [['a-0', 1], ['b', 1], ['a-1', 1]]
+            assert len([child for child in children if child.alive]) == 3
             if waiting:
                 result = controller.get_policy_result(identity)
                 assert result['status'] == 'succeeded'
-                assert result['result']['source'] == {'policy_id': 'a', 'cell': 1}
+                assert result['result']['source'] == {'policy_id': 'a-0', 'cell': 1}
         until(lambda: lease._released)
         assert controller.status()['consumed'] == 0
         assert controller.status()['queue_remaining'] == 0

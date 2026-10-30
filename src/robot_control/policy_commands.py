@@ -1,8 +1,9 @@
 """Local policy command routing; called under the controller lock."""
+import copy
 import json
 
 from rc_policy_sdk.commands import command_usage, parse_command
-from .operations import ControlRequest
+from .operations import ControlRequest, PolicySaveTarget
 from .config import PolicyRecord, changed_config, dotted_get
 
 
@@ -32,6 +33,12 @@ class PolicyCommandSupport:
                 continue
             config = read_descriptor(row['directory'])['config']
             result[row['id']] = command_specs(config)
+        record = getattr(self._worker, 'record', None)
+        if record is not None and record.is_chain:
+            for member in record.members:
+                result.pop(member.source_id, None)
+            for member in record.members:
+                result[member.instance_id] = command_specs(member.config)
         return result
 
     def local_help(self, name=None):
@@ -43,6 +50,9 @@ class PolicyCommandSupport:
                 return f"{command_usage(name, value)} — {value['help']} (timeout_s={value['timeout_s']})"
             catalog = self.declared_commands()
             if name is not None and name not in catalog:
+                record = getattr(self._worker, 'record', None)
+                if record is not None and record.is_chain:
+                    self.registry.resolve_member(record, name)
                 raise ValueError(f'unknown policy or active command: {name}')
             worker = self._worker
             active = (set(worker.monitor_members()) if hasattr(worker, 'monitor_members') else
@@ -68,6 +78,7 @@ class PolicyCommandSupport:
             if worker is None:
                 raise RuntimeError(f'{target}: not_running; switch first')
             if getattr(worker, 'record', None) is not None and worker.record.is_chain:
+                target = self.registry.resolve_member(worker.record, target).instance_id
                 key = f'{target}-{command}'
                 if worker.command_targets.get(key) != (target, command):
                     raise RuntimeError(f'{target}: not_running or unknown command')
@@ -114,12 +125,12 @@ class PolicyCommandSupport:
         try:
             if not isinstance(patch, dict) or not patch:
                 raise ValueError("reload_policy result must be a nonempty params leaf patch")
-            record = self.registry.get(self._identity)
+            record = getattr(request.policy_worker, 'record', None) or self.registry.get(self._identity)
             member_id = None
             target = record
             if record.is_chain:
                 member_id = request.policy_worker.command_targets[request.policy_name][0]
-                target = self.registry.get(member_id)
+                target = self.registry.resolve_member(record, member_id)
             config = target.config
             for path, value in patch.items():
                 if not isinstance(path, str) or not path.startswith("params."):
@@ -129,23 +140,55 @@ class PolicyCommandSupport:
                 config, hot = changed_config(config, path, value)
                 if hot:
                     raise ValueError(f"reload_policy requires cold params: {path}")
-            proposed = PolicyRecord(target.directory, config, target.version + 1)
-            extra = {}
+            proposed = PolicyRecord(target.directory, config, target.version + 1, instance_id=target.instance_id)
             if member_id is not None:
-                extra['member_commit'] = (member_id, config)
                 proposed = self.registry.resolve_chain(
-                    PolicyRecord(record.directory, record.config, record.version + 1), {member_id: proposed})
+                    PolicyRecord(record.directory, record.config, record.version + 1, record.members), {member_id: proposed})
             self._invalidate_policy_editor()
             # The command callback has finished. Transfer its receipt to the
             # existing cold lifecycle, whose prepare handshake invalidates all
             # cached actions before closing the old worker. Even equal patches
             # must run initialize again (the file at that path may have changed).
             self._operation_start("switch", record=proposed, old_worker=request.policy_worker,
-                                  reset=False, commit=True, version=proposed.version, public_id=identity, **extra)
+                                  reset=False, commit=True, version=proposed.version, public_id=identity)
             self.operations.update(identity, "running")
         except Exception as exc:
             self.operations.update(identity, "failed", error=exc)
             self._emit(f"policy command [{identity}] failed: {exc}", "error")
+
+    def _policy_save_request(self, operation_id, line, words, origin):
+        if not words or words[0] != 'save-config':
+            return None
+        if len(words) == 2 and words[1] not in ('rc', 'policy'):
+            identity = words[1]
+        elif len(words) == 3 and words[1] == 'policy':
+            identity = words[2]
+        else:
+            return None
+        worker = self._worker
+        record = getattr(worker, 'record', None)
+        target = None
+        if record is not None and record.is_chain:
+            if any(identity in (member.instance_id, member.source_id) for member in record.members):
+                target = self.registry.resolve_member(record, identity)
+        elif worker is not None and identity == self._identity:
+            target = self.registry.get(identity)
+        # Resolve inactive source files only on the lifecycle thread. Never
+        # reinterpret this captured name as an instance after a queued switch.
+        saved = PolicySaveTarget(identity) if target is None else PolicySaveTarget(
+            target.source_id, copy.deepcopy(target), worker, worker.config_version, self.buffer.generation)
+        return ControlRequest(operation_id, line, origin, self._control_epoch, save_target=saved)
+
+    def _save_target_current(self, target):
+        return (target.worker is None or (target.worker is self._worker
+                and target.worker.config_version == target.version
+                and self.buffer.generation == target.generation))
+
+    def _dispatch_policy_save(self, request):
+        if not self._save_target_current(request.save_target):
+            self.operations.update(request.operation_id, 'cancelled', error='policy instance/configuration changed before save')
+            return
+        self._operation_start('save_member', save_target=request.save_target)
 
     def _dispatch_policy_command(self, request):
         worker = request.policy_worker

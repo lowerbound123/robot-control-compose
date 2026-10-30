@@ -78,14 +78,39 @@ def run():
         assert all(abs(x)<1e-5 for x in controller.robot.read_state()['qpos'])
         outcomes.append('Python3.10 to 3.14; read-only shared images; same-ID cold recreate; no implicit reset')
         command(controller,'switch pair')
-        old=set(ids(controller));assert len(old)==2
+        old=set(ids(controller));assert len(old)==3
         members=controller._worker.monitor_members()
-        assert members['a'].host.instance_id!=members['b'].host.instance_id
-        images={i['Image'] for i in controller.runtime._inspect(list(old),time.monotonic()+10)}
+        assert list(members)==['a-0','b','a-1']
+        assert len({member.host.instance_id for member in members.values()})==3
+        assert len({member.host_socket for member in members.values()})==3
+        containers=controller.runtime._inspect(list(old),time.monotonic()+10)
+        network_names={name for container in containers for name in container['NetworkSettings']['Networks']}
+        assert len(network_names)==3
+        images={i['Image'] for i in containers}
         assert len(images)==1
+        for container in containers:
+            identity=container['Config']['Labels']['io.robot-control.policy']
+            project=container['Config']['Labels']['io.robot-control.project']
+            assert list(container['NetworkSettings']['Networks'])==[project+'_default']
+            source='a' if identity in ('a-0','a-1') else 'b'
+            mounts={mount['Destination']:mount for mount in container['Mounts']}
+            mounted=mounts['/workspace/policy/'+source]
+            assert mounted['Source'].endswith('/policy/'+source) and not mounted['RW']
+            info=command(controller,'policy '+identity+' info')
+            assert info['identity']==identity and info['source']=='/workspace/policy/'+source
+        command(controller,'policy a-0 mark 7')
+        assert command(controller,'a-0-info')['marker']==7
+        assert command(controller,'policy a-1 info')['marker']==0
+        command(controller,'policy a info','failed')
+        hub=controller.policy_monitors
+        hub.set_enabled('a-0',True);hub.set_enabled('a-1',True)
+        wait(lambda:all(hub.snapshot().get(name,{}).get('values') for name in ('a-0','a-1')))
+        assert hub.snapshot()['a-0']['values']=={'identity':'a-0','marker':7}
+        assert hub.snapshot()['a-1']['values']=={'identity':'a-1','marker':0}
+        consumed_before_chain=controller.buffer.consumed
         command(controller,'resume')
-        wait(lambda:controller.buffer.consumed>2)
-        assert command(controller,'policy a info')['frames']>0
+        wait(lambda:controller.buffer.consumed>=consumed_before_chain+3)
+        assert all(command(controller,'policy '+name+' info')['frames']>0 for name in members)
         command(controller,'info','failed')
         boundary=len(TRACE)
         command(controller,'switch next')
@@ -93,8 +118,8 @@ def run():
         events=TRACE[boundary:]
         removed=[i for i,e in enumerate(events) if e['command'][0]=='rm' and e['command'][-1] in old]
         created=[i for i,e in enumerate(events) if e['command'][0]=='compose' and 'create' in e['command']]
-        assert len(removed)==2 and max(removed)<min(created)
-        outcomes.append('chain a,b,a deduplicates; a,b to b,c destroys all old CIDs before create; explicit commands')
+        assert len(removed)==3 and max(removed)<min(created)
+        outcomes.append('chain a-0,b,a-1 has three independent hosts/contexts/sockets on one image and original source paths; distinct commands/monitors; all old CIDs removed before new create')
         (ROOT/'policy/b/compose.yaml').unlink()
         command(controller,'switch a')
         assert not new&set(ids(controller))

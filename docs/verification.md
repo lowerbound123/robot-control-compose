@@ -97,3 +97,16 @@ python3 tests/dynamic_docker_smoke.py
 ```
 
 Qwen 导入探针 `tests/qwen_image_probe.py` 必须使用与策略 Compose 相同的 SDK、实现包、vendor 和直接补丁挂载；它核对第三方版本、源码位置和当前源文件哈希，不要求本项目包的已安装发行元数据。Pi05 的 PYTHONPATH 不包含 Qwen vendor，使用镜像中锁定的官方 LeRobot。GPU 和真机测试仍需在目标设备另行执行。
+
+## 链按环节独立实例验收（2026-10-30）
+
+`[a,b,a]` 现展开为 `a-0,b,a-1`，每个环节独占容器、host、执行进程和 context；本节替代历史验收中的“重复成员复用”行为描述。
+
+- 完整主机套件：1003 passed，29 skipped；Python 3.11。另有 globals 超时断言跨版本兼容检查 5 passed。
+- 完整 Linux/ROS 套件：940 passed，31 skipped；ROS 2 Humble / Python 3.10。两套完整测试各有 13 条已有 Pillow 弃用警告。
+- 动态 Docker：10 组通过，覆盖三个独立容器/host/socket/网络、原源码路径与同镜像、独立 command/monitor、整组退出屏障、部分启动失败、恢复及强制清理。强制清理场景的公共 down 按预期返回 1，验收脚本返回 0。
+- 完成结果 Docker：4 组通过，覆盖实例来源、MCP 等待/取消和后续环节故障。
+- globals Docker：4 组通过，实际运行 Python 3.10 RC、Python 3.14 的两个独立 a 实例及 Python 3.11 b；共享状态、独立计数、重启及 SIGTERM 持久化正常。
+- 独立审查发现的重新应用链读取旧来源缓存问题已补失败回归并修复。真实 Docker 暴露的 Compose 默认网络重名问题已修复，自有网络名称随实例项目隔离。
+
+本轮证据目录为 `/private/tmp/rc-chain-instances-20261030/`：`host-final.log`、`linux-verified.log`、`dynamic-final/container-smoke.json`、`result/cross-container.json`、`global-final/cross-container.json`。验收仅使用隔离测试部署，结束后清理所属容器、网络和卷；未进行真实机器人、GPU 模型或外部供应商验收。

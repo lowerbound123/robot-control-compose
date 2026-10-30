@@ -23,11 +23,11 @@ def test_native_chain_returns_first_finish_or_pause_after_all_cells(setup_chain,
         worker.submit(frames)
         result = wait_for(worker.poll)
         assert result['type'] == 'result', result
-        assert result['actions'] == [[12.] * 14]
-        assert [row[0] for row in rows(events) if row[1] == 'policy'] == ['a', 'b', 'a']
-        assert len(children) == 2
+        assert result['actions'] == [[11.] * 14]
+        assert [row[0] for row in rows(events) if row[1] == 'policy'] == ['a-0', 'b', 'a-1']
+        assert len(children) == 3
         expected = ({'type': 'pause', 'reason': 'operator', 'source': {'policy_id': 'b', 'cell': 2}} if pause else
-                    {'type': 'finish', 'outcome': 'terminated', 'message': 'a result', 'source': {'policy_id': 'a', 'cell': 1}})
+                    {'type': 'finish', 'outcome': 'terminated', 'message': 'a-0 result', 'source': {'policy_id': 'a-0', 'cell': 1}})
         assert result['control_requests'] == [expected]
         assert result['images_released'] is True
     finally:

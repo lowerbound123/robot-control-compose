@@ -122,7 +122,7 @@ def test_real_worker_reads_three_frames_and_returns_standard_epos(setup, frames)
     assert not worker.alive
 
 
-def test_native_aba_uses_one_llm_call_and_two_workers(setup, frames):
+def test_native_aba_preserves_chunk_passthrough_with_three_workers(setup, frames):
     server, root, config, factory, kwargs, _ = setup
     _, _, request = frames
     record = PolicyRegistry(root).get('default_chain')
@@ -130,10 +130,11 @@ def test_native_aba_uses_one_llm_call_and_two_workers(setup, frames):
                           inference_timeout_s=4, release_timeout_s=1, **kwargs)
     try:
         worker.start()
-        assert len(worker._workers) == 2
+        assert len(worker._workers) == 3
         worker.submit(request)
         result = wait(worker.poll)
         assert result['type'] == 'result', result
+        # The last instance receives a nonempty upstream chunk and passes it through.
         assert len(server.requests) == 1
         assert result['actions'][-1][2] == pytest.approx(.05)
     finally:

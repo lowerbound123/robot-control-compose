@@ -6,6 +6,38 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_runtime_identity_allows_numbered_max_source_without_relaxing_source_ids():
+    from rc_policy_sdk.catalog import instance_id, policy_id, socket_path, validate_runtime_policy
+    source = 'a' * 48
+    identity = source + '-0'
+    config = dict(schema_version=3, id=identity, params={},
+                  execution=dict(mode='sync', call_every_actions=1, control_mode='qpos'))
+    assert instance_id(identity) == identity
+    assert socket_path(identity) == '/run/robot-control/' + identity + '.sock'
+    validate_runtime_policy(config, source, identity)
+    assert config['id'] == identity
+    with pytest.raises(ValueError): policy_id(identity)
+    with pytest.raises(ValueError): instance_id('a' * 65)
+    with pytest.raises(ValueError): validate_runtime_policy(config, source, source + '-1')
+    with pytest.raises(ValueError): validate_runtime_policy(config, '../a', identity)
+
+
+def test_numbered_host_imports_only_its_fixed_source_directory(tmp_path):
+    from rc_policy_sdk.host import PolicyHost
+    for name in ('a', 'a-0'):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / 'main.py').write_text('\n'.join(
+            f'def {callback}(*args): pass' for callback in ('initialize', 'policy', 'reset_context', 'release')))
+    host = PolicyHost(tmp_path, 'a-0', source_policy_id='a')
+    try:
+        assert host.preflight('a-0')['directory'] == str(tmp_path / 'a')
+        for wrong in ('a', 'a-1'):
+            with pytest.raises(ValueError, match='assigned'): host.preflight(wrong)
+    finally:
+        host.shutting_down = True
+
+
 def test_host_only_accepts_assigned_directory_and_hello_binds_generation(tmp_path,monkeypatch):
     from rc_policy_sdk.host import PolicyHost
     for name in ('a','b'):
@@ -27,7 +59,7 @@ def test_host_only_accepts_assigned_directory_and_hello_binds_generation(tmp_pat
 def test_chain_duplicate_bare_commands_are_not_routed_to_last_member():
     from robot_control.chain_config import chain_commands
     spec={'handler':'change','args':[]}
-    members=[SimpleNamespace(config={'id':x,'tui_commands':{'change':spec}}) for x in ('a','b')]
+    members=[SimpleNamespace(instance_id=x, config={'id':x,'tui_commands':{'change':spec}}) for x in ('a','b')]
     commands,targets=chain_commands(members)
     assert 'change' not in commands
     assert targets=={'a-change':('a','change'),'b-change':('b','change')}

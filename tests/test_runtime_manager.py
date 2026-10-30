@@ -127,3 +127,68 @@ def test_changed_daemon_cannot_prove_old_container_absent(tmp_path):
     runtime.runner=restarted
     with pytest.raises(RuntimeError,match='daemon'):
         runtime.stop_and_remove(handle,time.monotonic()+10)
+
+
+def test_repeated_instances_keep_source_mount_and_image_but_get_distinct_ownership(tmp_path):
+    from types import SimpleNamespace
+    runtime, engine = manager(tmp_path)
+    original = spec(runtime, tmp_path, 'a')
+    config = json.loads(original.config_json)
+    records = [SimpleNamespace(directory=Path(original.directory), config=config, version=1,
+                               source_id='a', instance_id=identity,
+                               runtime_config={**config, 'id': identity}) for identity in ('a-0', 'a-1')]
+    specs = [runtime.prepare_spec(record, deadline=time.monotonic() + 10) for record in records]
+    assert [item.policy_id for item in specs] == ['a-0', 'a-1']
+    assert [item.socket for item in specs] == ['/run/robot-control/a-0.sock', '/run/robot-control/a-1.sock']
+    for item in specs:
+        service = json.loads(item.model_json)['services']['policy']
+        assert service['image'] == 'sha256:fixture'
+        assert service['command'] == ['--host-id', item.policy_id, '--source-policy-id', 'a',
+                                      '--socket', item.socket, '--policy-root', '/workspace/policy']
+        mounts = [mount for mount in service['volumes'] if mount['target'].startswith('/workspace/policy/')]
+        assert len(mounts) == 1 and mounts[0]['target'] == '/workspace/policy/a'
+        assert mounts[0]['source'] == original.directory and mounts[0]['read_only']
+        assert json.loads(item.config_json)['id'] == item.policy_id
+    handles = [runtime.start(item, 7, threading.Event(), time.monotonic() + 10) for item in specs]
+    assert handles[0].project != handles[1].project
+    assert handles[0].container_id != handles[1].container_id
+    proof = runtime.stop_and_remove(handles[0], time.monotonic() + 10)
+    assert handles[1].container_id in engine.containers
+    from robot_control.process import PolicyProcess
+    first = PolicyProcess(records[0].directory, records[0].runtime_config,
+                          endpoint=handles[0], exit_authority=runtime.authority)
+    second = PolicyProcess(records[1].directory, records[1].runtime_config,
+                           endpoint=handles[1], exit_authority=runtime.authority)
+    with pytest.raises(ValueError, match='untrusted|stale'):
+        second.accept_exit_proof(proof)
+    assert not second.cleanup_confirmed
+    first.accept_exit_proof(proof)
+    assert first.cleanup_confirmed
+
+
+def test_occurrence_network_names_are_project_scoped_and_external_networks_unchanged(tmp_path):
+    from types import SimpleNamespace
+    runtime, engine = manager(tmp_path)
+    original = spec(runtime, tmp_path, 'a')
+    folder = Path(original.directory)
+    networks = {'default': {'name': 'a_default', 'driver': 'bridge'},
+                'private': {'name': 'user-private', 'internal': True, 'labels': {'purpose': 'policy'}},
+                'external': {'name': 'shared-model-network', 'external': True}}
+    (folder / 'compose.yaml').write_text(json.dumps({'services': {'policy': {
+        'image': 'fixture:local', 'networks': {'default': {}, 'private': {}, 'external': {}}}},
+        'networks': networks}))
+    config = json.loads(original.config_json)
+    handles = []
+    for identity in ('a-0', 'a-1'):
+        record = SimpleNamespace(directory=folder, config=config, version=1, source_id='a',
+                                 instance_id=identity, runtime_config={**config, 'id': identity})
+        prepared = runtime.prepare_spec(record, deadline=time.monotonic() + 10)
+        handle = runtime.start(prepared, 2, threading.Event(), time.monotonic() + 10)
+        handles.append(handle)
+        snapshot = json.loads((runtime.state_dir / (handle.project + '.compose.json')).read_text())
+        assert snapshot['networks']['default'] == {'name': handle.project + '_default', 'driver': 'bridge'}
+        assert snapshot['networks']['private'] == {'name': handle.project + '_private', 'internal': True,
+                                                   'labels': {'purpose': 'policy'}}
+        assert snapshot['networks']['external'] == {'name': 'shared-model-network', 'external': True}
+        assert json.loads(prepared.model_json)['networks'] == networks
+    assert handles[0].project != handles[1].project

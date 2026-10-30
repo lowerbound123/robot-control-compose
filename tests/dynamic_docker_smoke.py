@@ -17,7 +17,8 @@ from pathlib import Path
 type Number = float
 def initialize(config):
     if config['params'].get('fail'): raise RuntimeError('injected initialize failure')
-    return {'frames':0,'delay':config['params'].get('release_delay',0),'external':Path('/external/marker').read_text()}
+    return {'frames':0,'marker':0,'identity':config['id'],'source':str(Path(__file__).resolve().parent),
+            'delay':config['params'].get('release_delay',0),'external':Path('/external/marker').read_text()}
 def policy(context,state,action_chunk,images,config):
     assert all(not image.flags.writeable for image in images.values())
     context['frames']+=1
@@ -26,6 +27,8 @@ def reset_context(context):pass
 def release(context):
     if context:time.sleep(context['delay'])
 def info(context):return {**context,'python':list(sys.version_info[:2])}
+def mark(context, value):context['marker']=value
+def monitor(context):return {'identity':context['identity'],'marker':context['marker']}
 '''
 
 
@@ -54,10 +57,11 @@ def main():
         folder=directory/'policy'/name;folder.mkdir()
         (folder/'main.py').write_text(POLICY)
         (folder/'policy.yaml').write_text(json.dumps(dict(schema_version=3,execution=dict(mode='sync',call_every_actions=1,control_mode='qpos'),params=params,
-            tui_commands={'info':dict(handler='info',args=[],help='context',timeout_s=2)})))
+            tui_commands={'info':dict(handler='info',args=[],help='context',timeout_s=2),
+                          'mark':dict(handler='mark',args=['int'],help='mark this instance',timeout_s=2)})))
         (folder/'compose.yaml').write_text(json.dumps({'services':{'policy':{'image':os.environ.get('RC_TEST_WORKER314_IMAGE','robot-control-compose-policy:local'),
             'volumes':[{'type':'bind','source':str(external),'target':'/external','read_only':True}]}}}))
-    for name,members in [('pair',['a','b','a']),('next',['b','c']),('partial',['a','failed'])]:
+    for name,members in [('pair',['a','b','a']),('next',['b','c']),('partial',['a','a','failed'])]:
         folder=directory/'policy'/name;folder.mkdir()
         (folder/'policy.yaml').write_text(json.dumps(dict(schema_version=3,kind='chain',policies=members)))
     override={'services':{'robot-control':{'image':os.environ.get('RC_TEST_RC_IMAGE','robot-control-compose-dynamic-tests:local'),

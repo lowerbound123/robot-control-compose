@@ -6,7 +6,7 @@ SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享�
 
 ## 目录身份与声明
 
-每个可执行策略独占一个 host 容器和受监督执行进程。目录名必须匹配 `[a-z0-9][a-z0-9_-]{0,47}`，manifest 的 id 可省略或与目录一致。没有额外 host/socket 表。
+每个可执行策略实例独占一个 host 容器和受监督执行进程。来源目录名必须匹配 `[a-z0-9][a-z0-9_-]{0,47}`，manifest 的 id 可省略或与目录一致。运行实例另有身份，重复链成员自动编号；没有额外 host/socket 表。
 
 ```text
 policy/example/
@@ -33,9 +33,11 @@ services:
     image: your-prepared-policy-image:tag
 ```
 
-image 只包含策略的第三方依赖并提供 `python` 命令；SDK 由管理器只读挂载。可添加 build、环境、GPU 和 bind mounts；部署配置归本目录。管理器注入唯一 host ID、socket、run/generation、用户身份、共享 rpc 卷、IPC anchor 、只读 SDK 及本策略目录。不要声明 sidecar、host PID、Docker socket 或 privileged。
+image 只包含策略的第三方依赖并提供 `python` 命令；SDK 由管理器只读挂载。可添加 build、环境、GPU 和 bind mounts；部署配置归本目录。管理器注入唯一实例 host ID、socket、run/generation、用户身份、共享 rpc 卷、IPC anchor、只读 SDK 及本策略目录。host 的 `--source-policy-id` 固定来源目录，默认与 host ID 相同；实例 `a-0`、`a-1` 都从 `/workspace/policy/a` 加载，实现代码与相对资源路径保持原样。不要声明 sidecar、host PID、Docker socket 或 privileged。
 
 相对 bind source 以策略目录为基准，由框架转换到宿主路径。Compose env 为本目录的 `deployment.env`。需要外部目录时写清宿主路径并提前创建。发现只读声明与文件是否存在，不 import main.py；新 Python 语法只由目标容器预检。
+
+非 external 网络由管理器按运行实例项目重命名并独立清理，包括 Compose 自动生成及显式 `name` 的网络；其余网络选项保留。需要跨实例共用的已有网络应声明 `external: true`，其名称保持原配置，管理器不负责创建或清理。
 
 策略有独立实现包时，在自己的 Compose 中声明来源。例如：
 
@@ -106,13 +108,17 @@ tui_commands:
     timeout_s: 5
 ```
 
-在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<policy_id>-<command>`。策略命令不自动向 MCP 开放。
+在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<instance_id>-<command>`。重复实例分别注册命令，例如 `policy a-0 set-gain 0.5`、`a-1-set-gain 0.8`，原名 a 不会指向其中某个实例。策略命令不自动向 MCP 开放。
 
-`effect=reload_policy` 的 handler 返回已有 `params.*` 冷叶字段补丁。例如 Qwen 的 `switch-model` 在旧实例验证模型配置，然后由 RC 执行完整清旧启新事务。不得从 handler 调 Docker。部署参数通过本目录修改，在下次 switch 重新解析。
+`effect=reload_policy` 的 handler 返回已有 `params.*` 冷叶字段补丁。例如 Qwen 的 `switch-model` 在旧实例验证模型配置，然后由 RC 执行完整清旧启新事务。链中只有目标实例的配置与版本变化，整组冷重建时其他实例保留当前配置。不得从 handler 调 Docker。部署参数通过本目录修改，在下次 switch 重新解析。
+
+`save-config a-0` 或 `save-config policy a-0` 保存该实例的有效配置到来源目录 `policy/a/`，保留 YAML 注释和顺序，并将落盘 ID 写为 a。不会创建实例目录，也不会修改当前其他实例。重复实例存在时，`save-config a` 和 `save-config policy a` 都会报歧义且不写文件；必须明确选择一个实例。多个实例先后保存时，最后一次成功保存决定来源默认配置。`save-config policy` 在链模式仍保存策略顺序。
 
 ## 链、动作与租约
 
-原生 chain：`{"schema_version":3,"kind":"chain","policies":["a","b","a"]}`。chain 自身无容器，重复成员只初始化一次，复用 context。`[a,b]` 切 `[b,c]` 时旧 a、b 都销毁。SDK 的 `PolicyChain` 是另一个层次：在一个 worker 内组合模块。
+原生 chain：`{"schema_version":3,"kind":"chain","policies":["a","b","a"]}`。chain 自身无容器，每个环节独立实例化为 `a-0 → b → a-1`，分别初始化 context、执行进程和容器；回调收到的 `config.id` 也是实例名。只重复的策略编号，按该来源在链中的出现顺序从 0 开始；实例名最多 64 字符。`[a,a,a-0]` 产生实例名冲突，会在清理旧组前报错。链推理仍串行传递动作，pause/finish 来源、命令回执和外部 reader 都保留对应实例身份。
+
+任何冷切换都销毁整个旧组，包括与新链相同的来源或实例。显式 switch 或重新应用链从来源默认配置创建新快照；实例命令引发的重载保留其他成员当前快照。链 YAML 始终保存来源名和顺序，不持久化每个环节的参数。SDK 的 `PolicyChain` 是另一个层次：在一个 worker 内组合模块；`runtime.globals` 继续是显式共享状态。
 
 只有控制线程发送机器人动作和修改动作缓存。完整目标成功发送才消费；迟到推理、旧实例命令与旧版本回包不能越过切换屏障。策略失败不收回 MCP 已持有的控制权。
 

@@ -106,6 +106,19 @@ class PolicyRecord:
     config: dict
     version: int = 1
     members: tuple = ()
+    instance_id: str | None = None
+
+    def __post_init__(self):
+        if self.instance_id is None:
+            self.instance_id = self.config['id']
+
+    @property
+    def source_id(self):
+        return self.config['id']
+
+    @property
+    def runtime_config(self):
+        return {**copy.deepcopy(self.config), 'id': self.instance_id}
 
     @property
     def is_chain(self):
@@ -134,7 +147,7 @@ class PolicyRegistry:
         if refresh:
             self.refresh(identity)
         record = self._get_raw(identity)
-        if record.is_chain:
+        if record.is_chain and not record.members:
             record = self.resolve_chain(record)
             self._records[identity] = record
         return record
@@ -153,12 +166,10 @@ class PolicyRegistry:
                 children[name] = PolicyRecord(Path(item['directory']), item['config'], previous.version+1 if previous else 1)
             if any(child.is_chain for child in children.values()):
                 raise ValueError('nested native chains are not supported')
-            record = self.resolve_chain(record, children)
+            record = self.resolve_chain(record, sources=children)
         return record
 
     def install(self, record):
-        for child in record.members:
-            self._records[child.config['id']] = child
         self._records[record.config['id']] = record
 
     def refresh(self, identity=None):
@@ -173,22 +184,51 @@ class PolicyRegistry:
             self.refresh(identity)
         return self._records[identity]
 
-    def resolve_chain(self, record, overrides=None):
-        from .chain_config import chain_commands
+    def resolve_chain(self, record, overrides=None, *, sources=None):
+        from .chain_config import chain_commands, chain_instance_ids
         validate_policy(record.config)
         members = []
-        for identity in dict.fromkeys(record.config["policies"]):
-            child = (overrides or {}).get(identity) or self._get_raw(identity)
+        retained = {child.instance_id: child for child in record.members}
+        for source, identity in zip(record.config['policies'], chain_instance_ids(record.config['policies'])):
+            child = (overrides or {}).get(identity) or retained.get(identity)
+            if child is None:
+                child = (sources or {}).get(source) or self._get_raw(source)
             if child.is_chain:
-                raise ValueError(f"{identity}: native chain cannot be a chain member")
-            validate_policy(child.config)
+                raise ValueError(f"{source}: native chain cannot be a chain member")
+            validate_policy(child.config, source)
             validate_entry(child.directory)
-            child = PolicyRecord(child.directory, copy.deepcopy(child.config), child.version)
-            if members and child.execution["control_mode"] != members[0].execution["control_mode"]:
+            child = PolicyRecord(child.directory, copy.deepcopy(child.config), child.version, instance_id=identity)
+            if members and child.execution['control_mode'] != members[0].execution['control_mode']:
                 raise ValueError(f"{identity}: control_mode differs from chain head")
             members.append(child)
         chain_commands(members)
         return PolicyRecord(record.directory, copy.deepcopy(record.config), record.version, tuple(members))
+
+    @staticmethod
+    def resolve_member(record, identity):
+        for member in record.members:
+            if member.instance_id == identity:
+                return member
+        matches = [member for member in record.members if member.source_id == identity]
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous policy {identity}; choose " + ', '.join(m.instance_id for m in matches))
+        if matches:
+            return matches[0]
+        raise ValueError(f'{identity}: not_running')
+
+    def save_record(self, record):
+        source = record.source_id
+        if record.directory != self.directory / source:
+            raise ValueError('policy source directory differs')
+        config = copy.deepcopy(record.config)
+        validate_policy(config, source)
+        path = policy_config_path(record.directory)
+        # Verify disk ownership before replacing a source manifest.
+        validate_policy(load_yaml_config(path), source)
+        save_yaml_config(path, config)
+        previous = self._records.get(source)
+        self._records[source] = PolicyRecord(record.directory, config, max(previous.version if previous else 1, record.version))
+        return path
 
     def propose_chain(self, identities, overrides=None):
         config = {"schema_version": 3, "id": "default_chain", "kind": "chain", "policies": list(identities)}
@@ -210,7 +250,8 @@ class PolicyRegistry:
             if existing is None:
                 existing = self._get_raw('default_chain')
         record = PolicyRecord(folder, config, existing.version + 1 if existing else 1)
-        return self.resolve_chain(record, overrides)
+        sources = {source: self.snapshot(source) for source in dict.fromkeys(record.config["policies"])}
+        return self.resolve_chain(record, overrides, sources=sources)
 
     def save_chain(self, identities):
         record = self.propose_chain(identities)

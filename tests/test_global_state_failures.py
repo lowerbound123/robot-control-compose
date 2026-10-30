@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 import fcntl
 import os
 from pathlib import Path
@@ -41,7 +41,9 @@ with s.locked():
     try:
         assert json.loads(child.stdout.readline()) == {'shared': {'hello': '中文'}}
         assert child.stdout.readline().strip() == 'locked'
-        with pytest.raises(TimeoutError):
+        # Python 3.10 has distinct future/store timeout classes; either layer
+        # may reach the same absolute lock deadline first.
+        with pytest.raises((TimeoutError, FutureTimeoutError)):
             service.proxy['blocked'] = True
         child.kill()
         child.wait(2)

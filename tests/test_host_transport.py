@@ -25,14 +25,15 @@ def wait_for(callback, timeout=8):
 
 
 class Host:
-    def __init__(self, root, identity=None):
+    def __init__(self, root, identity=None, *, source_policy_id=None):
         identity = identity or next(p.parent.name for p in Path(root).glob('*/main.py'))
         assert importlib.util.find_spec('rc_policy_sdk.host') is not None, 'policy host is missing'
         self.temp = tempfile.TemporaryDirectory(prefix='rch-', dir='/tmp')
         self.socket = str(Path(self.temp.name) / 'h.sock')
         self.log = open(Path(self.temp.name) / 'host.log', 'w+')
+        source_args = ['--source-policy-id', source_policy_id] if source_policy_id is not None else []
         self.process = subprocess.Popen([sys.executable, '-m', 'rc_policy_sdk.host',
-            '--socket', self.socket, '--policy-root', str(root), '--host-id', identity],
+            '--socket', self.socket, '--policy-root', str(root), '--host-id', identity, *source_args],
             stdout=self.log, stderr=subprocess.STDOUT)
         def listening():
             if self.process.poll() is not None:
@@ -73,6 +74,59 @@ def reset_context(context): context['calls']=0
 def release(context):
     if context: time.sleep(context['config']['params'].get('release_delay', 0))
 '''
+
+
+@pytest.mark.parametrize('source_id', ['a', 'a' * 48])
+def test_two_numbered_hosts_load_same_source_with_independent_contexts(tmp_path, source_id):
+    folder = tmp_path / source_id
+    folder.mkdir()
+    (folder / 'main.py').write_text('''
+import os
+from pathlib import Path
+def initialize(config): return {'id': config['id'], 'calls': 0}
+def policy(context, state, action_chunk, images, config):
+    context['calls'] += 1
+    return [[context['calls']] * 14]
+def reset_context(context): context['calls'] = 0
+def release(context): pass
+def info(context): return {**context, 'pid': os.getpid(), 'source': Path(__file__).parent.name}
+''')
+    hosts, workers = [], []
+    pool = ImagePool(cameras=('head',))
+    pool.publish('head', np.zeros((2, 2), np.uint8), 1.)
+    lease = pool.acquire()
+    try:
+        for suffix in ('-0', '-1'):
+            identity = source_id + suffix
+            host = Host(tmp_path, identity, source_policy_id=source_id)
+            hosts.append(host)
+            config = dict(schema_version=3, id=identity, params={},
+                          execution=dict(mode='sync', call_every_actions=1, control_mode='qpos'),
+                          tui_commands={'info': {'handler': 'info', 'args': []}})
+            worker = PolicyProcess(folder, config, host_socket=host.socket,
+                                   init_timeout_s=3, inference_timeout_s=2, release_timeout_s=.2)
+            workers.append(worker)
+            worker.start()
+        assert workers[0].host.instance_id != workers[1].host.instance_id
+        assert workers[0].pid != workers[1].pid
+        for index, expected in ((0, 1), (0, 2), (1, 1)):
+            worker = workers[index]
+            worker.submit(dict(request_id=expected, generation=1, config_version=1,
+                               state={'qpos': [0] * 14}, images=lease.descriptors, action_chunk=[]))
+            result = wait_for(worker.poll)
+            assert result['type'] == 'result', result
+            assert result['actions'] == [[expected] * 14]
+        for index, worker in enumerate(workers):
+            worker.submit_command('info', 'info', [])
+            message = wait_for(worker.poll_command)
+            if message['type'] == 'command_started': message = wait_for(worker.poll_command)
+            assert message['result'] == {'id': source_id + f'-{index}', 'calls': 2 if index == 0 else 1,
+                                         'pid': worker.pid, 'source': source_id}
+    finally:
+        for worker in workers: worker.close()
+        for host in hosts: host.close()
+        lease.release()
+        pool.close()
 
 
 @pytest.fixture

@@ -189,7 +189,7 @@ class ComposeRuntimeManager:
 
     def prepare_spec(self, record, *, deadline, cancel=None):
         anchor = self.check_infrastructure(deadline, cancel=cancel)
-        identity = record.config['id']
+        identity = record.instance_id
         directory = record.directory
         env = dict({k:v for k,v in os.environ.items() if k in ('PATH','HOME','LANG','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CERT_PATH','DOCKER_TLS_VERIFY')}, RC_HOST_PROJECT_ROOT=self.context['host_root'],
                    RC_HOST_POLICY_DIR=map_host_path(directory, directory, self.context),
@@ -218,7 +218,7 @@ class ComposeRuntimeManager:
         service['restart'] = 'no'
         service['ipc'] = 'container:' + anchor
         service['user'] = f"{self.context['uid']}:{self.context['gid']}"
-        target = f'/workspace/policy/{identity}'
+        target = f'/workspace/policy/{record.source_id}'
         sdk = '/workspace/packages/policy-sdk/src'
         mounts = []
         for mount in service.get('volumes', []):
@@ -242,7 +242,8 @@ class ComposeRuntimeManager:
                         read_only=True, bind={'create_host_path':False})]
         service['volumes'] = mounts
         service['entrypoint'] = ['python', sdk + '/rc_policy_sdk/source.py', '--module', 'rc_policy_sdk.host']
-        service['command'] = ['--host-id', identity, '--socket', socket_path(identity), '--policy-root', '/workspace/policy']
+        service['command'] = ['--host-id', identity, '--source-policy-id', record.source_id,
+                              '--socket', socket_path(identity), '--policy-root', '/workspace/policy']
         service['environment'] = dict(service.get('environment', {}), HOME='/tmp', RC_POLICY_ID=identity)
         environment = service['environment']
         sources = json.loads(environment.get('RC_SOURCE_MODULES') or '{}')
@@ -264,7 +265,7 @@ class ComposeRuntimeManager:
         for key in ('configs', 'secrets', 'include'):
             if model.get(key):
                 raise ValueError(f'{key}: use policy-owned bind files')
-        return DeploymentSpec(identity, str(directory), record.version, json.dumps(record.config),
+        return DeploymentSpec(identity, str(directory), record.version, json.dumps(record.runtime_config),
                               json.dumps(model), image_id, anchor, socket_path(identity), self.anchor_epoch or "")
 
     def start(self, spec, generation, cancel, deadline):
@@ -280,6 +281,12 @@ class ComposeRuntimeManager:
         self._save(handle)  # Persist intent before the first mutating daemon request.
         model = json.loads(spec.model_json)
         model['name'] = handle.project
+        # `compose config` has already expanded even implicit network names
+        # using the source directory. Each occurrence owns its own networks;
+        # external references deliberately keep their shared configured name.
+        for name, network in model.get('networks', {}).items():
+            if not network.get('external'):
+                network['name'] = f'{handle.project}_{name}'
         service = model['services']['policy']
         service['labels'] = {**service.get('labels', {}), **handle.labels()}
         service['environment'].update(RC_DEPLOYMENT_ID=handle.deployment_id, RC_RUN_ID=handle.run_id,

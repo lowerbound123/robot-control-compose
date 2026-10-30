@@ -53,6 +53,44 @@ class EditorController(FakeController):
 
 
 @pytest.mark.asyncio
+async def test_editor_numbers_occurrences_but_saves_source_ids():
+    controller = EditorController()
+    app = RobotControlApp(controller)
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.router.submit('manage-policy')
+        panel = app.query_one('#policy-manager')
+        left = app.query_one('#chain-cells', OptionList)
+        await eventually(pilot, lambda: panel.display and left.has_focus)
+        assert [left.get_option_at_index(i).prompt.plain for i in range(3)] == [
+            '01  a-0', '02  b', '03  a-1']
+        await pilot.press('ctrl+s')
+        assert controller.saved == ['a', 'b', 'a']
+        await pilot.press('down', 'down', 'delete')
+        assert [left.get_option_at_index(i).prompt.plain for i in range(2)] == ['01  a', '02  b']
+        assert panel.policies == ['a', 'b']
+        controller.done.set()
+        await eventually(pilot, lambda: not app.is_running)
+
+
+@pytest.mark.asyncio
+async def test_editor_disables_candidate_with_colliding_instance_name():
+    controller = EditorController()
+    app = RobotControlApp(controller)
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.router.submit('manage-policy')
+        panel = app.query_one('#policy-manager')
+        left = app.query_one('#chain-cells', OptionList)
+        await eventually(pilot, lambda: panel.display and left.has_focus)
+        panel.catalog.append({'id': 'a-0', 'valid': True, 'control_mode': 'qpos'})
+        await pilot.press('d')
+        right = app.query_one('#chain-available', OptionList)
+        assert right.get_option_at_index(3).disabled
+        assert 'a-0' in right.get_option_at_index(3).prompt.plain
+        controller.done.set()
+        await eventually(pilot, lambda: not app.is_running)
+
+
+@pytest.mark.asyncio
 async def test_two_columns_insert_above_below_replace_delete_and_cancel():
     controller = EditorController()
     app = RobotControlApp(controller)
