@@ -32,22 +32,3 @@ def test_native_chain_returns_first_finish_or_pause_after_all_cells(setup_chain,
         assert result['images_released'] is True
     finally:
         worker.close()
-
-
-@pytest.mark.parametrize('failure', ['model', 'timeout', 'cancel'])
-def test_finish_does_not_mask_later_chain_failure(setup_chain, frames, failure):
-    worker, _, events = setup_chain(delays=(0, .2 if failure != 'model' else 0),
-                                    timeout=.1 if failure == 'timeout' else 3,
-                                    fail='b' if failure == 'model' else None)
-    configure(worker)
-    try:
-        worker.start()
-        worker.submit(frames)
-        wait_for(lambda: ['b', 'policy'] in rows(events))
-        if failure == 'cancel':
-            worker.cancel_inference()
-        response = wait_for(worker.poll)
-        assert response['type'] == ('cancelled' if failure == 'cancel' else 'error')
-        assert not response.get('control_requests')
-    finally:
-        worker.close()

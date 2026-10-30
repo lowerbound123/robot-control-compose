@@ -63,33 +63,30 @@ def test_every_real_query_has_unique_id_instance_and_independent_collection_time
 
 @pytest.mark.parametrize('operation', ['reset', 'close'])
 @pytest.mark.parametrize('answer', [True, RuntimeError('obsolete request')])
-def test_invalidated_inflight_query_always_logs_terminal_and_discard(operation, answer, capsys):
+def test_uncollected_result_is_discarded_on_invalidation(operation, answer, capsys):
     gate, provider, runtime = threading.Event(), Provider(), Runtime()
     provider.responses.append((gate, answer))
     instance = make(provider=provider)
-    thread = None
     try:
         launch(instance, runtime)
         wait(lambda: provider.calls)
-        thread = threading.Thread(target=instance.reset_context if operation == 'reset' else instance.close)
-        thread.start()
-        wait(lambda: instance._generation == 1)
         gate.set()
-        thread.join(3)
-        assert not thread.is_alive()
+        done(instance)
+        if operation == 'reset':
+            instance.reset_context()
+        else:
+            instance.close()
         values = events(capsys)
         terminal = 'llm_failure.request.error' if isinstance(answer, Exception) else 'llm_failure.request.completed'
         assert [value['event'] for value in values] == [
             'llm_failure.request.started', terminal, 'llm_failure.collection.discarded']
         assert len({value['query_id'] for value in values}) == 1
-        assert values[1]['invalidated'] is True
+        assert values[1]['invalidated'] is False
+        assert values[2]['invalidated'] is True
         assert values[2]['reason'] == operation
-        assert values[2]['collection_wait_s'] >= 0
         assert runtime.finishes == []
     finally:
         gate.set()
-        if thread:
-            thread.join(3)
         instance.close()
 
 

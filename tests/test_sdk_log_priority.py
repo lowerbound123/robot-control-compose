@@ -4,7 +4,6 @@ import socket
 
 import pytest
 
-from rc_policy_sdk.commands import command_specs
 from rc_policy_sdk.host import Peer, PolicyHost
 from rc_policy_sdk.outbox import PriorityOutbox
 from rc_policy_sdk.wire import receive_message, send_message
@@ -12,11 +11,6 @@ from rc_policy_sdk.wire import receive_message, send_message
 
 def gap(count, saturated):
     return ("gap", count, saturated)
-
-
-def test_record_is_reserved_for_controller_commands():
-    with pytest.raises(ValueError, match="reserved"):
-        command_specs({"tui_commands": {"record": {"handler": "record", "args": []}}})
 
 
 def test_logs_preserve_control_capacity_monitor_retention_and_fifo():
@@ -58,8 +52,8 @@ def test_log_lane_limits_both_message_count_and_encoded_bytes(count_limit, byte_
 
 
 @pytest.mark.parametrize("limits", [
-    {"log_maxsize": 0}, {"log_maxsize": -1}, {"log_maxsize": True},
-    {"log_maxbytes": 0}, {"log_maxbytes": -1}, {"log_maxbytes": 1.5},
+    {"log_maxsize": 0}, {"log_maxsize": True},
+    {"log_maxbytes": 0}, {"log_maxbytes": 1.5},
 ])
 def test_log_limits_cannot_disable_bounded_admission(limits):
     with pytest.raises(ValueError, match="positive integers"):

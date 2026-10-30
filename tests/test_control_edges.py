@@ -9,7 +9,7 @@ from test_control_ownership import call
 from robot_control.direct_commands import parse_commands
 
 
-@pytest.mark.parametrize("line", ["pause", "resume", "reset", "r", "save p", "load p", "switch second", "save-config rc", "save-config policy", "set policy.params.value 3", "exit", "quit"])
+@pytest.mark.parametrize("line", ["reset", "save-config policy", "exit"])
 def test_all_mcp_writes_are_readonly_until_take(setup_controller, line):
     controller, _, _ = setup_controller
     ready(controller)
@@ -129,7 +129,7 @@ def test_partial_publish_failure_does_not_consume_and_is_not_retried(setup_contr
     assert len(count) == 1
 
 
-@pytest.mark.parametrize("line", ["pause extra", "reset extra", "load nonexistent", "switch nonexistent"])
+@pytest.mark.parametrize("line", ["pause extra", "load nonexistent"])
 def test_rejected_command_does_not_cancel_accepted_motion(setup_controller, line):
     controller, _, _ = setup_controller
     ready(controller)

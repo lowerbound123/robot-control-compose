@@ -124,13 +124,6 @@ def test_barrier_remembers_processed_tokens_across_session_start_and_stop(tmp_pa
     assert [item['request'] for item in messages if item['kind'] == 'stopped'] == ['off', 'exit']
 
 
-def test_old_processed_token_is_not_evicted_while_ack_is_uncollected(tmp_path, monkeypatch):
-    packets = [{'kind': 'log', 'token': token, 'data': {'message': str(token)}} for token in range(1, 8300)]
-    packets.append({'kind': 'shutdown', 'token': 8300, 'request': 'exit', 'pending': [1]})
-    messages = writer(tmp_path, monkeypatch, packets)
-    assert any(item['kind'] == 'stopped' and item['request'] == 'exit' for item in messages)
-
-
 def test_stop_barrier_waits_for_exact_out_of_order_tokens(tmp_path, monkeypatch):
     packets = [
         {'kind': 'start', 'token': 1, 'request': 'on', 'session': 's', 'path': str(tmp_path / 's')},

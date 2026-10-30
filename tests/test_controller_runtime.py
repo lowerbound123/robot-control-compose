@@ -59,17 +59,27 @@ def operation(controller,command,expected='succeeded'):
 def test_old_container_removed_before_same_policy_new_create(runtime_controller):
     controller,engine,_=ready(runtime_controller)
     old=controller._worker
+    before=len(engine.events)
     operation(controller,'switch first')
     assert controller._worker is not old
-    assert [kind for kind,_ in engine.events]==['create','start','stop','rm','create','start']
+    kinds=[kind for kind,_ in engine.events[before:]]
+    removed=[index for index,kind in enumerate(kinds) if kind in ('stop','rm')]
+    created=[index for index,kind in enumerate(kinds) if kind=='create']
+    assert created and removed, kinds
+    assert max(removed) < min(created), kinds
     assert controller.status()['state']=='paused'
 
 
 def test_sdk_failure_still_removes_container_and_preserves_forced_fact(runtime_controller):
     controller,engine,_=ready(runtime_controller)
     controller._worker.config['params']['release_fail']=True
+    before=len(engine.events)
     operation(controller,'switch second')
-    assert [kind for kind,_ in engine.events]==['create','start','stop','rm','create','start']
+    kinds=[kind for kind,_ in engine.events[before:]]
+    removed=[index for index,kind in enumerate(kinds) if kind in ('stop','rm')]
+    created=[index for index,kind in enumerate(kinds) if kind=='create']
+    assert created and removed, kinds
+    assert max(removed) < min(created), kinds
     assert controller.exit_code==1
     assert controller.status()['runtime']['cleanup_forced']
 

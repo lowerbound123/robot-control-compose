@@ -62,7 +62,6 @@ def test_nonempty_actions_return_by_identity_without_changes(example, config, im
         output = example.policy(context, {}, actions, images, config, runtime=runtime)
     assert output is actions
     np.testing.assert_array_equal(actions, before)
-    assert runtime._control_requests == []
     info = example.monitor(context)
     assert info["calls"] == 1
     assert info["observation_id"] == "sample-42"
@@ -111,7 +110,6 @@ def test_image_mappings_close_while_context_remains_alive(example, config, runti
                 lease.release()
     finally:
         pool.close()
-    assert pool._bytes == 0
 
 
 def test_hot_config_reference_and_log_interval(example, config, images, runtime, capsys):

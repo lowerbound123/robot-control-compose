@@ -163,12 +163,21 @@ def test_graceful_close_reaps_detached_child(policy, tmp_path):
 def test_hanging_release_has_bounded_kill_fallback_and_runs_once(policy, tmp_path):
     worker = process(policy, config(tmp_path, release_delay=60))
     worker.start()
+    old_pid = worker.pid
     started = time.monotonic()
     assert worker.close()
     assert time.monotonic() - started < 7
+    assert worker.cleanup_confirmed
     assert worker.close()
     assert not worker.alive
     assert (tmp_path / "released").read_text() == "release\n"
+    # A forced cleanup still proves runtime exit, so a manual reload gets a new runtime.
+    replacement = process(policy, config(tmp_path))
+    try:
+        replacement.start()
+        assert replacement.pid != old_pid
+    finally:
+        assert not replacement.close()
 
 
 def test_cancel_before_launch_creates_no_process(policy, tmp_path):
@@ -341,7 +350,11 @@ def test_linux_missing_python_pidfd_wrappers_use_native_syscalls(monkeypatch):
     monkeypatch.setattr(lifecycle.ctypes, "CDLL", lambda *_args, **_kwargs: SimpleNamespace(syscall=Syscall()))
     assert lifecycle._open_pidfd(1234) == 55
     lifecycle._send_pidfd_signal(55, signal.SIGTERM)
-    assert calls == [(434, (1234, 0)), (424, (55, signal.SIGTERM, None, 0))]
+    assert [call[0] for call in calls] == [434, 424]
+    _, open_args = calls[0]
+    _, signal_args = calls[1]
+    assert open_args[0] == 1234
+    assert signal_args[0] == 55 and signal_args[1] == signal.SIGTERM
 
 
 def test_native_pidfd_error_preserves_process_lookup_semantics(monkeypatch):

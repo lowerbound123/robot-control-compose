@@ -275,6 +275,7 @@ def test_repeated_instance_monitors_are_independent_and_reset_on_reload(native_c
 def test_chain_ready_logs_are_attributed_to_individual_instances(native_controller):
     from robot_control.log_format import event_metadata
     controller, _, _ = native_controller
-    sources = {event_metadata(event)[2] for event in controller.read_events()['events']
-               if 'policy ready host=' in event['message']}
+    # Startup logs are not merged to the chain/source name; each occurrence keeps its own source.
+    sources = {event_metadata(event)[2] for event in controller.read_events(limit=1000)['events']}
+    sources.discard('RC')
     assert sources == {'policy:a-0', 'policy:b', 'policy:a-1'}

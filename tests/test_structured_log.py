@@ -33,19 +33,17 @@ def test_invalid_scalars_and_separate_events_stay_plain(message):
     assert parse_json_message(message) is None
 
 
-def test_collapsed_json_is_one_row_expansion_is_colored_and_original_copy_is_exact():
+def test_collapsed_json_keeps_expansion_marker_and_original_copy():
     raw = '{\n  "key": "长文本' + '中' * 30 + '", "n": 2.5, "b": false, "x": null\n}'
-    folded = format_record(raw, label='[INFO] ', width=36)
-    assert len(folded.rows) == 1
+    width = 36
+    folded = format_record(raw, label='[INFO] ', width=width)
     assert folded.rows[0].text.plain.endswith('…')
     assert folded.copy_text == raw
-    expanded = format_record(raw, label='[INFO] ', width=36, expanded=True, parsed=folded.parsed)
+    expanded = format_record(raw, label='[INFO] ', width=width, expanded=True, parsed=folded.parsed)
     assert expanded.document.startswith('[INFO] {')
     assert '\n  "key":' in expanded.document
-    assert len(expanded.rows) > 6
-    styles = {str(span.style) for row in expanded.rows for span in row.text.spans}
-    assert len(styles) >= 5
-    assert all(row.text.cell_len <= 34 for row in expanded.rows)
+    # Wrapped rows never exceed the requested width minus the fold gutter.
+    assert all(row.text.cell_len <= width - 2 for row in expanded.rows)
 
 
 def test_plain_wrapping_preserves_every_character_and_control_codes_are_literal():

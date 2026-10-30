@@ -65,11 +65,6 @@ def test_templates_do_not_make_a_policy_runnable(tmp_path):
     assert discover(tmp_path)[0]['state'] == 'needs_config'
 
 
-def test_business_model_format_is_not_interpreted_by_bootstrap():
-    from config_validation import validate_documents
-    validate_documents({'policy/custom/model.json': {'format': 'anything'}})
-
-
 def test_symlink_alias_cannot_change_directory_identity(tmp_path):
     from robot_control.policy_catalog import read_descriptor
     folder=plugin(tmp_path,'real')

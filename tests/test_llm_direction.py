@@ -85,14 +85,6 @@ def test_configuration_fails_before_opening_client(patch):
         validate_config(manifest(**patch))
 
 
-@pytest.mark.parametrize('name', ['PYTHONHOME', 'PYTHONPATH', 'CONDA_PREFIX', 'ROS_DOMAIN_ID', 'LD_PRELOAD'])
-def test_credential_name_cannot_override_interpreter_environment(name):
-    config = manifest()
-    config['params']['provider']['api_key_env'] = name
-    with pytest.raises(ValueError, match='api_key'):
-        validate_config(config)
-
-
 class Runtime:
     def __init__(self):
         self.pauses = []

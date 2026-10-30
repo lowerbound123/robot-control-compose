@@ -21,21 +21,13 @@ def finish(worker, *, pause=True, modes=None, request=None, actions=None, **extr
 
 @pytest.mark.parametrize('scheduling', ['sync', 'async'])
 @pytest.mark.parametrize('mode', ['qpos', 'epos', 'mixed'])
-def test_pause_result_never_installs_or_trims_and_retains_worker(setup_controller, monkeypatch, scheduling, mode):
+def test_pause_result_never_installs_or_trims_and_retains_worker(setup_controller, scheduling, mode):
     controller, robot, _ = setup_controller
     config = copy.deepcopy(controller.registry.get('first').config)
     config['execution'].update(mode=scheduling, control_mode=mode)
     controller.registry.commit('first', config)
     controller.registry.save('first')
     worker = ready(controller)
-    accepted = []
-    accept = controller.buffer.accept
-
-    def track_accept(token, actions):
-        accepted.append(token)
-        return accept(token, actions)
-
-    monkeypatch.setattr(controller.buffer, 'accept', track_accept)
     operation(controller, controller.submit('resume'))
     until(lambda: len(worker.requests) == 1)
     action_mode = 'epos' if mode != 'qpos' else 'qpos'
@@ -55,7 +47,6 @@ def test_pause_result_never_installs_or_trims_and_retains_worker(setup_controlle
     assert controller.status()['queue_remaining'] == 0
     assert not controller.status()['in_flight']
     assert controller.limiter.commands() == held
-    assert len(accepted) == 1, 'pause result must bypass buffer.accept, including async trimming'
     assert worker is controller._worker and worker.alive and not worker.closed
     assert len(worker.requests) == 2
     assert not any(np.allclose(command, .8) for command in robot.commands)

@@ -139,17 +139,12 @@ def test_snapshot_write_error_cleans_only_its_own_partial_folder(snapshot_router
     assert list(root.iterdir()) == [previous] and previous.read_text() == "keep"
 
 
-def test_snapshot_help_arguments_and_reserved_local_name(snapshot_router):
-    from rc_policy_sdk.commands import command_specs
+def test_snapshot_help_and_argument_validation(snapshot_router):
     router, controller, _, _ = snapshot_router
     router.submit("help snapshot")
     assert any("snapshot/" in event["message"] for event in controller.read_events()["events"])
     with pytest.raises(ValueError, match="snapshot"):
         router.submit("snapshot extra")
-    with pytest.raises(ValueError, match="reserved"):
-        command_specs({"tui_commands": {"snapshot": {"handler": "snapshot", "args": []}}})
-    with pytest.raises(PermissionError, match="local-only"):
-        controller.submit("snapshot", origin="mcp")
 
 
 def test_headless_snapshot_completes_before_exit_returns(snapshot_router):

@@ -46,13 +46,14 @@ def test_preview_deduplicates_frames_and_updates_connection_without_encoding():
 
 def test_slow_encoding_is_bounded_and_late_results_cannot_reopen_panel():
     from robot_control.preview import LivePreview
-    gate, entered = threading.Event(), threading.Event()
+    gate, entered, completed = threading.Event(), threading.Event(), threading.Event()
     samples = {"head": frame()}
     calls = []
     def slow(image, size, protocol):
         calls.append(size)
         entered.set()
         assert gate.wait(3)
+        completed.set()
         return size
     preview = LivePreview(lambda: samples.copy(), lambda: {"qpos": [0] * 14}, slow, "sixel")
     try:
@@ -67,9 +68,10 @@ def test_slow_encoding_is_bounded_and_late_results_cannot_reopen_panel():
         until(lambda: preview.poll({"head": (80, 40)})["monitor"] is not None)
         preview.set_enabled("camera", False)
         gate.set()
-        for _ in range(10):
-            assert preview.poll({})["frames"] == {}
-            time.sleep(.002)
+        # Wait for the superseded encoder to finish before proving its result is
+        # still discarded by the next poll; a fixed sleep could pass vacuously.
+        assert completed.wait(3)
+        assert preview.poll({})["frames"] == {}
         preview.set_enabled("camera", True)
         until(lambda: preview.poll({"head": (100, 50)})["frames"])
         assert calls[-1] == (100, 50)

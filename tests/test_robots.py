@@ -202,10 +202,16 @@ def test_acone_raw_state_eef_and_separate_publish_objects(fake_ros):
         left = fake_ros.published["command_left"][0]
         right = fake_ros.published["command_right"][0]
         assert left is not right
+        assert left.mode == right.mode == 5
         assert left.joint_pos == list(range(6)) and left.gripper == 6
         assert right.joint_pos == list(range(7, 13)) and right.gripper == 13
         robot.execute(np.ones(14))
         assert left.joint_pos == list(range(6))
+        # An epos command publishes end_pos with mode 4 into a fresh message.
+        robot.execute(np.arange(14, dtype=float), mode="epos")
+        eef = fake_ros.published["command_left"][-1]
+        assert eef.mode == 4 and eef.end_pos == list(range(6)) and eef.gripper == 6
+        assert left.mode == 5
     finally:
         robot.close()
     assert fake_ros.destroyed

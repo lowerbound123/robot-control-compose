@@ -170,10 +170,12 @@ def test_affine_observation_overflow_is_rejected_before_inference(tmp_path, monk
 
 
 def test_strict_native_loading_rejects_corrupt_or_incomplete_weights(tmp_path, monkeypatch):
+    from safetensors import SafetensorError
     module = implementation()
     _, _, cfg = native_checkpoint_fixture(tmp_path, monkeypatch)
     tiny_pi05_architecture(monkeypatch)
-    with pytest.raises(Exception, match='[Hh]eader|[Dd]eserial|[Ss]afetensor'):
+    with pytest.raises((SafetensorError, RuntimeError, ValueError),
+                       match='[Hh]eader|[Dd]eserial|[Ss]afetensor'):
         module.load_local_policy(tmp_path / 'weights', cfg)
     from safetensors.torch import save_file
     save_file({'unexpected': torch.zeros(1)}, tmp_path / 'weights/model.safetensors')

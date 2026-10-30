@@ -25,6 +25,9 @@ def test_images_do_not_copy_or_build_repository_python(path):
 def test_base_and_simulator_mount_source_readonly():
     services = read_compose(ROOT / 'compose.yaml')['services']
     assert set(services) == {'ipc-anchor', 'robot-control'}
+    # Base compose only wires the RC service to the IPC anchor, which must be healthy first.
+    assert set(services['robot-control']['depends_on']) == {'ipc-anchor'}
+    assert services['robot-control']['depends_on']['ipc-anchor']['condition'] == 'service_healthy'
     mounts = {mount['target']: mount for mount in services['robot-control']['volumes']}
     for target in ('/workspace/src', '/workspace/packages', '/workspace/docker'):
         assert mounts[target]['read_only'] and not mounts[target]['bind'].get('create_host_path', False)

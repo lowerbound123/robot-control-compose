@@ -140,9 +140,3 @@ def test_router_local_help_is_distinct_from_mcp_help():
     router.submit("mcp help")
     assert service.calls == [("help", {})]
     router.close()
-
-
-def test_mcp_name_cannot_be_declared_as_policy_extension():
-    from rc_policy_sdk.commands import command_specs
-    with pytest.raises(ValueError, match="reserved"):
-        command_specs({"tui_commands": {"mcp": {"handler": "mcp", "args": []}}})

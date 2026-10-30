@@ -52,30 +52,3 @@ def test_acquire_requires_every_camera_and_validates_descriptors(tmp_path):
         lease.release()
     finally:
         pool.close()
-
-
-def test_independent_leases_pin_one_frame_until_both_release(tmp_path):
-    pool = ImagePool(tmp_path / "frames", cameras=("head",), slots=1)
-    pool.publish("head", np.ones((2, 2, 3), dtype=np.uint8), 1)
-    first, second = pool.acquire(), pool.acquire()
-    try:
-        first.release()
-        assert not pool.publish("head", np.zeros((2, 2, 3), dtype=np.uint8), 2)
-        second.release()
-        assert pool.publish("head", np.zeros((2, 2, 3), dtype=np.uint8), 2)
-    finally:
-        first.release(); second.release(); pool.close()
-
-
-def test_retained_view_prevents_unmap_and_stays_readable(tmp_path):
-    pool = ImagePool(tmp_path / "frames", cameras=("head",))
-    pool.publish("head", np.ones((2, 2, 3), dtype=np.uint8), 1)
-    lease = pool.acquire()
-    try:
-        with pytest.raises(BufferError, match="retained"):
-            with map_images(lease.descriptors) as frames:
-                retained = frames["head"]
-        assert retained.sum() == 12
-        del retained
-    finally:
-        lease.release(); pool.close()

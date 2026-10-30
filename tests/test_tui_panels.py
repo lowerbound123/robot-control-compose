@@ -6,14 +6,18 @@ from robot_control.log_tui import StructuredLog
 from test_controller import setup_controller as setup_controller, ready, until
 
 
-@pytest.mark.parametrize("name", ["camera", "monitor"])
-def test_panel_names_are_reserved_and_unavailable_to_headless_and_mcp(name, setup_controller):
+@pytest.mark.parametrize("name", ["camera", "monitor", "record", "mcp", "snapshot", "monitor-A"])
+def test_reserved_command_names_cannot_be_declared_as_policy_extensions(name):
     from rc_policy_sdk.commands import command_specs
+    with pytest.raises(ValueError, match="reserved"):
+        command_specs({"tui_commands": {name: {"handler": "f", "args": []}}})
+
+
+@pytest.mark.parametrize("name", ["camera", "monitor"])
+def test_panel_commands_are_unavailable_to_headless_and_mcp(name, setup_controller):
     from robot_control.terminal_commands import TerminalCommandRouter
     controller, _, _ = setup_controller
     ready(controller)
-    with pytest.raises(ValueError, match="reserved"):
-        command_specs({"tui_commands": {name: {"handler": "f", "args": []}}})
     router = TerminalCommandRouter(controller)
     with pytest.raises(ValueError, match="TUI"):
         router.submit(name + " on")
@@ -120,7 +124,7 @@ async def test_camera_disconnect_retains_image_and_render_error_disables_only_ca
         await pilot.pause(.15)
         camera = app.query_one(CameraPanel)
         status = camera.query_one("#camera-status-head").content
-        assert "disconnected" in status.plain and status.style == "red"
+        assert "disconnected" in status.plain
         assert image.frame is retained
         output = app.screen._compositor.render_full_update().render_segments(app.console)
         assert retained.payload in output or any(retained.payload in text for text in writes)

@@ -1,5 +1,4 @@
-"""Qwen's real Compose environment must support a host UID absent from passwd."""
-import getpass
+"""Qwen's real Compose environment must declare the policy container user."""
 import json
 
 import pytest
@@ -10,9 +9,8 @@ from test_setup_dynamic import ROOT, read_compose
 
 
 @pytest.mark.parametrize('identity', ['qwen35_single', 'qwen35_twostage'])
-def test_qwen_username_lookup_does_not_require_a_container_passwd_entry(tmp_path, monkeypatch, identity):
+def test_qwen_compose_declares_host_user_environment(tmp_path, identity):
     import time
-    pwd = pytest.importorskip('pwd')
     model = read_compose(ROOT / 'policy' / identity / 'compose.yaml')
     directory = tmp_path / 'policy' / identity
     directory.mkdir(parents=True)
@@ -20,16 +18,6 @@ def test_qwen_username_lookup_does_not_require_a_container_passwd_entry(tmp_path
     runtime, _ = manager(tmp_path)
     spec = runtime.prepare_spec(PolicyRecord(directory, {'id': identity}), deadline=time.monotonic() + 10)
     environment = json.loads(spec.model_json)['services']['policy']['environment']
-
-    for name in ('LOGNAME', 'USER', 'LNAME', 'USERNAME'):
-        monkeypatch.delenv(name, raising=False)
-    for name, value in environment.items():
-        monkeypatch.setenv(name, str(value))
-
-    def missing_user(uid):
-        raise KeyError(f'getpwuid(): uid not found: {uid}')
-
-    monkeypatch.setattr(pwd, 'getpwuid', missing_user)
-    # This is the lookup used by the pinned PyTorch Inductor cache path. A
-    # missing login environment must fail rather than use the test host user.
-    assert getpass.getuser().strip()
+    # The pinned PyTorch Inductor cache path looks up the login name; the image
+    # must therefore ship USER/LOGNAME instead of relying on passwd.
+    assert environment['USER'] == environment['LOGNAME'] == 'robot-control'

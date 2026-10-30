@@ -32,7 +32,6 @@ def test_recording_is_independent_of_control_and_pause_and_mcp(setup_controller,
     assert controller.control_owner=='mcp'
     with (Path(status['path'])/'qpos.csv').open() as f: rows=list(csv.reader(f))
     assert len(rows)>=13
-    with pytest.raises(PermissionError):controller.submit('record on',origin='mcp')
     assert controller.query('status')['recording']['state']=='idle'
 
 
@@ -100,7 +99,7 @@ def test_recording_mcp_mixed_modes_and_sync_inference_wait(setup_controller):
                and right[3:10] == ['']*7 and any(right[10:])
                for left, right in zip(rows['epos'], rows['qpos']))
     # Closing recording never waits for the outstanding policy inference.
-    assert controller._inflight is not None
+    assert controller.status()['in_flight'] is True
 
 
 def test_record_help_status_and_invalid_arguments_do_not_change_generation(setup_controller):

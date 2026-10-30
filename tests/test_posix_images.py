@@ -20,12 +20,16 @@ def test_named_readonly_segments_remain_until_last_reader_releases():
             assert not images['head'].flags.writeable
         first.release()
         assert not pool.publish('head', np.zeros((2, 3, 3), np.uint8), 2.)
+        second.release()
+        # The last reader releasing makes the slot reusable again.
+        assert pool.publish('head', np.ones((2, 3, 3), np.uint8), 3.)
+        second = pool.acquire()
         pool.close()
-        segment = posix_ipc.SharedMemory(descriptor['shm_name'], read_only=True)
+        segment = posix_ipc.SharedMemory(second.descriptors['head']['shm_name'], read_only=True)
         segment.close_fd()
         second.release()
         with pytest.raises(posix_ipc.ExistentialError):
-            posix_ipc.SharedMemory(descriptor['shm_name'])
+            posix_ipc.SharedMemory(second.descriptors['head']['shm_name'])
     finally:
         if first: first.release()
         if second: second.release()

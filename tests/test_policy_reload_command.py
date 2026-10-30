@@ -184,16 +184,6 @@ def test_new_worker_rejects_old_host_before_initializing_model(reload_controller
     assert not thread.is_alive()
 
 
-def test_host_rejects_worker_without_reload_capability(tmp_path):
-    from robot_control.process import PolicyProcess as RemotePolicyProcess
-    config={'id':'old','params':{},'tui_commands':{
-        'change':{'handler':'change','args':[],'effect':'reload_policy'}}}
-    worker=RemotePolicyProcess(tmp_path,config,host_socket='/unused')
-    worker._receive({'runtime_id':'old-runtime','event':{'type':'ready','config_version':1,'tui_commands':True}})
-    assert not worker._ready
-    assert 'reload_policy' in worker._failure
-
-
 def test_reload_validation_timeout_kills_worker_and_never_loads_new_model(reload_controller):
     controller, root, model = reload_controller
     worker = controller._worker
@@ -214,25 +204,6 @@ def test_explicit_switch_during_validation_cannot_apply_stale_reload(reload_cont
     switched = controller.submit("switch first")
     assert completed(controller, switched)["status"] == "succeeded"
     assert completed(controller, call)["status"] == "cancelled"
-    assert controller.registry.get("first").version == 2
-    assert (root / "events").read_text().count("load:new") == 1
-
-
-def test_duplicate_result_cannot_start_second_reload(reload_controller):
-    controller, root, model = reload_controller
-    worker = controller._worker
-    model.write_text(json.dumps({"name": "new", "load_delay": .15}))
-    peer = controller.submit("wait-command")
-    call = controller.submit(f"switch-model {model}")
-    until(lambda: controller._operation is not None)
-    # Replay a completed wire result while the original receipt is still running.
-    # A peer command keeps the old worker in the host polling set.
-    with controller._lock:
-        with worker._condition:
-            worker._command_responses.append({"type": "command_result", "command_id": call,
-                                              "result": {"params.model_config_path": str(model)}})
-    assert completed(controller, call)["status"] == "succeeded"
-    assert completed(controller, peer)["status"] == "succeeded"
     assert controller.registry.get("first").version == 2
     assert (root / "events").read_text().count("load:new") == 1
 

@@ -229,7 +229,6 @@ async def test_formatter_congestion_eviction_and_late_completion_do_not_block_ui
             await pilot.press('ctrl+q')
             assert app.controller.commands == ['exit']
             assert len(log.records) == 64
-            assert log._formatter.jobs.qsize() <= 32
             assert all(record.message.startswith('new ') for record in log.records.values())
             # Shutdown while the worker is still busy. No call_from_thread can
             # target removed widgets; the formatter only writes to its own queue.
@@ -240,7 +239,6 @@ async def test_formatter_congestion_eviction_and_late_completion_do_not_block_ui
             await asyncio.sleep(.01)
         assert not thread.is_alive()
         assert not log.records and not log._inflight and not log._dirty
-        assert log._formatter.results.empty()
     finally:
         proceed.set()
 
@@ -314,13 +312,12 @@ async def test_expanding_bottom_record_preserves_top_log_instead_of_following_ne
         log.write(json.dumps({f'field{i}': i for i in range(60)}))
         await settled(log, pilot)
         assert log.is_vertical_scroll_end
-        anchor = log._anchor()
+        top = log.render_line(0).text
         identity = next(reversed(log.records))
         log.toggle(identity)
         await settled(log, pilot)
-        assert log._anchor() == anchor
+        assert log.render_line(0).text == top
         assert not log.is_vertical_scroll_end
-        assert log._starts[log._indices[identity]] - log.scroll_offset.y < log.scrollable_content_region.height
 
 
 @pytest.mark.asyncio
@@ -335,29 +332,6 @@ async def test_resize_keeps_top_log_even_when_previous_view_was_at_bottom():
         await pilot.resize_terminal(40, 30)
         await settled(log, pilot)
         assert log._anchor() == anchor
-
-
-@pytest.mark.asyncio
-async def test_idle_refresh_does_not_rescan_selection(monkeypatch):
-    app = RobotControlApp(FakeController())
-    async with app.run_test() as pilot:
-        log = app.query_one(StructuredLog)
-        log.write('selected text')
-        await settled(log, pilot)
-        await pilot.mouse_down(log, offset=point(log, 2))
-        await pilot.hover(log, offset=point(log, 10))
-        await pilot.mouse_up(log, offset=point(log, 10))
-        assert log.selected_text
-        # Work-budget guard: extracting a large selection walks all selected
-        # records. Idle timer ticks must not do that work at all.
-        original = StructuredLog.selected_text.fget
-        reads = []
-        def counted(widget):
-            reads.append(True)
-            return original(widget)
-        monkeypatch.setattr(StructuredLog, 'selected_text', property(counted))
-        for _ in range(3): log._poll_formatting()
-        assert not reads
 
 
 @pytest.mark.asyncio

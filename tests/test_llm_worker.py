@@ -26,7 +26,6 @@ from robot_control.robots import MockRobot
 from llm_http_helpers import model_server, response_for
 
 ROOT = Path(__file__).resolve().parents[1]
-REMOTE = True
 
 
 def wait(predicate, timeout=12):
@@ -110,8 +109,7 @@ def test_real_worker_reads_three_frames_and_returns_standard_epos(setup, frames)
         assert result['type'] == 'result', result
         assert np.asarray(result['actions']).shape == (3, 14)
         assert result['actions'][-1][2] == pytest.approx(.05)
-        if REMOTE:
-            assert result['images_released'] is True
+        assert result['images_released'] is True
         content = server.requests[0]['body']['messages'][1]['content']
         data = [part['image_url']['url'] for part in content if part['type'] == 'image_url']
         for encoded, expected in zip(data, (25, 75, 125)):
@@ -165,17 +163,13 @@ def test_long_http_call_pins_images_until_callback_or_exit_proof(setup, frames, 
             assert not pool.publish('head', np.zeros((12, 16, 3), np.uint8), time.monotonic())
             worker.close()
             assert not worker.alive
-            if REMOTE:
-                assert worker.cleanup_confirmed
+            assert worker.cleanup_confirmed
         else:
-            if hasattr(worker, 'cancel_inference'):
-                worker.cancel_inference()
             assert not pool.publish('head', np.zeros((12, 16, 3), np.uint8), time.monotonic())
             gate.set()
             result = wait(worker.poll)
             assert result['type'] in ('result', 'cancelled')
-            if REMOTE:
-                assert result['images_released'] is True
+            assert result['images_released'] is True
         lease.release()
         assert pool.publish('head', np.zeros((12, 16, 3), np.uint8), time.monotonic())
     finally:
@@ -187,7 +181,7 @@ def test_long_http_call_pins_images_until_callback_or_exit_proof(setup, frames, 
 
 def make_controller(setup, tmp_path, monkeypatch):
     _, root, _, factory, kwargs, _ = setup
-    config = read_config(template_path(ROOT / ('configs/rc.mock.yaml' if REMOTE else 'rc.yaml')))
+    config = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))
     config.update(policy_directory=str(root), startup_policy='llm_direction',
                   outputs_directory=str(tmp_path / 'outputs'), frequency_hz=50, **kwargs)
     config['robot'] = {'backend': 'mock'}

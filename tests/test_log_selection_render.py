@@ -21,15 +21,19 @@ async def test_partial_drag_changes_only_selected_background_and_keeps_glyphs_vi
         await settled(log, pilot)
         before = rendered_characters(log, 0)
         other = rendered_characters(log, 1)
-        start, end = (14, 9) if reverse else (9, 14)
+        plain = ''.join(char for char, _ in before)
+        selected_start = plain.index('alpha')
+        selected_end = selected_start + len('alpha')
+        start, end = ((selected_end, selected_start) if reverse
+                      else (selected_start, selected_end))
         await pilot.mouse_down(log, offset=point(log, start))
         await pilot.hover(log, offset=point(log, end))
         # Check the actual rendered strip during the drag, not just clipboard data.
         during = rendered_characters(log, 0)
         assert log.selected_text == 'alpha'
-        assert ''.join(char for char, _ in during) == ''.join(char for char, _ in before)
-        for i, ((_, original), (_, selected)) in enumerate(zip(before, during)):
-            if 9 <= i < 14:  # Two gutter cells, then seven prefix characters.
+        assert ''.join(char for char, _ in during) == plain
+        for index, ((_, original), (_, selected)) in enumerate(zip(before, during)):
+            if selected_start <= index < selected_end:
                 assert selected.bgcolor != original.bgcolor
                 assert selected.color == original.color
                 assert selected.color != selected.bgcolor
@@ -54,11 +58,16 @@ async def test_multiline_selection_highlights_only_selected_record_ranges():
         baseline = [rendered_characters(log, y) for y in range(3)]
         await pilot.mouse_down(log, offset=point(log, 8, 0))
         await pilot.hover(log, offset=point(log, 7, 1))
-        for y, selected_range in ((0, range(8, 12)), (1, range(2, 7)), (2, range(0))):
+        selected = 'beta\ngamma'
+        # The drag covers the tail of record 0 and the head of record 1 only.
+        for y, piece in ((0, 'beta'), (1, 'gamma'), (2, '')):
             during = rendered_characters(log, y)
+            plain = ''.join(char for char, _ in baseline[y])
+            start = plain.index(piece) if piece else len(plain)
+            end = start + len(piece)
             for x, ((_, before), (_, after)) in enumerate(zip(baseline[y], during)):
-                assert (before.bgcolor != after.bgcolor) == (x in selected_range)
+                assert (before.bgcolor != after.bgcolor) == (start <= x < end)
                 assert after.color == before.color
         await pilot.mouse_up(log, offset=point(log, 7, 1))
         await pilot.press('ctrl+shift+c')
-        assert app.clipboard == 'beta\ngamma'
+        assert app.clipboard == selected

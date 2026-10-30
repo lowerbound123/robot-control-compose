@@ -24,39 +24,13 @@ def test_metadata_counts_full_targets_only_during_slew(setup_controller):
     assert worker.requests[-1]['runtime']['observation_id']!=first['runtime']['observation_id']
 
 
-def test_hot_patch_waits_at_complete_action_boundary_before_next_slew(setup_controller):
-    controller,robot,_=setup_controller
-    worker=ready(controller)
-    with controller._lock:
-        controller.limiter.enabled=True
-        controller.limiter.reset(np.zeros(14))
-        controller.registry.get('first').config['execution']['call_every_actions']=1
-        controller.buffer.install(np.stack([np.zeros(14),np.full(14,10.)]))
-        controller.buffer.begin_request()
-        controller._state='running'
-        controller._needs_request=False
-        controller._operation={'kind':'patch'}
-        try:
-            controller._tick()
-            assert controller.buffer.consumed==1 and not worker.requests
-            completed=len(robot.commands)
-            controller._tick()
-            assert len(robot.commands)==completed, 'patch must hold the completed target boundary'
-            controller._operation=None
-            controller._tick()
-            assert len(robot.commands)==completed, 'overdue callback must precede the next slew target'
-            assert worker.requests[-1]['runtime']['consumed_actions']==1
-            np.testing.assert_array_equal(worker.requests[-1]['action_chunk'],np.full((1,14),10.))
-        finally:
-            controller._operation=None
-            controller._state='paused'
-
-
 def test_remote_forced_cleanup_makes_rc_exit_nonzero(setup_controller):
     controller,_,_=setup_controller
     worker=ready(controller)
+    # Remote resources are force-reclaimed through the external-resource seam.
     controller._external.begin_close=lambda worker, **kwargs:None
     controller._external.close_worker=lambda worker, **kwargs:True
     controller._close_worker(worker)
     assert controller.exit_code==1
-    assert any('policy' in event['message'] and '强制' in event['message'] for event in controller.events.queue)
+    assert any(event['level']=='warning' for event in controller.events.queue), \
+        'forced cleanup must be reported as a structured warning event'

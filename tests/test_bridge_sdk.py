@@ -2,6 +2,8 @@ import sys
 import time
 
 import numpy as np
+import posix_ipc
+import pytest
 
 from rc_policy_sdk.images import ImagePool, map_images
 from host_helpers import LocalPolicyProcess as PolicyProcess
@@ -22,7 +24,11 @@ def test_retained_descriptor_pins_exact_frame(tmp_path):
         retained.release()
     finally:
         pool.close()
-    assert pool._bytes == 0
+    # Reclaiming the pinned segment must invalidate stale descriptors instead of
+    # leaking the shared-memory object.
+    with pytest.raises(posix_ipc.Error):
+        with map_images(descriptors):
+            pass
 
 
 def test_optional_runtime_and_observe_during_blocked_policy(tmp_path):

@@ -230,7 +230,7 @@ def test_patch_validation_is_read_only_and_requires_current_source(tmp_path, mon
 
 def test_empty_generated_subtask_and_fast_prompt_stripping(cpu_torch, monkeypatch):
     torch = cpu_torch
-    mod = backend_module()
+    b = make_backend("two_stage")
     monkeypatch.setitem(
         sys.modules,
         "transformers",
@@ -242,25 +242,35 @@ def test_empty_generated_subtask_and_fast_prompt_stripping(cpu_torch, monkeypatc
         "observation.pixel_values": torch.ones(3, 4),
         "observation.image_grid_thw": torch.ones(3, 3, dtype=torch.long),
     }
-    policy = SimpleNamespace(
+    seen = {}
+
+    def predict_action_chunk(value):
+        seen["input_ids"] = value["observation.input_ids"].tolist()
+        seen["attention_mask"] = value["observation.attention_mask"].tolist()
+        seen["fast_token_mask"] = value["observation.fast_token_mask"]
+        return torch.zeros(1, 50, 16)
+
+    b.policy = SimpleNamespace(
         model=SimpleNamespace(
             qwen3_5_with_expert=SimpleNamespace(
                 qwen3_5=SimpleNamespace(generate=lambda **kw: kw["input_ids"])
             )
-        )
+        ),
+        predict_action_chunk=predict_action_chunk,
     )
-    count, text = mod._append_subtask_until_first_fast_token(
-        policy,
-        inputs,
-        action_token_min=100,
-        action_token_max=110,
-        max_new_tokens=128,
-        debug_tokenizer=None,
-    )
-    assert count == 0 and text == ""
-    assert inputs["observation.input_ids"].tolist() == [[1, 2]]
-    assert inputs["observation.attention_mask"].tolist() == [[1, 1]]
-    assert not inputs["observation.fast_token_mask"].any()
+    b.policy_config = SimpleNamespace(action_token_min=100, action_token_max=110)
+    b.debug_tokenizer = SimpleNamespace(decode=lambda ids, **kw: "subtask")
+    b.unnormalize = lambda data: data
+    monkeypatch.setattr(b, "_prepare_inputs", lambda *args: inputs)
+
+    actions = b.predict(np.zeros(14), {}, "task")
+
+    assert actions.shape == (50, 14) and np.isfinite(actions).all()
+    # The prompt FAST token must be stripped before generation, and an empty
+    # generated subtask must not append tokens or keep a stale FAST mask.
+    assert seen["input_ids"] == [[1, 2]]
+    assert seen["attention_mask"] == [[1, 1]]
+    assert not seen["fast_token_mask"].any()
 
 
 def test_real_vendor_import_config_roundtrip_and_transforms(

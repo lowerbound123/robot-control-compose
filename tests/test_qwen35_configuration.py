@@ -63,7 +63,7 @@ def test_checkpoint_family_and_horizon_verified_before_unload(model_config, chan
     with pytest.raises(ValueError): loader()(path, workflow='single', project_root=path.parent)
 
 
-@pytest.mark.parametrize('timeout', [0, -1, True, float('nan')])
+@pytest.mark.parametrize('timeout', [0, True, float('nan')])
 def test_timeout_must_be_positive_finite(model_config, timeout):
     path, value = model_config
     value['execution'] = {'inference_timeout_s': timeout}

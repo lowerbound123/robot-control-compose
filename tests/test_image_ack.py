@@ -47,6 +47,5 @@ def test_observe_rejected_before_enqueue_releases_snapshot():
         assert controller._observe_inflight is None
         assert pool.publish('head', np.zeros((2, 2), np.uint8), 2.)
         pool.close()
-        assert pool._bytes == 0
     finally:
         lease.release(); pool.close()

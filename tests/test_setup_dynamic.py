@@ -10,12 +10,6 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 
 
-def test_base_has_only_two_services():
-    model=read_compose(ROOT/'compose.yaml')
-    assert set(model['services'])=={'ipc-anchor','robot-control'}
-    assert set(model['services']['robot-control']['depends_on'])=={'ipc-anchor'}
-
-
 def test_setup_selection_is_catalog_not_installed_list(tmp_path):
     from setup_project import select_policies
     from test_policy_catalog_v3 import plugin

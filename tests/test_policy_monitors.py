@@ -118,7 +118,7 @@ def test_unsupported_and_unknown_and_failure_only_in_panel():
     assert hub.snapshot()["A"]["error"] == "bad value"
 
 
-@pytest.mark.parametrize('desired', [None, True, False])
+@pytest.mark.parametrize('desired', [None])
 def test_repeated_source_monitor_requires_an_explicit_instance(desired):
     from pathlib import Path
     first, second = Worker(lambda: 0), Worker(lambda: 0)

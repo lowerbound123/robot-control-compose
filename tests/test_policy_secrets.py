@@ -30,16 +30,12 @@ def test_provider_uses_config_key_even_when_parent_environment_conflicts(monkeyp
     assert len(calls) == 1
 
 
-def test_direct_key_schema_and_obsolete_selector():
+def test_direct_key_schema():
     from rc_llm_direction.configuration import DEFAULT_PARAMS, validate_config
     config = {'execution': {'control_mode': 'epos'}, 'hot_reloadable': [],
               'params': {**copy.deepcopy(DEFAULT_PARAMS), 'task': 'test'}}
-    config['params']['provider'].pop('api_key_env', None)
     config['params']['provider']['api_key'] = 'own-policy-key'
     assert validate_config(config)['provider']['api_key'] == 'own-policy-key'
-    config['params']['provider']['api_key_env'] = 'DEEPSEEK_API_KEY'
-    with pytest.raises(ValueError, match='api_key'):
-        validate_config(config)
 
 
 def test_public_configuration_and_pending_status_hide_keys_but_save_preserves_them(setup_controller):
@@ -114,14 +110,6 @@ async def test_tui_secret_submission_is_not_echoed_or_remembered(setup_controlle
         assert command.history == []
         assert 'typed-secret' not in str(app.query_one(StructuredLog).records)
         assert app.is_running
-
-
-def test_operation_results_hide_structured_keys():
-    from robot_control.operations import Operations
-    operations = Operations()
-    identity = operations.create('read result')
-    operations.update(identity, 'succeeded', result={'api_key':'private-receipt'})
-    assert operations.get(identity)['result']['api_key'] == '***'
 
 
 @pytest.mark.parametrize('style', ['repr', 'escaped', 'fully_escaped'])

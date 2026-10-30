@@ -76,8 +76,8 @@ def release(context):
 '''
 
 
-@pytest.mark.parametrize('source_id', ['a', 'a' * 48])
-def test_two_numbered_hosts_load_same_source_with_independent_contexts(tmp_path, source_id):
+def test_two_numbered_hosts_load_same_source_with_independent_contexts(tmp_path):
+    source_id = 'a'
     folder = tmp_path / source_id
     folder.mkdir()
     (folder / 'main.py').write_text('''
@@ -159,18 +159,6 @@ def host_case(tmp_path):
             try: obj.close()
             except Exception: pass
         host.close(); lease.release(); pool.close()
-
-
-def test_hanging_release_is_bounded_and_manual_reload_uses_new_runtime(host_case):
-    _, worker, _, _ = host_case
-    a = worker('a', release_delay=10)
-    old_pid = a.pid
-    start = time.monotonic()
-    assert a.close()
-    assert time.monotonic() - start < 7
-    assert a.cleanup_confirmed
-    replacement = worker('a')
-    assert replacement.pid != old_pid
 
 
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='local helper needs Python 3.14; cross-container grammar checked by Docker integration')

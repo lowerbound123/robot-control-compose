@@ -56,20 +56,15 @@ def test_host_only_accepts_assigned_directory_and_hello_binds_generation(tmp_pat
     finally:host.shutting_down=True
 
 
-def test_chain_duplicate_bare_commands_are_not_routed_to_last_member():
-    from robot_control.chain_config import chain_commands
-    spec={'handler':'change','args':[]}
-    members=[SimpleNamespace(instance_id=x, config={'id':x,'tui_commands':{'change':spec}}) for x in ('a','b')]
-    commands,targets=chain_commands(members)
-    assert 'change' not in commands
-    assert targets=={'a-change':('a','change'),'b-change':('b','change')}
-
-
 def test_sdk_cleanup_does_not_confirm_live_root_even_without_descendants(monkeypatch):
     import rc_policy_sdk.supervisor as supervisor
     monkeypatch.setattr(supervisor,'descendant_snapshot',lambda *_:{})
     monkeypatch.setattr(supervisor,'_reap',lambda *_:None)
-    clock=iter([0,10,20]); monkeypatch.setattr(supervisor.time,'monotonic',lambda:next(clock))
+    now=[0.0]
+    def clock():
+        now[0]+=10.0
+        return now[0]
+    monkeypatch.setattr(supervisor.time,'monotonic',clock)
     assert supervisor._cleanup(SimpleNamespace(poll=lambda:None,pid=123)) is False
 
 

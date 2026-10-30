@@ -96,20 +96,6 @@ from rc_policy_sdk.host import PolicyHost
     subprocess.run([sys.executable,'-I','-c',code,str(ROOT)],check=True)
 
 
-def test_template_fixture_does_not_copy_private_legacy_main_config(tmp_path):
-    from project_templates import copy_templates
-    source=tmp_path/'source';source.mkdir()
-    (source/'policy.yaml.example').write_text('params: {}\n')
-    (source/'policy.json').write_text('{"secret":"do-not-copy"}')
-    (source/'model.json.example').write_text('{"default":true}')
-    (source/'model.json').write_text('{"secret":"do-not-copy"}')
-    destination=tmp_path/'copy'
-    copy_templates(source,destination)
-    assert not (destination/'policy.json').exists()
-    assert (destination/'policy.yaml').read_text() == 'params: {}\n'
-    assert json.loads((destination/'model.json').read_text()) == {'default':True}
-
-
 def test_schema_errors_from_files_do_not_echo_values(tmp_path):
     from robot_control.config import load_rc
     from robot_control.policy_catalog import read_descriptor

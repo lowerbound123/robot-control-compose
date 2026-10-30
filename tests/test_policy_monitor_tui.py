@@ -3,7 +3,6 @@ import time
 import pytest
 from robot_control.log_tui import StructuredLog
 
-from rc_policy_sdk.commands import command_specs
 from robot_control.terminal_commands import TerminalCommandRouter
 from robot_control.tui import CommandInput, RobotControlApp
 from robot_control.policy_monitor_tui import PolicyMonitorPanel, PolicyMonitorSidebar
@@ -11,13 +10,9 @@ from test_tui import FakeController
 from test_terminal_commands import RecordingController
 
 
-def test_monitor_commands_are_reserved_local_and_have_help():
-    with pytest.raises(ValueError, match="reserved"):
-        command_specs({"tui_commands":{"monitor-A":{"handler":"f", "args":[]}}})
+def test_monitor_commands_toggle_and_have_help():
     controller = RecordingController()
     router = TerminalCommandRouter(controller)
-    with pytest.raises(ValueError, match="TUI"):
-        router.submit("monitor-A on")
     calls = []
     router.panel_handler = lambda name, desired: calls.append((name, desired))
     router.submit("monitor-A")
@@ -80,6 +75,7 @@ async def test_policy_panels_wrap_resize_scroll_and_restore_log_width():
         controller.policy_monitors.values["B"] = dict(values={"line":"x" * 3000}, status="ready", updated_at=time.monotonic(), error=None)
         await pilot.pause(.15)
         assert panels[0].size.height > initial
+        expanded = panels[0].size.height
         assert "[bold]" in panels[0].content.plain and "\x1b" not in panels[0].content.plain
         assert sidebar.max_scroll_y > 0
         assert command.region.bottom <= app.size.height
@@ -87,14 +83,16 @@ async def test_policy_panels_wrap_resize_scroll_and_restore_log_width():
         await pilot.pause(.1)
         assert log.region.right <= sidebar.region.x
         assert panels[0].size.height > initial
+        narrow_width = log.size.width
         controller.policy_monitors.values["A"]["values"] = {"ok":1}
         await pilot.pause(.1)
-        assert panels[0].size.height < 12
+        assert panels[0].size.height < expanded
+        assert "阶段" not in panels[0].content.plain
         app.router.submit("monitor-A off")
         app.router.submit("monitor-B off")
         await pilot.pause(.1)
         assert not sidebar.display
-        assert log.size.width >= 55
+        assert log.size.width > narrow_width
         controller.done.set()
         await pilot.pause(.08)
     assert controller.policy_monitors.closed

@@ -1,5 +1,4 @@
 """Tests consume shipped examples, never a developer's private YAML/JSON or .env."""
-import json
 from pathlib import Path
 import shutil
 
@@ -15,7 +14,8 @@ def copy_templates(source, destination, **kwargs):
     previous = kwargs.pop('ignore', None)
     def ignored(directory, names):
         result = set(previous(directory, names) if previous else ())
-        result.update(name for name in names if name == '.env' or name == '__pycache__' or
+        # Private env files are never copied; only shipped *.env.example templates are kept.
+        result.update(name for name in names if name.endswith('.env') or name == '__pycache__' or
                       name.endswith(('.json', '.yaml', '.yml')) and (Path(directory) / (name + '.example')).is_file() or
                       name.endswith('.json') and (name == 'policy.json' or name == 'rc.json' or name.startswith('rc.'))
                       and (Path(directory) / (name[:-5] + '.yaml.example')).is_file())

@@ -221,11 +221,10 @@ def test_pause_wins_over_already_queued_resume_ack(setup_controller):
 def test_failed_close_does_not_recycle_reader_lease(setup_controller):
     controller, robot, _ = setup_controller
     process = ready(controller)
-    class Lease:
-        released = 0
-        def release(self):
-            self.released += 1
-    lease = Lease()
+    pool = controller._pool
+    for camera in ("head", "left_wrist", "right_wrist"):
+        pool.publish(camera, np.zeros((2, 2, 3), np.uint8), 1.0)
+    lease = pool.acquire()
     with controller._lock:
         controller._inflight = {"worker": process, "lease": lease}
         close = process.close
@@ -233,14 +232,19 @@ def test_failed_close_does_not_recycle_reader_lease(setup_controller):
         def fail():
             raise RuntimeError("descendant remains")
         process.close = fail
-        with pytest.raises(RuntimeError):
-            controller._close_worker(process)
-        controller._clear_finished_lease()
-        assert lease.released == 0
-        process.close = close
+        try:
+            with pytest.raises(RuntimeError):
+                controller._close_worker(process)
+            controller._clear_finished_lease()
+            # A closed pool cannot reclaim a segment while an unconfirmed reader lease is held.
+            pool.close()
+            assert pool._bytes > 0
+        finally:
+            process.close = close
         controller._close_worker(process)
         controller._clear_finished_lease()
-        assert lease.released == 1
+        assert controller._inflight is None
+        assert pool._bytes == 0
 
 
 def test_delayed_command_cannot_burst_slew_steps(setup_controller):
