@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from llm_failure_helpers import Provider, Runtime, done, images, make, manifest, wait
+from llm_failure_helpers import Provider, Runtime, done, images, make, manifest, provider_settings, wait
 
 
 def events(capsys):
@@ -28,9 +28,8 @@ def test_every_real_query_has_unique_id_instance_and_independent_collection_time
     monkeypatch.setattr(module, 'monotonic', lambda: clock[0])
     config = manifest()
     config['id'] = 'llm_failure-2'
-    config['params']['provider']['timeout_s'] = 30.
     provider, runtime = Provider(), Runtime(300, epoch=7)
-    instance = make(config, provider)
+    instance = make(config, provider, settings=provider_settings(timeout_s=30.))
     try:
         chunk = launch(instance, runtime)
         done(instance)
@@ -156,7 +155,7 @@ def test_result_that_completed_after_deadline_is_discarded(monkeypatch, capsys):
 
 def test_provider_error_is_recorded_before_next_policy_callback_and_redacted(capsys):
     from rc_llm_failure.errors import ProviderError
-    secret = manifest()['params']['provider']['api_key']
+    secret = provider_settings()['api_key']
     instance = make(provider=Provider(ProviderError('provider echoed ' + secret)))
     runtime = Runtime()
     try:

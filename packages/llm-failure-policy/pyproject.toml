@@ -7,7 +7,7 @@ name = "rc-llm-failure"
 version = "0.1.0"
 description = "Asynchronous visual failure detection for robot policy chains"
 requires-python = ">=3.11"
-dependencies = ["rc-policy-sdk>=0.10.0", "numpy>=1.26,<3", "Pillow>=10.3,<14", "openai>=3.37,<4"]
+dependencies = ["rc-llm-provider-config>=0.1.0", "rc-policy-sdk>=0.10.0", "numpy>=1.26,<3", "Pillow>=10.3,<14", "openai>=3.37,<4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

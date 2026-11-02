@@ -20,6 +20,10 @@ def manifest(**params):
             'hot_reloadable': [], 'params': {**copy.deepcopy(DEFAULT_PARAMS), 'task': 'put the block in the tray', **params}}
 
 
+def with_test_provider(config, provider):
+    return DirectionPolicy(config, {'type': 'deepseek', 'model': 'test'}, provider=provider)
+
+
 def baseline():
     return np.array([.2, -.3, .4, .4, -.2, .7, -1., -.2, .3, .5, -.1, .4, -.3, -2.])
 
@@ -112,7 +116,7 @@ def images():
 
 def test_threshold_preserves_prefix_and_uses_tail_for_new_targets():
     provider = Provider(Decision('up', 'close', False))
-    instance = DirectionPolicy(manifest(request_when_remaining=2, chunk_size=4), provider=provider)
+    instance = with_test_provider(manifest(request_when_remaining=2, chunk_size=4), provider)
     prefix = np.tile(baseline(), (3, 1)).astype(np.float32)
     runtime = Runtime()
     passed = instance.policy({'eef': [0] * 14}, prefix, {}, runtime)
@@ -131,7 +135,7 @@ def test_threshold_preserves_prefix_and_uses_tail_for_new_targets():
 
 def test_empty_uses_feedback_and_aba_calls_model_once():
     provider = Provider(Decision('forward', 'noop', False))
-    instance = DirectionPolicy(manifest(), provider=provider)
+    instance = with_test_provider(manifest(), provider)
     runtime = Runtime()
     chunk = instance.policy({'eef': baseline()}, [], images(), runtime)
     assert chunk[-1, 0] == pytest.approx(.25)
@@ -146,7 +150,7 @@ def test_empty_uses_feedback_and_aba_calls_model_once():
 
 def test_completion_requests_pause_and_returns_valid_placeholder():
     provider = Provider(Decision('noop', 'noop', True))
-    instance = DirectionPolicy(manifest(), provider=provider)
+    instance = with_test_provider(manifest(), provider)
     runtime = Runtime()
     result = instance.policy({'eef': baseline()}, [], images(), runtime)
     assert len(runtime.pauses) == 1
@@ -155,7 +159,7 @@ def test_completion_requests_pause_and_returns_valid_placeholder():
 
 def test_incomplete_camera_input_pauses_without_sending_request():
     provider = Provider(Decision('up', 'noop', False))
-    instance = DirectionPolicy(manifest(), provider=provider)
+    instance = with_test_provider(manifest(), provider)
     runtime = Runtime()
     result = instance.policy({'eef': baseline()}, [], {'head': images()['head']}, runtime)
     assert runtime.pauses and not provider.calls

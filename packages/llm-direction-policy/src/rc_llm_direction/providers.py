@@ -47,7 +47,7 @@ class ProviderClient:
         key = settings.get('api_key', '')
         key = key.strip() if isinstance(key, str) else ''
         if not key:
-            raise ValueError('provider.api_key is required in the policy configuration file')
+            raise ValueError('api_key is required in the provider configuration file')
         self.client = OpenAI(api_key=key, base_url=settings['base_url'],
                              timeout=settings['timeout_s'], max_retries=0)
         if settings['type'] == 'openai_decisions' and not hasattr(self.client, 'decisions'):

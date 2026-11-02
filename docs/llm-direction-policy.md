@@ -38,37 +38,18 @@
 | `translation_m` / `rotation_rad` | 0.05 / 0.1，有限正数 |
 | `gripper_open` / `gripper_close` | -3.4 / 0，有限数值 |
 | `image_max_side` / `jpeg_quality` | 1024 / 85；保持比例、不放大小图 |
-| `provider.timeout_s` | 30；SDK 网络超时，整轮还受 RC `timeouts.inference_s` 限制 |
+| `provider_config_path` | 默认 `provider.yaml`，相对本策略来源目录，也可用容器内可见的绝对路径 |
 
 模型不接收历史图像或历史对话。图像以 JPEG data URL 直接通过 HTTPS/HTTP 发给配置的供应商，三张分别携带相机名称；不会上传到另一个图床。编码总长度上限 16 MiB。共享内存视图只在回调期间借用，lease 要等回调释放确认或进程树退出证明才能回收。
 
-下方 Python 配置编辑示例应在 RC 环境，或设置好 `PYTHONPATH=src:packages/policy-sdk/src` 的 setup 工具环境中运行。供应商模板位于 `policy/llm_direction/providers/`：
+运行 `setup` 后，在本策略目录的供应商文件中填写 `api_key`。每份 YAML 配置一个后端，顶层字段为 `type`、`model`、`base_url`、`api_key`、`timeout_s` 和 `output_format`。网络超时默认 30 秒，整轮推理还受 RC 的 `timeouts.inference_s` 限制。初始化和切换预检只读本地文件。自建服务也需要填写其接受的凭证或占位值。
 
-| 文件 | API | 密钥字段 | 输出方式 |
+| 文件 | `type` | 接口 | `output_format` |
 | --- | --- | --- | --- |
-| `deepseek.json` | DeepSeek Chat Completions，`deepseek-flash` | `api_key` | `json_object` |
-| `openai_compatible.json` | 自定义 Chat Completions，模型自行填写 | `api_key` | `json_schema`、`json_object` 或 `text` |
-| `openai_decisions.json` | OpenAI Decisions，`gpt-6-luna` | `api_key` | `choice` |
-| `openai.json` | OpenAI Responses，`gpt-6-luna` | `api_key` | `json_schema` |
-
-模板是 `params.provider` 对象，不是独立 policy manifest。初始化不访问供应商，但会检查 task、配置及params.provider.api_key 是否已填写。自建无认证服务也需在对应字段提供其允许的占位凭证，因为官方 SDK 要求 API key 参数。
-
-在启动 RC 前，可以从项目根目录运行以下示例，原子更新 task 和供应商对象：
-
-```bash
-PYTHONPATH=src:packages/policy-sdk/src .setup/tools-venv/bin/python - <<'PY'
-import json
-from pathlib import Path
-from robot_control.yaml_config import load_yaml_config, save_yaml_config
-
-path = Path('policy/llm_direction/policy.yaml')
-config = load_yaml_config(path)
-config['params']['task'] = '把左侧的方块放入托盘，完成后停止'
-config['params']['provider'] = json.loads(
-    Path('policy/llm_direction/providers/deepseek.json').read_text())
-save_yaml_config(path, config)
-PY
-```
+| `provider.yaml` | `deepseek` | DeepSeek Chat Completions | `json_object` |
+| `providers/openai_compatible.yaml` | `openai_compatible` | 自定义 Chat Completions | `json_schema`、`json_object` 或 `text` |
+| `providers/openai_decisions.yaml` | `openai_decisions` | OpenAI Decisions | `choice` |
+| `providers/openai.yaml` | `openai` | OpenAI Responses | `json_schema` |
 
 自定义供应商需要修改 `base_url`、`model` 与 `output_format`。`base_url` 为 API 前缀，不是完整 `/chat/completions` 地址；不得含密钥、用户名、查询参数或 fragment。无论是否支持服务端 JSON Schema，返回值都会在本地严格检查：只有 `left`、`right`、布尔 `done`，拒绝未知动作、重复键、额外字段和不完整输出。拒答、超时、格式错误、HTTP 错误会暂停；不会自动重试、修复 JSON、切换模型或切换接口。
 
@@ -82,7 +63,7 @@ Decisions 使用单题 226 个联合选项（左右手 15×15，再加完成）�
 
 ```bash
 ./setup.sh --policies hold,llm_direction
-# 编辑 policy/llm_direction/policy.yaml 的 task 和 provider.api_key
+# 在 policy.yaml 中填写 params.task，在选中的供应商 YAML 中填写 api_key
 ./scripts/compose.sh up -d
 ./scripts/compose.sh attach robot-control
 ```
@@ -123,15 +104,21 @@ pause
 set policy.params.task "把物体向前移一次，然后停止"
 set policy.params.prompt "根据三张图像选择小步动作，确定完成后停止。"
 set policy.params.request_when_remaining 2
-save-config policy
+save-config policy llm_direction
 resume
 ```
 
-更换供应商和密钥时编辑 policy.yaml 中的 params.provider 并重新加载策略。密钥字段禁止在线 set；show 输出掩码，save-config 保留实际值。
+先在候选文件中填写密钥，然后在 TUI 中切换。需要下次启动也使用这个文件时，显式保存该实例。
 
-原生链通过 `manage-policy` 编排，所有成员须为 `epos`。默认 hold 和两个 Qwen 都是 `qpos`，不能直接加入同一链。`A → B → A` 复用 A 实例；若 A 生成的动作长度大于触发阈值，第二次 A 调用仅透传，不再请求 LLM。后续成员可以加工动作，但最终输出仍必须满足 epos 契约。
+```text
+policy llm_direction switch-provider providers/openai.yaml
+save-config policy llm_direction
+resume
+```
 
-链模式不接受含糊的 `set policy.*`。可先独立切换到该成员修改并 `save-config policy`，然后重新应用链；或停止 RC、修改文件，再启动 RC。直接修改已被 registry 缓存的 manifest 不会自动热更新。
+候选文件未通过校验时，当前实例继续使用已加载的配置。校验通过后，RC 清理旧运行组并冷重载，完成后暂停。更新同一文件里的模型或密钥时，再次执行相同命令即可。RC 的命令回执和配置保存只涉及所选路径。
+
+原生链通过 `manage-policy` 编排，所有成员须为 `epos`。同一策略出现多次时，每个环节各有实例，例如 `policy llm_direction-1 switch-provider provider.yaml`。冷重载会重建整条链，只有指定实例采用新路径。使用 `save-config policy llm_direction-1` 可将该实例的选择写回来源目录，作为以后加载时的默认值。
 
 暂停、MCP 接管、配置冷重载和退出都会使旧动作失效。HTTP 请求可能仍需等返回或超时，迟到结果不能恢复动作。用户 `resume` 才允许下一次模型决策；硬超时或 worker 故障后先重新加载 policy。
 
@@ -140,7 +127,7 @@ resume
 ./scripts/compose.sh down
 ```
 
-更新密钥需要重建容器环境；先正常 stop，再 `up -d --force-recreate`。更新依赖或适配包后先 build，再 up。正常停止先让 RC 结束回调与释放 policy，host 负责必要的进程树清理。失去释放证明的帧不能提前复用；全栈停止后 IPC namespace 最终销毁。输出、配置和快照绑定目录继续保留。
+更新镜像依赖后，重新运行该策略的 setup 构建步骤。正常停止先让 RC 结束回调与释放 policy，host 负责必要的进程树清理。失去释放证明的帧不能提前复用；全栈停止后 IPC namespace 最终销毁。输出、配置和快照绑定目录继续保留。
 
 ## 准备与验证
 

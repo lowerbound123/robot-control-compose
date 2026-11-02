@@ -7,20 +7,20 @@ from uuid import uuid4
 
 from rc_policy_sdk.actions import normalize_actions
 
-from .configuration import validate_config, selected_provider
+from .configuration import validate_config
 from .diagnostics import Diagnostics, provider_metadata, sanitize
 from .errors import ProviderError
 from .images import encode_snapshot
 
 
 class FailurePolicy:
-    def __init__(self, config, *, provider=None):
+    def __init__(self, config, provider_settings, *, provider=None):
         self.params = validate_config(config)
         self.instance_id = config['id']
         self.control_mode = config['execution']['control_mode']
-        self._provider_settings = selected_provider(self.params)
+        self._provider_settings = provider_settings
         self._provider_label = 'GPT Decisions' if self._provider_settings['type'] == 'openai_decisions' else 'DeepSeek'
-        self._diagnostics = Diagnostics(self.params['provider']['api_key'], self.params['decision_api']['api_key'])
+        self._diagnostics = Diagnostics(provider_settings['api_key'])
         self._diagnostic_context = local()
         if provider is None:
             from .providers import ProviderClient

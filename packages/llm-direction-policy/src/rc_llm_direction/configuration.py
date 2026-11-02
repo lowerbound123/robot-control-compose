@@ -1,7 +1,8 @@
-"""Cold policy settings. Credentials are explicit policy configuration values."""
+"""Cold manifest settings and supported provider profiles for direction decisions."""
 import copy
 import math
-from urllib.parse import urlsplit
+
+from rc_llm_provider_config import load_provider_config
 
 
 DEFAULT_PROMPT = (
@@ -14,11 +15,8 @@ DEFAULT_PARAMS = {
     'request_when_remaining': 0, 'chunk_size': 30,
     'translation_m': .05, 'rotation_rad': .1, 'gripper_open': -3.4, 'gripper_close': 0.,
     'image_max_side': 1024, 'jpeg_quality': 85,
-    'provider': {'type': 'deepseek', 'model': 'deepseek-flash',
-                 'base_url': 'https://api.deepseek.com', 'api_key': '',
-                 'output_format': 'json_object', 'timeout_s': 30.},
+    'provider_config_path': 'provider.yaml',
 }
-PROVIDERS = ('deepseek', 'openai_compatible', 'openai_decisions', 'openai')
 
 
 def _number(value, name, *, positive=False):
@@ -48,28 +46,10 @@ def validate_config(config):
         raise ValueError('request_when_remaining must be smaller than chunk_size')
     for name in ('translation_m', 'rotation_rad', 'gripper_open', 'gripper_close'):
         _number(params[name], name, positive=name in ('translation_m', 'rotation_rad'))
-    provider = params['provider']
-    if not isinstance(provider, dict) or set(provider) != set(DEFAULT_PARAMS['provider']):
-        raise ValueError('provider must contain type, model, base_url, api_key, output_format, timeout_s')
-    if provider['type'] not in PROVIDERS:
-        raise ValueError('unknown LLM provider type')
-    if not isinstance(provider['model'], str) or not provider['model'].strip():
-        raise ValueError('provider.model must be nonempty')
-    if not isinstance(provider['api_key'], str):
-        raise ValueError('provider.api_key must be a string')
-    try:
-        url = urlsplit(provider['base_url'])
-        valid_url = (url.scheme in ('http', 'https') and bool(url.hostname)
-                     and not url.username and not url.password and not url.query and not url.fragment)
-        url.port
-    except (TypeError, ValueError, AttributeError):
-        valid_url = False
-    if not valid_url:
-        raise ValueError('base_url must be an HTTP(S) base without credentials, query or fragment')
-    allowed = {'deepseek': ('json_object',), 'openai': ('json_schema',),
-               'openai_decisions': ('choice',),
-               'openai_compatible': ('json_schema', 'json_object', 'text')}
-    if provider['output_format'] not in allowed[provider['type']]:
-        raise ValueError('output_format is unsupported by the selected provider adapter')
-    _number(provider['timeout_s'], 'provider.timeout_s', positive=True)
     return params
+
+
+def load_provider(path, policy_root):
+    formats = {'deepseek': ('json_object',), 'openai': ('json_schema',),
+               'openai_decisions': ('choice',), 'openai_compatible': ('json_schema', 'json_object', 'text')}
+    return load_provider_config(path, policy_root, formats)

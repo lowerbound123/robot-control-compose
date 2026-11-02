@@ -14,7 +14,7 @@
 
 ## 判断结果与控制权
 
-默认 DeepSeek 后端的模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。开启 `decision_api.enabled` 后，改用单次 `POST /v1/decisions`，只提一个名为 `failed` 的 choice 问题，在 `not_failed` / `failed` 两个字符串选项中选择，再严格映射为布尔值。返回多个答案、错误名称、其他答案类型、未提供的选项或非字符串值均判为协议错误；拒答按供应商故障处理。两种后端的系统契约都明确说明：正常过渡、尚未完成、暂时遮挡或证据不足不能单独判定失败。
+默认 DeepSeek 后端的模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。选择 `type: openai_decisions` 的供应商文件后，改用单次 `POST /v1/decisions`，只提一个名为 `failed` 的 choice 问题，在 `not_failed` / `failed` 两个字符串选项中选择，再严格映射为布尔值。返回多个答案、错误名称、其他答案类型、未提供的选项或非字符串值均判为协议错误；拒答按供应商故障处理。两种后端的系统契约都明确说明：正常过渡、尚未完成、暂时遮挡或证据不足不能单独判定失败。
 
 `failed=true` 在下一次有效 `policy()` 回调调用：
 
@@ -36,7 +36,7 @@ runtime.finish("llm_failure：<当前供应商> 判断任务已进入失败状�
 ./setup.sh --policies llm_failure
 ```
 
-编辑生成的 `policy/llm_failure/policy.yaml`，必须填写 `params.task` 和所选后端的 `api_key`。默认 `params.decision_api.enabled: false` 使用原有 `params.provider` DeepSeek 设置；设为 `true` 时使用 `params.decision_api` 子组的 GPT Decisions 设置。只要求当前后端的密钥非空，另一个可留空；两个子组始终严格检查字段结构、类型、模型、URL 和超时。密钥来自该实例配置，不读取全局环境凭证，初始化不会联系供应商。所有参数均为冷配置，修改后重新加载运行组。
+在生成的 `policy.yaml` 中填写 `params.task`，在 `params.provider_config_path` 指向的文件中填写 `api_key`。每个实例在自己的 worker 中读取所选文件，初始化和切换预检只做本地校验。
 
 | 字段 | 默认值 / 要求 |
 |---|---|
@@ -46,29 +46,27 @@ runtime.finish("llm_failure：<当前供应商> 判断任务已进入失败状�
 | `history_size` | 5，范围 2–16，包含当前组 |
 | `image_max_side` | 1024，范围 1–4096，保持比例，不放大小图 |
 | `jpeg_quality` | 85，范围 1–95 |
-| `provider.model` | `deepseek-flash` |
-| `provider.base_url` | `https://api.deepseek.com` |
-| `provider.api_key` | DeepSeek 启用时必填 |
-| `provider.timeout_s` | 30，有限正数 |
-| `decision_api.enabled` | `false`，严格布尔值；启用 GPT Decisions |
-| `decision_api.model` | `gpt-6-luna`，可配置为账户实际可用的 Decisions 模型 |
-| `decision_api.base_url` | `https://api.openai.com/v1` |
-| `decision_api.api_key` | GPT Decisions 启用时必填 |
-| `decision_api.timeout_s` | 30，有限正数；启用后用于 HTTP 与提交期限 |
+| `provider_config_path` | 默认 `provider.yaml`，相对本策略来源目录，也可用容器内可见的绝对路径 |
 
-例如开启 GPT Decisions：
+默认的 `provider.yaml` 选择 DeepSeek。GPT Decisions 模板位于本策略的 `providers/openai_decisions.yaml`。两种文件都在顶层填写后端类型、模型、API 地址、密钥和超时。例如：
 
 ```yaml
-params:
-  decision_api:
-    enabled: true
-    model: gpt-6-luna
-    base_url: https://api.openai.com/v1
-    api_key: '<本实例密钥>'
-    timeout_s: 30.0
+type: openai_decisions
+model: gpt-6-luna
+base_url: https://api.openai.com/v1
+api_key: ''
+timeout_s: 30.0
 ```
 
-上面仅展示子组选项，保留配置中的 task、prompt、图像参数及 provider 组。旧配置省略整个 `decision_api` 组时继续使用 DeepSeek；显式提供子组时需填写该组完整字段。Decisions 官方参考目前列出 `gpt-6-luna`，具体模型权限与服务可用性取决于供应商和账户；不支持时明确报错，不回退 Chat Completions。沿用策略锁定的 OpenAI SDK，不增加模型依赖或额外容器。
+填写所选文件的密钥后，可在 TUI 中切换。如果链中有两个失败检测实例，以下命令对第二个生效：
+
+```text
+policy llm_failure-1 switch-provider providers/openai_decisions.yaml
+save-config policy llm_failure-1
+resume
+```
+
+只有一个实例时使用 `llm_failure`。候选文件校验失败时，原实例继续使用已加载的设置。校验成功后 RC 冷重载整个运行组，新组保持暂停，其他实例保留各自的路径。再次指定同一路径会重读文件。`save-config` 是可选步骤，只将选定路径写回来源策略的 `policy.yaml`。该文件是以后创建实例时的默认配置。
 
 默认 `control_mode=qpos`，可改为 `epos` 或 `mixed`，但必须与链首策略一致。检查器要求非空前序动作，因此应作为链成员使用，不能单独启动后依靠它生成保持动作。
 
@@ -127,7 +125,7 @@ mcp return_and_wait {"timeout_s":30}
 mcp get_policy_result
 ```
 
-不指定 `timeout_s` 时一直等待；MCP 调用超时或断连不会取消任务，随后可以查询结果。需要 SDK/RC 0.10 或更新版本，更新源代码后重建 RC 和该策略镜像。原 `llm_direction` 不受影响。
+不指定 `timeout_s` 时一直等待；MCP 调用超时或断连不会取消任务，随后可以查询结果。需要 SDK/RC 0.10 或更新版本，更新源代码后重建 RC 和该策略镜像。
 
 ## 验证与边界
 

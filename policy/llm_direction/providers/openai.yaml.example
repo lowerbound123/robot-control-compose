@@ -1,0 +1,6 @@
+type: openai
+model: gpt-6-luna
+base_url: https://api.openai.com/v1
+api_key: ''
+timeout_s: 30.0
+output_format: json_schema

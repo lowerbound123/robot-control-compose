@@ -57,7 +57,7 @@ docker run --rm --shm-size=512m \
   --mount "type=bind,source=$PWD,target=/workspace,readonly" \
   -e HOME=/tmp \
   -e RC_SOURCE_MODULES='{"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}' \
-  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/qwen35-policy/src:/workspace/packages/llm-direction-policy/src:/workspace/packages/llm-failure-policy/src:/workspace/packages/pi05-policy/src:/workspace/ros_ws/src/robot_control_test_sim \
+  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/qwen35-policy/src:/workspace/packages/llm-direction-policy/src:/workspace/packages/llm-failure-policy/src:/workspace/packages/llm-provider-config/src:/workspace/packages/pi05-policy/src:/workspace/ros_ws/src/robot_control_test_sim \
   -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   robot-control-compose-dynamic-tests:local \
   python3 -m pytest -p pytest_asyncio.plugin -q -p no:cacheprovider
@@ -152,3 +152,11 @@ Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 poli
 首次 Linux 全套触发既有 MCP 测试的启动竞态：HTTP 服务已监听，但 policy 仍在 switch，提前 take 正常返回 `busy: switch`。通过延迟测试 worker 启动 0.2 秒稳定复现，仅修正测试为等待初始化完成；生产控制逻辑不变。相同延迟实验转绿，MCP 模块 7 项通过，随后完整 Linux 套件通过。
 
 证据目录：`/private/tmp/rc-failure-decisions-20261030/`，包括 `host-full.log`、`linux-verified.log`、`policy-linux-verified.log`、`incremental-sdk337.txt` 和 `mcp-delayed-start-red.txt` / `mcp-delayed-start-green.txt`。未调用真实收费 API，也未进行真机准确率验收。
+
+## LLM 供应商文件与实例切换（2026-11-02）
+
+主机完整套件（Python 3.11）1086 passed、17 skipped；ROS 2 Humble 完整套件（Python 3.10）997 passed、19 skipped。两个 LLM Python 3.11 运行镜像均从最终锁文件构建，并在禁网容器内通过实际 Compose 源码挂载初始化，覆盖方向策略四份、失败检测两份 YAML 配置。
+
+本地 HTTP 验证了切换后第一次请求的接口、模型及凭证。重复实例链覆盖校验失败保留旧组、同路径重读、成功后暂停、显式保存到来源目录。跨容器失败检测使用 mock 机器人，4 次本地 HTTP 请求后正常退出，退出码为 0。
+
+两套测试各有 13 条 Pillow 弃用告警。Linux 的两条录制器强制退出用例另有线程告警；在起始提交 `689822c` 和本次代码上单独复测，两项均通过且未重现告警。

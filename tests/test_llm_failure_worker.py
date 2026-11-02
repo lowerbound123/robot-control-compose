@@ -30,11 +30,11 @@ def setup(tmp_path, monkeypatch):
             copy_templates(ROOT / 'policy/llm_failure', folder)
             config = read_config(folder / 'policy.yaml')
             config['params']['task'] = 'put the block in the tray'
-            config['params']['provider'].update(base_url=server.url, timeout_s=4., api_key='local-test-key')
             if decision_api:
-                config['params']['decision_api'].update(enabled=True, base_url=server.url,
-                                                        timeout_s=4., api_key='local-decision-key')
-                config['params']['provider']['api_key'] = ''
+                config['params']['provider_config_path'] = 'providers/openai_decisions.yaml'
+            profile = folder / config['params']['provider_config_path']
+            profile.write_text(json.dumps({**read_config(profile), 'base_url': server.url,
+                                           'timeout_s': 4., 'api_key': 'local-test-key'}))
             (folder / 'policy.yaml').write_text(json.dumps(config))
             return folder, config
         try:
@@ -122,10 +122,16 @@ def test_worker_releases_frames_while_http_is_pending(setup, frames, forced_clos
         worker.close()
 
 
-@pytest.mark.parametrize('verdict,waiting', [(True, True), (True, False), (False, True), ('invalid', True), ('tail_failure', True)])
-def test_real_chain_async_check_and_mcp_ownership(setup, tmp_path, verdict, waiting):
+@pytest.mark.parametrize('verdict,waiting,switch_backend', [
+    (True, True, False), (True, False, True), (False, True, False),
+    ('invalid', True, False), ('tail_failure', True, False)])
+def test_real_chain_async_check_and_mcp_ownership(setup, tmp_path, verdict, waiting, switch_backend):
     server, root, create = setup
-    create()
+    folder, _ = create()
+    if switch_backend:
+        alternate = folder / 'providers/openai_decisions.yaml'
+        alternate.write_text(json.dumps({**read_config(alternate), 'base_url': server.url,
+                                         'model': 'new-failure-model', 'api_key': 'alternate-failure-key'}))
     producer = root / 'producer'
     producer.mkdir()
     (producer / 'main.py').write_text('''
@@ -148,6 +154,7 @@ def release(context): pass
 from pathlib import Path
 from . import implementation
 def initialize(config): return implementation.initialize(config)
+def switch_provider(context, path): return implementation.switch_provider(context, path)
 def policy(context, state, action_chunk, images, config, *, runtime):
     result = implementation.policy(context, state, action_chunk, images, config, runtime=runtime)
     if runtime._control_requests: Path({str(marker)!r}).touch()
@@ -181,6 +188,9 @@ def release(context): pass
     path.write_text(json.dumps(rc))
     gate = threading.Event()
     body = response_for('deepseek', {'failed': True if verdict == 'tail_failure' else verdict})
+    if switch_backend:
+        from test_llm_failure_providers import decision_response
+        body = decision_response()
     server.responses.append({'wait': gate, 'body': body})
     server.responses.extend({'body': response_for('deepseek', {'failed': False})} for _ in range(20))
     controller = RobotController(path, robot=MockRobot(), process_factory=LocalPolicyProcess)
@@ -189,6 +199,12 @@ def release(context): pass
     try:
         wait(lambda: controller.status()['state'] in ('paused', 'fault'), 12)
         assert controller.status()['state'] == 'paused', controller.read_events()
+        if switch_backend:
+            from test_chain_controller import operation
+            previous = controller._worker
+            receipt = operation(controller, controller.submit('policy llm_failure switch-provider providers/openai_decisions.yaml'))
+            assert previous.cleanup_confirmed and controller.status()['state'] == 'paused'
+            assert 'alternate-failure-key' not in str(receipt) and not server.requests
         worker = controller._worker
         service.start()
         if waiting:
@@ -203,6 +219,10 @@ def release(context): pass
         wait(lambda: controller.status()['consumed'] > before + 3)
         assert controller.status()['control_owner'] == 'policy'
         assert len(server.requests) == 1
+        if switch_backend:
+            request = server.requests[0]
+            assert (request['path'], request['body']['model'], request['authorization']) == (
+                '/v1/decisions', 'new-failure-model', 'Bearer alternate-failure-key')
         gate.set()
         if verdict is False:
             wait(lambda: len(server.requests) >= 2)

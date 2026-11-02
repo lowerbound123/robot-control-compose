@@ -19,9 +19,11 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 
 ## YAML 主配置与手动迁移
 
-RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。`model.json`、provider JSON、checkpoint 元数据、机器运行记录、状态快照、`global.env` 和部署 env 保持原格式。
+RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。每个 LLM 策略目录中的 `provider.yaml` 和 `providers/*.yaml` 由 setup 从同名 `.example` 首次生成，权限为 `0600`。再次运行 setup 会保留已有文件。任务写入策略主配置，凭证填写在所选供应商文件中。
 
-旧主配置 JSON 必须手动迁移。先正常 `down`，再将原值填写到新 YAML（JSON 内容本身也是合法 YAML，可先手动改扩展名），并将旧主配置移出活动配置位置。setup 检测到旧文件或新旧并存时会报错，不会自动转换，也不会为它另建默认 YAML。实施更新不会改动本机已有配置。迁移后执行 setup 重建 RC 依赖镜像一次，再按原覆盖参数启动；policy 运行镜像无需新增 YAML 依赖。
+`model.json`、checkpoint 元数据、机器运行记录、状态快照、`global.env` 和部署 env 保持原格式。
+
+旧主配置 JSON 必须手动迁移。先正常 `down`，再将原值填写到新 YAML（JSON 内容本身也是合法 YAML，可先手动改扩展名），并将旧主配置移出活动配置位置。setup 检测到旧文件或新旧并存时会报错，不会自动转换，也不会为它另建默认 YAML。实施更新不会改动本机已有配置。迁移后执行 setup 重建 RC 依赖镜像一次，再按原覆盖参数启动；两个 LLM 策略也需用 `./setup.sh --policies llm_failure,llm_direction` 构建带 YAML 解析依赖的运行镜像。
 
 YAML 使用 1.2 语义，数据仍限于字符串、有限数字、布尔值、null、列表和字符串键字典。重复键、多文档、YAML 1.1 指令、自定义标签、合并键和循环引用均拒绝；日期文本需加引号。普通别名按独立值进入运行时。错误只给出文件、位置与类别，不打印配置原文。
 

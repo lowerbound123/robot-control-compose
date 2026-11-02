@@ -61,9 +61,9 @@ policy/my_policy/
 
 ## 配置与权限
 
-RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。model/provider JSON 和通信格式保持不变。
+RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。两个 LLM 策略各自通过 `params.provider_config_path` 读取供应商 YAML。在 TUI 中用 `policy <实例> switch-provider <文件路径>` 切换，成功后暂停。
 
-主配置 `.yaml.example`、业务配置 `.json.example` 和 `deployment.env.example` 用于生成缺失配置。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。setup 保留现有配置值并备份变更；不会把未知模型格式解释为 Qwen。
+主配置和 LLM 供应商配置使用 `.yaml.example`，模型配置使用 `.json.example`，部署环境使用 `deployment.env.example`。setup 从模板生成缺失文件，保留已有供应商文件。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。
 
 RC 持有 Docker daemon 管理权限，用于管理同一 daemon 下的兄弟容器。setup 探测 Unix socket 路径与 GID；不假定固定组号、不修改 socket 为全员可写。策略不会得到 Docker socket 或 host PID namespace。anchor 仅初始化通信卷，然后降权；常驻进程使用宿主用户 UID/GID。
 

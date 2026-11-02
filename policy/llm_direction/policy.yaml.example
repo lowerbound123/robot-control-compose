@@ -16,11 +16,12 @@ params:
   gripper_close: 0.0
   image_max_side: 1024
   jpeg_quality: 85
-  provider:
-    type: deepseek
-    model: deepseek-flash
-    base_url: https://api.deepseek.com
-    output_format: json_object
-    timeout_s: 30.0
-    api_key: ''
+  provider_config_path: provider.yaml
 hot_reloadable: []
+tui_commands:
+  switch-provider:
+    handler: switch_provider
+    args: [str]
+    help: 校验供应商配置文件并冷重载，完成后等待 resume
+    timeout_s: 30
+    effect: reload_policy

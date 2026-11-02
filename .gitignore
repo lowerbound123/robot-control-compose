@@ -1,3 +1,4 @@
+.DS_Store
 .codex/
 **/global.env
 **/.global.env.*
@@ -38,3 +39,11 @@ ros_ws/log/
 /configs/rc*.yml
 /policy/*/policy.yaml
 /policy/*/policy.yml
+
+# Private LLM provider profiles (including custom names). Ship *.yaml.example.
+/policy/llm_direction/**/*.yaml
+/policy/llm_direction/**/*.yml
+/policy/llm_failure/**/*.yaml
+/policy/llm_failure/**/*.yml
+!/policy/llm_direction/compose.yaml
+!/policy/llm_failure/compose.yaml

@@ -36,11 +36,12 @@ def encode_images(images, params):
 
 
 class DirectionPolicy:
-    def __init__(self, config, *, provider=None):
+    def __init__(self, config, provider_settings, *, provider=None):
         self.params = validate_config(config)
+        self._provider_settings = provider_settings
         if provider is None:
             from .providers import ProviderClient
-            provider = ProviderClient(self.params['provider'])
+            provider = ProviderClient(provider_settings)
         self.provider = provider
         self.closed = False
 
@@ -57,7 +58,7 @@ class DirectionPolicy:
             return remaining
         anchor = remaining[-1].copy() if len(remaining) else epos(state['eef'])
         request_id, started = uuid.uuid4().hex, time.monotonic()
-        metadata = {'provider': self.params['provider']['type'], 'model': self.params['provider']['model'],
+        metadata = {'provider': self._provider_settings['type'], 'model': self._provider_settings['model'],
                     'request_id': request_id}
         try:
             encoded = encode_images(images, self.params)

@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'src'), str(ROOT/'packages/policy-sdk/src')]
 
-from config_files import configuration_updates, merge_rc_env, read_json, write_updates
+from config_files import configuration_updates, initialize_provider_files, merge_rc_env, read_json, write_updates
 from config_validation import validate_documents, load
 
 
@@ -167,6 +167,7 @@ def setup(root, policies=None, *, config_only=False):
         return "'"+str(value).replace("'", "\\'")+"'"
     changes.append((root/'.setup/base.env',''.join(f'{k}={quote(v)}\n' for k,v in managed.items()).encode()))
     write_updates(root,changes)
+    initialize_provider_files(root / 'policy')
     for name in ('outputs/runtime','snapshot'):
         (root/name).mkdir(parents=True,exist_ok=True)
     from robot_control import policy_catalog as catalog

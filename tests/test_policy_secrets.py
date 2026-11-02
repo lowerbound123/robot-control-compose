@@ -1,5 +1,4 @@
 from config_helpers import read_config
-import copy
 import json
 from pathlib import Path
 import sys
@@ -15,13 +14,12 @@ sys.path.insert(0, str(ROOT / 'packages/llm-direction-policy/src'))
 def test_provider_uses_config_key_even_when_parent_environment_conflicts(monkeypatch):
     pytest.importorskip('openai', reason='provider client requires the optional LLM environment')
     from rc_llm_direction import providers
-    from rc_llm_direction.configuration import DEFAULT_PARAMS
     calls = []
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'wrong-parent-key')
     monkeypatch.setenv('OPENAI_API_KEY', 'wrong-global-key')
     monkeypatch.setattr(providers, 'OpenAI', lambda **kwargs: calls.append(kwargs))
-    settings = {**DEFAULT_PARAMS['provider'], 'api_key': 'own-policy-key'}
-    settings.pop('api_key_env', None)
+    settings = read_config(ROOT / 'policy/llm_direction/provider.yaml.example')
+    settings['api_key'] = 'own-policy-key'
     providers.ProviderClient(settings)
     assert calls[0]['api_key'] == 'own-policy-key'
     settings['api_key'] = ''
@@ -30,12 +28,12 @@ def test_provider_uses_config_key_even_when_parent_environment_conflicts(monkeyp
     assert len(calls) == 1
 
 
-def test_direct_key_schema():
-    from rc_llm_direction.configuration import DEFAULT_PARAMS, validate_config
-    config = {'execution': {'control_mode': 'epos'}, 'hot_reloadable': [],
-              'params': {**copy.deepcopy(DEFAULT_PARAMS), 'task': 'test'}}
-    config['params']['provider']['api_key'] = 'own-policy-key'
-    assert validate_config(config)['provider']['api_key'] == 'own-policy-key'
+def test_direct_key_schema(tmp_path):
+    from rc_llm_direction.configuration import load_provider
+    settings = read_config(ROOT / 'policy/llm_direction/provider.yaml.example')
+    settings['api_key'] = 'own-policy-key'
+    (tmp_path / 'provider.yaml').write_text(json.dumps(settings))
+    assert load_provider('provider.yaml', tmp_path)['api_key'] == 'own-policy-key'
 
 
 def test_public_configuration_and_pending_status_hide_keys_but_save_preserves_them(setup_controller):

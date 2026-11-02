@@ -1,8 +1,7 @@
 """Cold settings for the independent failure detector."""
 import copy
-import math
-from urllib.parse import urlsplit
 
+from rc_llm_provider_config import load_provider_config
 from rc_policy_sdk.actions import CONTROL_MODES
 
 
@@ -15,10 +14,7 @@ DEFAULT_PROMPT = (
 DEFAULT_PARAMS = {
     'task': '', 'prompt': DEFAULT_PROMPT, 'check_every_steps': 60, 'history_size': 5,
     'image_max_side': 1024, 'jpeg_quality': 85,
-    'decision_api': {'enabled': False, 'model': 'gpt-6-luna',
-                     'base_url': 'https://api.openai.com/v1', 'api_key': '', 'timeout_s': 30.},
-    'provider': {'model': 'deepseek-flash', 'base_url': 'https://api.deepseek.com',
-                 'api_key': '', 'timeout_s': 30.},
+    'provider_config_path': 'provider.yaml',
 }
 
 
@@ -39,40 +35,9 @@ def validate_config(config):
                                     ('image_max_side', 1, 4096), ('jpeg_quality', 1, 95)):
         if type(params[name]) is not int or not minimum <= params[name] <= maximum:
             raise ValueError(f'{name} must be an integer from {minimum} to {maximum}')
-    decision = params['decision_api']
-    if not isinstance(decision, dict) or set(decision) != set(DEFAULT_PARAMS['decision_api']):
-        raise ValueError('decision_api must contain enabled, model, base_url, api_key and timeout_s')
-    if type(decision['enabled']) is not bool:
-        raise ValueError('decision_api.enabled must be boolean')
-    for group in ('provider', 'decision_api'):
-        _validate_backend(params[group], group, required_key=(decision['enabled'] == (group == 'decision_api')))
     return params
 
 
-def selected_provider(params):
-    enabled = params['decision_api']['enabled']
-    settings = dict(params['decision_api'] if enabled else params['provider'])
-    settings.pop('enabled', None)
-    settings['type'] = 'openai_decisions' if enabled else 'deepseek'
-    return settings
-
-
-def _validate_backend(provider, group, *, required_key):
-    if not isinstance(provider, dict) or set(provider) != set(DEFAULT_PARAMS[group]):
-        raise ValueError(f'{group} has missing or unknown fields')
-    for name in ('model', 'api_key'):
-        if (not isinstance(provider[name], str)
-                or ((name == 'model' or required_key) and not provider[name].strip())):
-            raise ValueError(f'{group}.{name} must be a string and nonempty when required')
-    try:
-        url = urlsplit(provider['base_url'])
-        valid = (url.scheme in ('http', 'https') and bool(url.hostname) and not url.username
-                 and not url.password and not url.query and not url.fragment)
-        url.port
-    except (TypeError, ValueError, AttributeError):
-        valid = False
-    if not valid:
-        raise ValueError('base_url must be HTTP(S) without credentials, query or fragment')
-    timeout = provider['timeout_s']
-    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(f'{group}.timeout_s must be positive and finite')
+def load_provider(path, policy_root):
+    formats = {'deepseek': (), 'openai_decisions': ()}
+    return load_provider_config(path, policy_root, formats)

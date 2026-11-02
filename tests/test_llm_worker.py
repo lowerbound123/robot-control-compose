@@ -46,14 +46,17 @@ def setup(tmp_path, monkeypatch):
     root.mkdir()
     with model_server() as server:
         config = read_config(template_path(ROOT / 'policy/llm_direction/policy.yaml'))
-        config['params']['provider'].pop('api_key_env', None)
         config['params'].update(task='move up then stop', chunk_size=3)
-        config['params']['provider'].update(base_url=server.url, api_key='local-test-only', timeout_s=4.)
         for name in ('llm_direction', 'b'):
             folder = root / name
             copy_templates(ROOT / 'policy/llm_direction', folder)
             cfg = {**copy.deepcopy(config), 'id': name}
+            if name == 'b':
+                cfg.pop('tui_commands')  # This fixture is a plain passthrough.
             (folder / 'policy.yaml').write_text(json.dumps(cfg))
+            profile = folder / 'provider.yaml'
+            profile.write_text(json.dumps({**read_config(profile), 'base_url': server.url,
+                                           'api_key': 'local-test-only', 'timeout_s': 4.}))
         (root / 'b/main.py').write_text('''
 def initialize(config): return None
 def policy(context, state, action_chunk, images, config): return action_chunk
@@ -179,10 +182,10 @@ def test_long_http_call_pins_images_until_callback_or_exit_proof(setup, frames, 
             held.release()
 
 
-def make_controller(setup, tmp_path, monkeypatch):
+def make_controller(setup, tmp_path, monkeypatch, startup='llm_direction'):
     _, root, _, factory, kwargs, _ = setup
     config = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))
-    config.update(policy_directory=str(root), startup_policy='llm_direction',
+    config.update(policy_directory=str(root), startup_policy=startup,
                   outputs_directory=str(tmp_path / 'outputs'), frequency_hz=50, **kwargs)
     config['robot'] = {'backend': 'mock'}
     config['safety']['enabled'] = False
@@ -205,6 +208,56 @@ def test_controller_executes_then_pauses_on_done(setup, tmp_path, monkeypatch):
         assert controller.status()['consumed'] == 3
         assert controller.status()['queue_remaining'] == 0
         assert controller._worker.alive
+    finally:
+        controller.submit('exit')
+        assert controller.done.wait(15)
+
+
+def test_switch_provider_reloads_only_selected_chain_config_and_saves_path(setup, tmp_path, monkeypatch):
+    from test_chain_controller import operation
+    server, root, *_ = setup
+    source = root / 'llm_direction'
+    relative = 'providers/openai.yaml'
+    profile = source / relative
+    settings = {**read_config(profile), 'base_url': server.url, 'api_key': 'alternate-private-key'}
+    profile.write_text(json.dumps({**settings, 'model': 'first-model'}))
+    bad = tmp_path / 'broken.yaml'
+    bad.write_text('api_key: [private-parse-error\n')
+    controller = make_controller(setup, tmp_path, monkeypatch, startup='default_chain')
+    try:
+        old = controller._worker
+        cmd = 'policy llm_direction-0 switch-provider '
+        rejected = operation(controller, controller.submit(cmd + str(bad)), 'failed')
+        assert bad.name in rejected['error'] and 'private-parse-error' not in str(rejected)
+        bad.write_text(json.dumps({**settings, 'base_url': 'https://🍕.example/v1'}))
+        rejected = operation(controller, controller.submit(cmd + str(bad)), 'failed')
+        assert 'base_url' in rejected['error'] and 'alternate-private-key' not in str(rejected)
+        assert controller._worker is old and old.runnable
+
+        for count, model in enumerate(('first-model', 'edited-model'), 1):
+            if count == 2:
+                profile.write_text(json.dumps({**settings, 'model': model}))
+            receipt = operation(controller, controller.submit(cmd + relative))
+            assert old.cleanup_confirmed and controller._worker is not old
+            old = controller._worker
+            assert controller.status()['state'] == 'paused'
+            assert len(server.requests) == count - 1
+            members = {m.instance_id: m.config['params']['provider_config_path'] for m in old.record.members}
+            assert members['llm_direction-0'] == relative and members['llm_direction-1'] == 'provider.yaml'
+            assert 'alternate-private-key' not in str(receipt)
+            server.responses.append({'body': response_for('openai', {'left': 'noop', 'right': 'noop', 'done': True})})
+            controller.submit('resume')
+            wait(lambda: len(server.requests) == count and controller.status()['state'] == 'paused')
+            request = server.requests[-1]
+            assert (request['path'], request['body']['model'], request['authorization']) == (
+                '/v1/responses', model, 'Bearer alternate-private-key')
+
+        manifest_path = source / 'policy.yaml'
+        assert read_config(manifest_path)['params']['provider_config_path'] == 'provider.yaml'
+        operation(controller, controller.submit('save-config policy llm_direction-0'))
+        assert read_config(manifest_path)['params']['provider_config_path'] == relative
+        assert 'api_key' not in manifest_path.read_text()
+        assert 'alternate-private-key' not in str(controller.read_events())
     finally:
         controller.submit('exit')
         assert controller.done.wait(15)
@@ -243,11 +296,12 @@ def test_two_llm_chain_members_keep_distinct_config_keys_in_separate_hosts(setup
     _, _, request = frames
     first = copy.deepcopy(config)
     first['params'].update(chunk_size=1)
-    first['params']['provider']['api_key'] = 'first-policy-key'
     second = copy.deepcopy(config)
     second['id'] = 'b'
     second['params']['request_when_remaining'] = 2
-    second['params']['provider']['api_key'] = 'second-policy-key'
+    for name, key in [('llm_direction', 'first-policy-key'), ('b', 'second-policy-key')]:
+        profile = root / name / 'provider.yaml'
+        profile.write_text(json.dumps({**read_config(profile), 'api_key': key}))
     (root / 'llm_direction/policy.yaml').write_text(json.dumps(first))
     (root / 'b/policy.yaml').write_text(json.dumps(second))
     (root / 'b/main.py').write_text((root / 'llm_direction/main.py').read_text())

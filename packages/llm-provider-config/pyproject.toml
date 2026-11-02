@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rc-llm-provider-config"
+version = "0.1.0"
+description = "Read private provider profiles for the LLM policy workers"
+requires-python = ">=3.11"
+dependencies = ["httpx2>=2,<3", "ruamel.yaml==0.19.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

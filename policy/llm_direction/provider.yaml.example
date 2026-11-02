@@ -1,0 +1,6 @@
+type: deepseek
+model: deepseek-flash
+base_url: https://api.deepseek.com
+api_key: ''
+timeout_s: 30.0
+output_format: json_object

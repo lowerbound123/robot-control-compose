@@ -3,7 +3,7 @@ import json
 import pytest
 
 pytest.importorskip('openai', reason='provider tests require the optional LLM environment')
-from llm_failure_helpers import images, manifest
+from llm_failure_helpers import images, manifest, provider_settings
 from llm_http_helpers import model_server, response_for
 
 
@@ -121,12 +121,11 @@ def test_oversized_request_is_rejected_before_network(server):
     {'base_url': 'https://example.com?api_key=secret'}, {'base_url': 'file:///tmp/socket'},
     {'unknown': 1},
 ])
-def test_provider_configuration_rejects_bad_settings(patch):
-    from rc_llm_failure.configuration import validate_config
-    config = manifest()
-    config['params']['provider'].update(patch)
+def test_provider_configuration_rejects_bad_settings(patch, tmp_path):
+    from rc_llm_failure.configuration import load_provider
+    (tmp_path / 'provider.yaml').write_text(json.dumps(provider_settings(**patch)))
     with pytest.raises(ValueError):
-        validate_config(config)
+        load_provider('provider.yaml', tmp_path)
 
 
 def test_optional_diagnostic_callback_preserves_boolean_and_no_default_output(server, capsys):
@@ -182,9 +181,7 @@ def test_diagnostics_scrub_reflected_api_key_and_authorization(server, kind, cap
     else:
         body['choices'][0]['message'][kind if kind == 'refusal' else 'content'] = echoed
     server.responses.append(item)
-    config = manifest()
-    config['params']['provider'].update(base_url=server.url, api_key=secret)
-    instance, runtime = FailurePolicy(config), Runtime()
+    instance, runtime = FailurePolicy(manifest(), provider_settings(base_url=server.url, api_key=secret)), Runtime()
     chunk = [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)
@@ -214,9 +211,7 @@ def test_http_duration_excludes_completed_response_waiting_for_collection(server
     monkeypatch.setattr(runtime_module, 'monotonic', lambda: clock[0])
     monkeypatch.setattr(providers_module, 'monotonic', lambda: clock[0], raising=False)
     server.responses.append({'wait': gate, 'body': response_for('deepseek', {'failed': False})})
-    config = manifest()
-    config['params']['provider'].update(base_url=server.url, timeout_s=30.)
-    instance, runtime = runtime_module.FailurePolicy(config), Runtime()
+    instance, runtime = runtime_module.FailurePolicy(manifest(), provider_settings(base_url=server.url, timeout_s=30.)), Runtime()
     chunk = [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)
@@ -249,9 +244,7 @@ def test_escaped_unicode_response_is_bounded_as_complete_json_lines(server, caps
     body = response_for('deepseek', {'failed': False})
     body['choices'][0]['message']['content'] = '\x00\\"失败💥' * 5000
     server.responses.append({'body': body})
-    config = manifest()
-    config['params']['provider']['base_url'] = server.url
-    instance, runtime = FailurePolicy(config), Runtime()
+    instance, runtime = FailurePolicy(manifest(), provider_settings(base_url=server.url)), Runtime()
     chunk = [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)
@@ -310,9 +303,7 @@ def test_small_raw_response_is_retained_in_full_even_when_contract_is_invalid(se
     body['choices'][0]['message']['content'] = content
     body['usage']['completion_tokens'] = 128
     server.responses.append({'body': body})
-    config = manifest()
-    config['params']['provider']['base_url'] = server.url
-    instance, runtime = FailurePolicy(config), Runtime()
+    instance, runtime = FailurePolicy(manifest(), provider_settings(base_url=server.url)), Runtime()
     chunk = [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)
@@ -330,7 +321,7 @@ def test_small_raw_response_is_retained_in_full_even_when_contract_is_invalid(se
 
 
 def decision_settings(server=None, **patch):
-    return {'enabled': True, 'model': 'gpt-test',
+    return {'type': 'openai_decisions', 'model': 'gpt-test',
             'base_url': server.url if server else 'https://api.openai.com/v1',
             'api_key': 'decision-private-key', 'timeout_s': 2., **patch}
 
@@ -352,9 +343,7 @@ def test_decisions_real_sdk_preserves_history_and_diagnostics(server, monkeypatc
         original(handler)
     monkeypatch.setattr(server.RequestHandlerClass, 'end_headers', headers)
     server.responses.append({'body': decision_response(choice)})
-    config = manifest(decision_api=decision_settings(server))
-    config['params']['provider']['api_key'] = ''
-    instance, runtime = FailurePolicy(config), Runtime()
+    instance, runtime = FailurePolicy(manifest(), decision_settings(server)), Runtime()
     chunk = [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)
@@ -393,8 +382,7 @@ def test_decisions_rejects_unoffered_choices_without_retry(server, choice):
     from rc_llm_failure.errors import ProviderError
     server.responses.append({'body': decision_response(choice)})
     settings = decision_settings(server)
-    settings.pop('enabled')
-    provider = ProviderClient({**settings, 'type': 'openai_decisions'})
+    provider = ProviderClient(settings)
     try:
         with pytest.raises(ProviderError, match='契约'):
             provider.decide('task', 'prompt', snapshots())
@@ -403,26 +391,13 @@ def test_decisions_rejects_unoffered_choices_without_retry(server, choice):
     assert len(server.requests) == 1
 
 
-@pytest.mark.parametrize('patch', [{'enabled': 1}, {'api_key': 1}, {'timeout_s': True},
-                                   {'model': ''}, {'base_url': 1}, {'unknown': 1}])
-def test_inactive_decisions_still_validates_structure(patch):
-    from rc_llm_failure.configuration import validate_config
-    config = manifest(decision_api=decision_settings(**{'enabled': False, **patch}))
-    with pytest.raises(ValueError):
-        validate_config(config)
-
-
-def test_only_active_backend_requires_nonempty_key():
-    from rc_llm_failure.configuration import validate_config
-    config = manifest(decision_api=decision_settings())
-    config['params']['provider']['api_key'] = ''
-    assert validate_config(config)['decision_api']['enabled'] is True
-    config['params']['decision_api']['enabled'] = False
+def test_only_selected_provider_file_needs_usable_credentials(tmp_path):
+    from rc_llm_failure.configuration import load_provider
+    (tmp_path / 'deepseek.yaml').write_text(json.dumps(provider_settings(api_key='')))
+    (tmp_path / 'decisions.yaml').write_text(json.dumps(decision_settings()))
+    assert load_provider('decisions.yaml', tmp_path)['type'] == 'openai_decisions'
     with pytest.raises(ValueError, match='api_key'):
-        validate_config(config)
-    config['params']['provider']['api_key'] = 'deepseek-key'
-    config['params']['decision_api']['api_key'] = ''
-    assert validate_config(config)['decision_api']['enabled'] is False
+        load_provider('deepseek.yaml', tmp_path)
 
 
 @pytest.mark.parametrize('kind', ['http', 'timeout', 'refusal', 'wrong_name', 'extra_answer'])
@@ -444,8 +419,7 @@ def test_decisions_errors_keep_diagnostics_and_never_retry(server, kind):
     server.responses.append(item)
     metadata = []
     settings = decision_settings(server, timeout_s=.05 if kind == 'timeout' else 2.)
-    settings.pop('enabled')
-    provider = ProviderClient({**settings, 'type': 'openai_decisions'}, diagnostics=metadata.append)
+    provider = ProviderClient(settings, diagnostics=metadata.append)
     try:
         with pytest.raises(ProviderError) as error:
             provider.decide('task', 'prompt', snapshots())
@@ -457,17 +431,15 @@ def test_decisions_errors_keep_diagnostics_and_never_retry(server, kind):
     assert metadata[0]['error'] and metadata[0]['http_duration_s'] >= 0
 
 
-def test_decisions_runtime_keeps_backend_metadata_and_scrubs_both_keys(server, capsys):
+def test_decisions_runtime_keeps_backend_metadata_and_scrubs_profile_key(server, capsys):
     from rc_llm_failure.runtime import FailurePolicy
     from llm_failure_helpers import Runtime, done
     body = decision_response()
     body['usage']['input_tokens_details'] = {'cached_tokens': 8, 'cache_write_tokens': 0}
     body['usage']['output_tokens_details'] = {'reasoning_tokens': 1}
-    body['extra'] = 'inactive-private-key decision-private-key'
+    body['extra'] = 'decision-private-key'
     server.responses.append({'body': body})
-    config = manifest(decision_api=decision_settings(server, timeout_s=7.))
-    config['params']['provider'].update(api_key='inactive-private-key', timeout_s=.001)
-    instance, runtime = FailurePolicy(config), Runtime()
+    instance, runtime = FailurePolicy(manifest(), decision_settings(server, timeout_s=7.)), Runtime()
     chunk = [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)
@@ -478,7 +450,7 @@ def test_decisions_runtime_keeps_backend_metadata_and_scrubs_both_keys(server, c
     finally:
         instance.close()
     text = capsys.readouterr().out
-    assert 'inactive-private-key' not in text and 'decision-private-key' not in text
+    assert 'decision-private-key' not in text
     events = [json.loads(line) for line in text.splitlines()]
     assert [event['event'] for event in events] == [
         'llm_failure.request.started', 'llm_failure.request.completed', 'llm_failure.collection.accepted']
@@ -492,7 +464,7 @@ def test_decisions_reset_discards_late_true_and_recording_keeps_backend(server, 
     from llm_failure_helpers import Runtime, done
     from robot_control.recording_writer import SessionFiles
     server.responses.append({'body': decision_response()})
-    instance = FailurePolicy(manifest(decision_api=decision_settings(server)))
+    instance = FailurePolicy(manifest(), decision_settings(server))
     runtime, chunk = Runtime(), [[0.] * 14]
     try:
         instance.policy(chunk, images(), runtime)

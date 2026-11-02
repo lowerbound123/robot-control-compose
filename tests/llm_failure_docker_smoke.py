@@ -40,8 +40,9 @@ def container():
         path = root / 'policy/llm_failure/policy.yaml'
         config = read_config(path)
         config['params']['task'] = 'put the block in the tray'
-        config['params']['provider'].update(base_url=f'http://robot-control:{server.server_port}/v1',
-                                             api_key='local-test-key', timeout_s=15.)
+        profile = path.parent / config['params']['provider_config_path']
+        profile.write_text(json.dumps({**read_config(profile), 'base_url': f'http://robot-control:{server.server_port}/v1',
+                                      'api_key': 'local-test-key', 'timeout_s': 15.}))
         path.write_text(json.dumps(config))
         gate = threading.Event()
         server.responses.extend([

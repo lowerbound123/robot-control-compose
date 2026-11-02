@@ -12,14 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'packages/llm-failure-policy/src'))
 
 
+def provider_settings(**changes):
+    return {'type': 'deepseek', 'model': 'deepseek-flash', 'base_url': 'https://api.deepseek.com',
+            'api_key': 'test-key-not-a-real-secret', 'timeout_s': 3., **changes}
+
+
 def manifest(**params):
     return {'schema_version': 3, 'id': 'llm_failure',
             'execution': {'mode': 'sync', 'call_every_actions': 1, 'control_mode': 'qpos'},
             'hot_reloadable': [], 'params': {
                 'task': 'put the block in the tray', 'prompt': 'Check failure using the task and images.',
                 'check_every_steps': 60, 'history_size': 5, 'image_max_side': 1024, 'jpeg_quality': 85,
-                'provider': {'model': 'deepseek-flash', 'base_url': 'https://api.deepseek.com',
-                             'api_key': 'test-key-not-a-real-secret', 'timeout_s': 3.}, **copy.deepcopy(params)}}
+                'provider_config_path': 'provider.yaml', **copy.deepcopy(params)}}
 
 
 def images(value=20):
@@ -68,9 +72,9 @@ class Provider:
         self.closed += 1
 
 
-def make(config=None, provider=None):
+def make(config=None, provider=None, *, settings=None):
     from rc_llm_failure.runtime import FailurePolicy
-    return FailurePolicy(config or manifest(), provider=provider or Provider())
+    return FailurePolicy(config or manifest(), settings or provider_settings(), provider=provider or Provider())
 
 
 def done(instance):

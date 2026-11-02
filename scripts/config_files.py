@@ -88,7 +88,7 @@ def _private_directory(path):
     os.chmod(path, 0o700)
 
 
-def atomic_bytes(path, content, mode=0o600):
+def atomic_bytes(path, content, mode=0o600, *, overwrite=True):
     path = Path(path)
     if path.is_symlink():
         raise ValueError(f'{path}: symlink output is not supported')
@@ -100,10 +100,27 @@ def atomic_bytes(path, content, mode=0o600):
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        if overwrite:
+            os.replace(name, path)
+        else:
+            try:
+                os.link(name, path)
+            except FileExistsError:
+                pass  # A concurrent setup or user already created the file.
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def initialize_provider_files(policy_root):
+    templates = [*policy_root.glob('*/provider.yaml.example'), *policy_root.glob('*/providers/*.yaml.example')]
+    for template in sorted(templates):
+        target = template.with_suffix('')
+        if (template.is_symlink() or target.is_symlink()
+                or any(parent.is_symlink() for parent in template.parents if parent.is_relative_to(policy_root))):
+            raise ValueError(f'{target}: symlink configuration is not supported')
+        if not target.exists():
+            atomic_bytes(target, template.read_bytes(), overwrite=False)
 
 
 def write_updates(root, changes):

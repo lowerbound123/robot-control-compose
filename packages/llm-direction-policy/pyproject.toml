@@ -7,7 +7,7 @@ name = "rc-llm-direction"
 version = "0.1.0"
 description = "Three-camera LLM decisions converted into absolute robot epos chunks"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26,<3", "Pillow>=10.3", "scipy>=1.11", "openai>=3.26,<4"]
+dependencies = ["rc-llm-provider-config>=0.1.0", "numpy>=1.26,<3", "Pillow>=10.3", "scipy>=1.11", "openai>=3.26,<4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

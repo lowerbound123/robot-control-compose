@@ -90,7 +90,7 @@ def test_images_resize_without_upscaling_and_do_not_borrow_views():
 @pytest.mark.parametrize('provider', ['deepseek', 'openai', 'openai_decisions'])
 def test_task_completion_maps_to_one_pause(server, provider):
     server.responses.append({'body': response_for(provider, {'left': 'noop', 'right': 'noop', 'done': True})})
-    instance = DirectionPolicy(manifest(provider=settings(server, provider)))
+    instance = DirectionPolicy(manifest(), settings(server, provider))
     runtime = Runtime()
     try:
         output = instance.policy({'eef': baseline()}, [], images(), runtime)
@@ -118,7 +118,7 @@ def test_errors_pause_without_retry_fallback_or_response_leak(server, failure, c
         body['choices'][0]['message']['content'] = (secret if failure == 'invalid_json' else
             '{"left":"up","left":"down","right":"noop","done":false}')
     server.responses.append(item)
-    instance = DirectionPolicy(manifest(provider=settings(server, timeout=.06 if failure == 'timeout' else 2)))
+    instance = DirectionPolicy(manifest(), settings(server, timeout=.06 if failure == 'timeout' else 2))
     runtime = Runtime()
     try:
         output = instance.policy({'eef': baseline()}, [], images(), runtime)
