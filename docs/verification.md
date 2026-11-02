@@ -1,5 +1,46 @@
 # Schema 3 动态策略容器验收
 
+## 按改动选择测试
+
+在已安装 RC 与测试依赖的 Python 环境中，从仓库根目录运行。入口会为测试及其子进程设置当前仓库的源码路径；不安装依赖、不构建模型镜像。范围由改动的实际语义决定，不用文件名推断接口是否改变。
+
+| 改动 | 命令 | 验证范围 |
+| --- | --- | --- |
+| RC 内部、TUI、录制等改动，策略看到的契约不变；或只改 example | `python3 scripts/test_scope.py` | 运行完整 example 基线；具体模块改动另补对应 RC 单测。链只启动两个 example，其他业务策略不参与。 |
+| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage；可同时列多个来源。 |
+| 两个策略共用的实现或依赖变化 | 例如 `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage` | 单选 Qwen 测该入口、部署和 worker；两个都选时再加共享配置、调度、后端和 CUDA 用例。变更 llm-provider-config 时选 llm_direction 和 llm_failure。 |
+| RC↔policy/SDK 公共契约改变 | `python3 scripts/test_scope.py --interface` | 整个 pytest 套件，含 RC、SDK、example、业务策略和跨策略对照；按所需环境追加 Docker/模型兼容性验证。 |
+
+所有命令都可加 `--collect-only` 先看范围。无参数的 `python3 -m pytest` 仍表示全套。新增策略时，将该来源的专属测试登记在 [test_scope.py](../scripts/test_scope.py)。仅改 RC 实现并不自动升级范围；如果回调签名、action/state/images 形状、命令/manifest、热改确认、退出/租约证明或 MCP 等待 policy 结果的语义变了，即使函数名没变，也属于接口变更。策略专属模型输出、权重、CUDA 和供应商协议由对应策略验证，不能用 example 推断。
+
+**example 基线的证据**来自 [策略回调](../tests/test_example_policy.py)、[真实 worker 和重复实例](../tests/test_example_worker.py)、[RC/TUI/MCP 闭环](../tests/test_example_controller.py)、[独立外部读者](../tests/test_example_reader.py) 和 [ROS 仿真](../tests/test_example_ros.py)。它覆盖 sync/async、qpos/epos/mixed、慢推理缓存、观测/图像、监控、录制/快照、姿态存取、配置、全局状态、暂停/完成/终止/故障与控制权。RC 故障注入、部分发布、超时清理等专项仍保留原有单测。
+
+容器生命周期、IPC 或部署改动时，在默认基线之外运行 `./setup.sh --policies example` 和 `python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence`。该脚本不需要 hold 或其他策略。ROS 缺失时相应测试会跳过；在已 source Humble/ros_ws 的环境用同一入口即可执行。也可以直接用 RC 测试镜像跑包含 ROS 仿真的 example 基线，无须在宿主安装 ROS：
+
+```bash
+docker build -f docker/rc.Dockerfile --target test -t rc-example-tests:local .
+docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
+  --workdir /workspace --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+  -e HOME=/tmp -e 'PYTEST_ADDOPTS=-p no:cacheprovider' \
+  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src \
+  -e 'RC_SOURCE_MODULES={"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}' \
+  rc-example-tests:local python3 scripts/test_scope.py
+```
+
+### 0.13 同进程重初始化、实例与整链重载
+
+`tests/example_docker_smoke.py` 的 `result.json.same_process` 给出两次原进程重初始化的前后对照，分别使用空补丁和冷字段补丁。目标的容器 ID、host、runtime、PID 和模块 ID 应一致，其 context ID 每次改变，目标配置和链版本各递增一次。另一实例的容器、进程、context 和版本均应一致。宿主接口套件另外用失效的临时 main.py 验证同进程路径只使用已加载模块。
+
+验收脚本在这两次命令期间拦截 Docker 调用，任何调用都会令用例失败。随后模拟 SDK 已完成初始化、但 RC 收到错误确认。字段 `retry_after_reinitialize` 记录故障与手动恢复时的身份，核对故障阶段保留全部容器、配置维持在已提交版本，冷重试只替换指定实例。
+
+2026-11-02 验收中，宿主完整接口套件 1224 项通过、18 项跳过，Linux / ROS 2 Humble 完整接口套件 1111 项通过、19 项跳过。真实 Docker 自链使用 Python 3.10.12 的 RC 和 Python 3.14.9 的 example，目标配置版本从 4 到 5 再到 6，容器、host、PID 9 和模块身份保持一致。ROS 仿真闭环和本地 Chat / Decisions HTTP 替身均已验证，真实供应商、GPU 模型和机器人硬件未参与本轮验收。
+
+`tests/example_docker_smoke.py` 在同一条 `example → example` 链上对照两种 effect。`result.json` 的 `reload_identities` 记录每一步的容器 ID、host 身份、执行进程身份和配置版本。局部重载只应更换目标实例，整链重载应更换两者。目标创建回执丢失以及下一次 host 就绪失败时，脚本检查只剩原来的健康成员，并通过 `retry-reload example-1` 恢复。
+
+检查 `cleanup_exit` 可核对最后的 RC 退出码。故障注入可能在新容器安装信号处理前将其停止，脚本要求强制退出记录准确对应这一次创建尝试，其余成员正常释放。退出后还会核对图像池、容器和共享卷。
+
+## 历史验收
+
 本文保留 2026-10-27 的历史验收记录；源码外置后的复现命令已更新，最新验收见下方“源码挂载验收”。
 
 日期：2026-10-27。代码与部署结构已重构为基础 RC/anchor 两服务、按目录发现的独立策略容器。本页区分自动化测试、真实容器、模型和硬件证据。

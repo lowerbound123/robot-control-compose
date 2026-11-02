@@ -7,9 +7,18 @@ import shlex
 BUILTIN_COMMANDS = (
     "set", "unset", "show", "save-config", "reset", "r", "save", "load", "pause",
     "resume", "policies", "switch", "status", "help", "exit", "quit", "take", "return", "mcp",
-    "camera", "monitor", "manage-policy", "snapshot", "policy", "record",
+    "camera", "monitor", "manage-policy", "snapshot", "policy", "record", "retry-reload",
 )
+RELOAD_EFFECTS = ("reload_policy", "reload_all_policy", "reinitialize_policy")
 _TYPES = {"str": "", "int": 0, "float": 0., "bool": False}
+
+
+def check_command_effects(specs, peer):
+    supported = peer.get("tui_command_effects_v2", [])
+    for spec in specs.values():
+        effect = spec.get("effect")
+        if effect and (not isinstance(supported, list) or effect not in supported):
+            raise ValueError(f"missing v2 {effect} capability; upgrade RC and rc-policy-sdk")
 
 
 def command_specs(config):
@@ -36,8 +45,8 @@ def command_specs(config):
         help_text = entry.get("help", "")
         if not isinstance(help_text, str):
             raise ValueError(f"{name}: help must be a string")
-        if "effect" in entry and entry["effect"] != "reload_policy":
-            raise ValueError(f"{name}: effect must be reload_policy when specified")
+        if "effect" in entry and entry["effect"] not in RELOAD_EFFECTS:
+            raise ValueError(f"{name}: expected one of {RELOAD_EFFECTS} for effect")
         result[name] = {"handler": handler, "args": list(args), "help": help_text, "timeout_s": timeout}
         if "effect" in entry:
             result[name]["effect"] = entry["effect"]

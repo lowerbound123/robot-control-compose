@@ -70,18 +70,18 @@ class RecordingControl:
             self.operations.update(identity, 'running')
         except Exception as exc:
             self.operations.update(identity, 'failed', error=exc)
-            self._emit(f'录制命令失败：{exc}', 'error')
+            self._emit_command(f'录制命令失败：{exc}', 'error')
             return
 
         def finished(result):
             try:
                 status = result.result()
                 self.operations.update(identity, 'succeeded', result=status)
-                self._emit(f"record {status['state']}；目录 {status['path']}；"
+                self._emit_command(f"record {status['state']}；目录 {status['path']}；"
                     f"采样 {status['samples_written']}；重复帧 {status['repeated_frames']}；"
                     f"缺失帧 {status['missing_frames']}；采样缺口 {status['missed_samples']}；"
                     f"待写入 {status['pending_bytes']} bytes；错误 {status['error'] or '无'}")
             except Exception as exc:
                 self.operations.update(identity, 'failed', error=exc)
-                self._emit(f'录制命令失败：{exc}', 'error')
+                self._emit_command(f'录制命令失败：{exc}', 'error')
         future.add_done_callback(finished)

@@ -22,6 +22,10 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     return context.policy(action_chunk, images, runtime)
 
 
+def monitor(context):
+    return context.monitor()
+
+
 def reset_context(context):
     context.reset_context()
 

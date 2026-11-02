@@ -3,8 +3,9 @@
 默认中文交流。独立项目，不从原 robot-control、deploydev 或训练仓库导入。
 
 - 主容器为 ROS 2 Humble / Python 3.10，hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
-- 每个可执行 policy 实例独占一个容器、host 和执行进程；原生 chain 自身不增加容器，每个环节独立实例化。重复策略按出现顺序命名为 policyName-0/1/2，来源目录与镜像保持共用。冷切换先证明整个旧运行组的进程树、容器及外部 reader 已退出，再启动新组。
+- 每个可执行 policy 实例独占一个容器、host 和执行进程；原生 chain 自身不增加容器，每个环节独立实例化。重复策略按出现顺序命名为 policyName-0/1/2，来源目录与镜像保持共用。显式 switch 和 reload_all_policy 在整个旧组退出证明齐备后重建全组。reload_policy 仅重建命令目标实例，先证明其进程树、容器及外部 reader 已退出。其他成员的在途共享图像必须独立确认释放。
 - SDK 仅依赖 NumPy 与 posix-ipc，不引入 ROS/TUI/模型框架。
+- `reinitialize_policy` 在原执行进程和已加载模块中交接目标 context。先暂停并收齐读者确认，再在旧绑定上 release、新绑定上 initialize。初始化或提交失败只能手动冷重试该实例。普通动作请求摘要进状态栏，逐条输出使用 TRACE。
 - 只有控制线程发送动作并修改缓存；成功发送完整目标才消费。UI 不执行 socket I/O、推理或生命周期操作。
 - RC 参数冷改；policy 仅 manifest 白名单叶字段热改，配置引用保持不变，版本两端同时确认。
 - MCP 默认只读；接管和归还保持代次复核语义。policy 故障不抢夺 MCP 已持有的控制权。
@@ -13,4 +14,10 @@
 - 退出/信号走统一绝对期限清理；强制清理返回非零。假 ROS/mock 不代表真机验收。
 - 厂商备份保留原样，只构建 ros_ws 下的消息包；不自动启动厂商硬件驱动。
 
-长任务在忽略目录 `.codex/task-state.md` 维护唯一账本与验证证据。用 rg 搜索，第三方 API 先查 Context7（无条目时查官方来源）。阶段边界运行完整套件，平时增量验证。不提交 .codex 或运行产物。
+长任务在忽略目录 `.codex/task-state.md` 维护唯一账本与验证证据。用 rg 搜索，第三方 API 先查 Context7（无条目时查官方来源）。平时增量验证，阶段边界跑所选范围的完整套件：
+
+- RC 内部调整且对策略可见的接口/语义不变：`python3 scripts/test_scope.py`。用 example 和 example 自链验收，按改动补跑对应 RC 单测；不启动其他策略。
+- 更新策略自己的实现、配置、镜像或依赖：`python3 scripts/test_scope.py --policy <来源名> ...`，共享实现改动选所有受影响的来源。
+- 更新 RC↔policy/SDK 公共契约（含动作/观测、协议、配置、租约、生命周期和结果语义）：同步补 example 用例，`python3 scripts/test_scope.py --interface` 运行完整回归。Docker、ROS、真实模型及硬件按各自环境验收，跳过不计通过。见 `docs/verification.md`。
+
+不提交 .codex 或运行产物。

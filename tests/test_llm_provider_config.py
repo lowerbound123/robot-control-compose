@@ -53,7 +53,10 @@ def test_setup_creates_private_profiles_only_once_and_handler_returns_only_path(
     assert path.stat().st_mode & 0o777 == 0o600
     with pytest.raises(ValueError, match='api_key'):
         switch(None, relative)
-    private = '# user comment\n' + json.dumps({**read_config(path), 'api_key': 'local-test-credential'})
+    settings = {**read_config(path), 'api_key': 'local-test-credential'}
+    if policy == 'llm_failure':
+        settings['task'] = 'pick up the block'
+    private = '# user comment\n' + json.dumps(settings)
     path.write_text(private)
     from setup_project import setup
     setup(tmp_path, [], config_only=True)

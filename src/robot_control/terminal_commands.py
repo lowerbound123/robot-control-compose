@@ -105,7 +105,7 @@ class TerminalCommandRouter:
                 raise ValueError("用法：snapshot")
             return self._submit_snapshot()
         if words == ["help", "snapshot"]:
-            self.controller._emit(SNAPSHOT_HELP)
+            self.controller._emit_command(SNAPSHOT_HELP)
             return
         if words and words[0] == 'manage-policy':
             if len(words) > 2 or (len(words) == 2 and words[1] not in ('apply', 'save', 'close')):
@@ -114,7 +114,7 @@ class TerminalCommandRouter:
                 raise ValueError('manage-policy 仅支持本地 TUI')
             return self.policy_manager_handler(words[1] if len(words) == 2 else 'open')
         if words == ['help', 'manage-policy']:
-            self.controller._emit(MANAGE_HELP)
+            self.controller._emit_command(MANAGE_HELP)
             return
         if words and (words[0] in ("camera", "monitor") or words[0].startswith("monitor-")):
             if len(words) > 2 or (len(words) == 2 and words[1] not in ("on", "off")):
@@ -123,18 +123,18 @@ class TerminalCommandRouter:
                 raise ValueError(f"{words[0]} 仅支持本地 TUI")
             return self.panel_handler(words[0], None if len(words) == 1 else words[1] == "on")
         if len(words) == 2 and words[0] == "help" and words[1].startswith("monitor-"):
-            self.controller._emit(POLICY_MONITOR_HELP)
+            self.controller._emit_command(POLICY_MONITOR_HELP)
             return
         if len(words) == 2 and words[0] == "help" and words[1] in ("camera", "monitor"):
-            self.controller._emit(PANEL_HELP)
+            self.controller._emit_command(PANEL_HELP)
             return
         if words in (["mcp"], ["help", "mcp"]):
-            self.controller._emit(self.help())
+            self.controller._emit_command(self.help())
             return
         if not words or words[0] != "mcp":
             identity = self.controller.submit(line)
             if words == ["help"]:
-                self.controller._emit(MCP_HELP + "\n" + PANEL_HELP + "\n" + POLICY_MONITOR_HELP + "\n" + MANAGE_HELP + "\n" + SNAPSHOT_HELP)
+                self.controller._emit_command(MCP_HELP + "\n" + PANEL_HELP + "\n" + POLICY_MONITOR_HELP + "\n" + MANAGE_HELP + "\n" + SNAPSHOT_HELP)
             return identity
         name, arguments = parse_mcp_command(line)
         with self._lock:
@@ -170,9 +170,9 @@ class TerminalCommandRouter:
     def _report_snapshot(self, future):
         try:
             path = future.result()
-            self.controller._emit(f"snapshot 已保存：{path}")
+            self.controller._emit_command(f"snapshot 已保存：{path}")
         except Exception as exc:
-            self.controller._emit(f"snapshot 保存失败：{exc}", "error")
+            self.controller._emit_command(f"snapshot 保存失败：{exc}", "error")
         finally:
             with self._lock:
                 self._pending.discard(future)
@@ -192,11 +192,11 @@ class TerminalCommandRouter:
             images = sum(block.type == "image" for block in response.content)
             if images:
                 text += f"\n图像内容未显示（{images} 张）；请查看 images 元数据。"
-            self.controller._emit(f"MCP {name}: {text}", "error" if response.is_error else "info", **log_options)
+            self.controller._emit_command(f"MCP {name}: {text}", "error" if response.is_error else "info", **log_options)
         except CancelledError:
-            self.controller._emit(f"MCP {name}: 本地等待已取消；已接受动作的状态请查询回执", "warning", **log_options)
+            self.controller._emit_command(f"MCP {name}: 本地等待已取消；已接受动作的状态请查询回执", "warning", **log_options)
         except Exception as exc:
-            self.controller._emit(f"MCP {name} 失败：{exc}", "error", **log_options)
+            self.controller._emit_command(f"MCP {name} 失败：{exc}", "error", **log_options)
         finally:
             with self._lock:
                 self._pending.discard(future)

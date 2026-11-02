@@ -1,4 +1,6 @@
 schema_version: 3
+logging:
+  level: INFO # 冷参数；TRACE 显示每次动作请求的裁剪/缓存摘要
 global_state:
   path: global.env
   max_bytes: 1048576

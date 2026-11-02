@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import numpy as np
@@ -45,7 +46,7 @@ def images():
 
 @pytest.fixture
 def runtime():
-    return PolicyRuntime(SimpleNamespace(runtime_tools=frozenset({"pause"})), {
+    return PolicyRuntime(SimpleNamespace(runtime_tools=frozenset({"pause", "finish"})), {
         "config_version": 3,
         "runtime": {"observation_id": "sample-42", "consumed_actions": 5, "control_epoch": 9},
     })
@@ -129,7 +130,9 @@ def test_hot_config_reference_and_log_interval(example, config, images, runtime,
 
 @pytest.mark.parametrize("key,value", [("message", 1), ("message", None),
     ("log_every_n_calls", True), ("log_every_n_calls", 0), ("log_every_n_calls", -1),
-    ("log_every_n_calls", 1.5), ("log_every_n_calls", "2")])
+    ("log_every_n_calls", 1.5), ("log_every_n_calls", "2"),
+    ("inference_delay_s", True), ("inference_delay_s", -1), ("inference_delay_s", float("inf")),
+    ("reader_url", False)])
 def test_invalid_business_config_is_rejected(example, config, key, value):
     config["params"][key] = value
     before = copy.deepcopy(config)
@@ -140,11 +143,74 @@ def test_invalid_business_config_is_rejected(example, config, key, value):
     assert config == before
 
 
-@pytest.mark.parametrize("mode", ["epos", "mixed"])
-def test_qpos_fallback_cannot_be_mislabeled_as_another_mode(example, config, mode):
+@pytest.mark.parametrize("mode", ["qpos", "epos", "mixed"])
+def test_empty_chunk_uses_feedback_in_each_frames_own_coordinates(example, config, images, runtime, mode):
     config["execution"]["control_mode"] = mode
-    with pytest.raises(ValueError, match="qpos"):
-        example.initialize(config)
+    config["params"]["chunk_size"] = 3
+    context = example.initialize(config)
+    state = {"qpos": [0.25] * 14, "eef": [-0.5] * 14}
+    empty = {"actions": [], "modes": []} if mode == "mixed" else []
+    output = example.policy(context, state, empty, images, config, runtime=runtime)
+    if mode == "mixed":
+        assert output == {"actions": [state["qpos"], state["eef"], state["qpos"]],
+                          "modes": ["qpos", "epos", "qpos"]}
+    else:
+        assert output == [state["qpos" if mode == "qpos" else "eef"]] * 3
+    assert example.policy(context, {}, output, images, config, runtime=runtime) is output
+
+
+@pytest.mark.parametrize("outcome", ["pause", "completed", "terminated"])
+def test_result_is_one_shot_inference_only_and_reset_cancels_it(example, config, images, runtime, outcome):
+    context = example.initialize(config)
+    chunk = [[0] * 14]
+    example.next_result(context, outcome, "demo")
+    example.observe(context, {}, images, config, runtime=runtime)
+    assert not runtime._control_requests
+    with runtime._inference_scope():
+        assert example.policy(context, {}, chunk, images, config, runtime=runtime) is chunk
+    expected = {"type": "pause", "reason": "demo"} if outcome == "pause" else {
+        "type": "finish", "outcome": outcome, "message": "demo"}
+    assert runtime._control_requests == [expected]
+    fresh = PolicyRuntime(runtime.channel)
+    with fresh._inference_scope():
+        example.policy(context, {}, chunk, images, config, runtime=fresh)
+        example.next_result(context, outcome, "stale")
+        example.reset_context(context)
+        example.policy(context, {}, chunk, images, config, runtime=fresh)
+    assert not fresh._control_requests
+
+
+def test_invalid_cold_chunk_request_does_not_edit_live_config(example, config):
+    context = example.initialize(config)
+    for invalid in (0, -1, True, 1000000):
+        with pytest.raises(ValueError, match="chunk_size"):
+            example.set_chunk_size(context, invalid)
+    assert example.set_chunk_size(context, 3) == {"params.chunk_size": 3}
+    assert config["params"]["chunk_size"] == 1
+
+
+def test_queued_control_cannot_change_an_already_running_callback(example, config, images, runtime):
+    context = example.initialize(config)
+    entered, resume = Event(), Event()
+    def read(*_):
+        entered.set()
+        assert resume.wait(3)
+    context["reader"] = SimpleNamespace(read=read)
+    def infer(current):
+        with current._inference_scope():
+            return example.policy(context, {}, [[0] * 14], images, config, runtime=current)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(infer, runtime)
+        try:
+            assert entered.wait(3)
+            example.next_result(context, "completed", "下一轮")
+        finally:
+            resume.set()
+        running.result(3)
+    assert not runtime._control_requests
+    following = PolicyRuntime(runtime.channel)
+    infer(following)
+    assert following._control_requests == [{"type": "finish", "outcome": "completed", "message": "下一轮"}]
 
 
 def test_reset_and_idempotent_release_keep_config_reference(example, config, images, runtime, capsys):

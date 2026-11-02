@@ -4,6 +4,23 @@ from rc_policy_sdk.images import ImagePool
 from robot_control.controller import RobotController
 
 
+def test_late_old_error_during_member_cleanup_keeps_lease_and_control_generation():
+    import threading
+    controller = object.__new__(RobotController)
+    worker = type('Reader', (), {'poll': lambda self: {'type':'error', 'request_id':17}})()
+    controller._command_faults = set()
+    controller._stop = threading.Event()
+    controller.buffer = SimpleNamespace(generation=5)
+    controller._inflight = {'worker': worker, 'id':17, 'token':SimpleNamespace(generation=4)}
+    controller._operation = {'kind':'reload_member', 'old_worker':worker, 'prepared':True}
+    controller.control_owner, controller._return_requested = 'policy', False
+    pauses = []
+    controller._pause = pauses.append
+    controller._emit = lambda *args: None
+    controller._collect_prediction()
+    assert not pauses and controller._inflight['failed']
+
+
 def test_observation_error_without_release_proof_keeps_lease():
     pool=ImagePool(cameras=('head',),slots=1)
     pool.publish('head',np.ones((2,2),np.uint8),1.)

@@ -42,6 +42,7 @@ class HostClient:
             self.connection.connect(path)
             info = self._hello(self.connection)
             self.instance_id = info['host_instance_id']
+            self.reinitialize_policy = info.get('reinitialize_policy') is True
             self.connection.settimeout(None)
         except BaseException:
             self.connection.close(); raise

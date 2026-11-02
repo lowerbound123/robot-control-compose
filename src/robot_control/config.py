@@ -83,11 +83,13 @@ def _validate_rc(config):
     from .direct import control_settings
     from .mcp_config import mcp_settings
     from .tui_config import tui_settings
+    from .log_format import logging_settings
     finite_qpos(config["reset_qpos"])
     ModeLimiter(config["safety"], hz)
     config["direct_control"] = control_settings(config.get("direct_control"))
     config["mcp"] = mcp_settings(config.get("mcp"))
     config["tui"] = tui_settings(config.get("tui"))
+    config['logging'] = logging_settings(config.get('logging', {}))
     from .global_state_config import settings as global_settings
     config['global_state'] = global_settings(config.get('global_state'))
     for key in ("initialize_s", "inference_s", "release_s", "shutdown_s"):

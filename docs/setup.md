@@ -23,7 +23,7 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 
 ## YAML 主配置与手动迁移
 
-RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。每个 LLM 策略目录中的 `provider.yaml` 和 `providers/*.yaml` 由 setup 从同名 `.example` 首次生成，权限为 `0600`。再次运行 setup 会保留已有文件。任务写入策略主配置，凭证填写在所选供应商文件中。
+RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。每个 LLM 策略目录中的 `provider.yaml` 和 `providers/*.yaml` 由 setup 从同名 `.example` 首次生成，权限为 `0600`。再次运行 setup 会保留已有文件。凭证填写在所选供应商文件中。llm_failure 的任务和提示词也按供应商填写，旧部署运行 `python3 scripts/migrate_llm_failure_prompts.py` 迁移。llm_direction 的任务仍在策略主配置中。
 
 `model.json`、checkpoint 元数据、机器运行记录、状态快照、`global.env` 和部署 env 保持原格式。
 
@@ -50,7 +50,7 @@ RC 从 `/workspace/src` 导入，SDK 从 `/workspace/packages/policy-sdk/src` �
 
 首次迁移需要一次完整构建：先用原部署的 `./scripts/compose.sh down` 正常收尾，再更新源码、执行 `./setup.sh --policies <需要的策略>`，最后使用原有 Compose 覆盖参数 `up -d --no-build`。两个 Qwen 仍按相同构建输入去重。以后普通源码修改无需 setup/build。迁移前的旧镜像仍含旧实现，不能作为“源码已外置”的验收镜像。
 
-不会监视文件或主动替换已导入模块；运行中编辑源码不保证立即生效。冷切换仍先证明完整旧组退出，再启动新组。
+不会监视文件或主动替换已导入模块；运行中编辑源码不保证立即生效。整组切换先证明完整旧组退出，实例冷重载按目标实例取得退出证明。
 
 ## 基础设施元数据
 
@@ -72,7 +72,7 @@ RC 读取 `/workspace/policy/<id>/compose.yaml`，但 bind source 必须是 daem
 
 基础仅两个容器。anchor 初始化通信卷并永久降权，healthcheck 检查 PID 1 的实际 UID。RC 和策略加入同一个 anchor 的实际 container ID 对应的 IPC namespace。
 
-`startup_policy=null` 时保持空策略。指定默认策略时，RC 先取得部署锁、核对残留容器和外部 reader，再创建默认策略并初始化。成功后暂停。所有冷切换都销毁完整旧组，再启动新组；旧目录被删除不影响按 CID/可信标签清理。
+`startup_policy=null` 时保持空策略。指定默认策略时，RC 先取得部署锁、核对残留容器和外部 reader，再创建默认策略并初始化。成功后暂停。整组切换销毁完整旧组后再启动新组。实例冷重载仅替换目标，清理按容器 ID 和所属代次的标签进行。
 
 `outputs/runtime` 保存创建意图、CID、代次、退出记录与图像池身份；`outputs/recovery` 保存外部模型 owner/instance/图像 reader。账本是恢复依据，清理完成前不要删除。恢复时先取得本地与全部外部读者退出证明，再在相同 anchor/IPC 代次中核验图像头并回收旧段；IPC 身份不符时保留记录，交给完整 namespace 收尾。Docker create 超时且始终查不到容器时，不能证明请求没有迟到，保留意图并停在 BLOCKED_CLEANUP。恢复 daemon 后重新执行 down；仍无法确认时需要人工核查 daemon 的实际结果，不能靠删除账本绕过。
 
@@ -85,3 +85,13 @@ RC 的 `timeouts.shutdown_s` 默认 115 秒，基础 stop_grace_period 为 125 �
 本版不提供 v2 运行兼容。先用旧版本自己的完整部署入口完成旧容器与外部资源收尾，再使用本版。
 
 删除 RC 的 `policy_hosts`、policy 的 `policy_host`/`deployment`，将 schema 改为 3；旧 GPU/cache/model mount 取值写入各策略 `deployment.env`。Qwen `params.model_config_path` 改为相对策略目录的 `model.json`；外部权重仍可共用宿主目录。目录必须符合新 ID 规则，不自动重命名用户目录。根级策略 overlays、`rpc-init` 与 `--no-reset` 均已删除。
+
+## 从 RC/SDK 0.11 迁移重载命令
+
+RC 与 SDK 一起升级到 0.12，策略清单仍为 schema 3。旧清单中的 `effect: reload_policy` 现在只替换命令目标实例。需要原先整链重建行为的自定义命令，在其来源策略清单中改用 `effect: reload_all_policy`。`retry-reload` 已保留为本地 RC 命令，策略已有同名命令时需更名。setup 保留已有本地配置，请按需同步模板。初始化和 ready 握手双向协商 `tui_command_effects_v2`，使用重载 effect 的策略在版本不匹配时会报告升级错误。
+
+## 从 0.12 升级到 0.13
+
+需要在原进程重新初始化的命令可在 schema 3 清单中声明 `effect: reinitialize_policy`。同时更新 RC、策略 SDK 和 host，显式切换一次以启动新 host。RC 在 host 握手中检查此操作和期限支持，RC 与 SDK 在 `tui_command_effects_v2` 中双向协商。只声明旧 effect 的清单沿用已有握手。已有 `switch-model` 和 `switch-provider` 继续冷重建命令目标实例。
+
+旧 RC 配置省略 `logging.level` 时采用 INFO。需要保留每次动作请求的普通文本记录时，在 RC YAML 设为 TRACE 后重启 RC。任务级的供应商失败记录及显式命令回执使用各自的记录通道。

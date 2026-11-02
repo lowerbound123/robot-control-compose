@@ -29,12 +29,11 @@ def setup(tmp_path, monkeypatch):
             folder = root / 'llm_failure'
             copy_templates(ROOT / 'policy/llm_failure', folder)
             config = read_config(folder / 'policy.yaml')
-            config['params']['task'] = 'put the block in the tray'
             if decision_api:
                 config['params']['provider_config_path'] = 'providers/openai_decisions.yaml'
             profile = folder / config['params']['provider_config_path']
             profile.write_text(json.dumps({**read_config(profile), 'base_url': server.url,
-                                           'timeout_s': 4., 'api_key': 'local-test-key'}))
+                                           'task': 'put the block in the tray', 'timeout_s': 4., 'api_key': 'local-test-key'}))
             (folder / 'policy.yaml').write_text(json.dumps(config))
             return folder, config
         try:
@@ -131,7 +130,8 @@ def test_real_chain_async_check_and_mcp_ownership(setup, tmp_path, verdict, wait
     if switch_backend:
         alternate = folder / 'providers/openai_decisions.yaml'
         alternate.write_text(json.dumps({**read_config(alternate), 'base_url': server.url,
-                                         'model': 'new-failure-model', 'api_key': 'alternate-failure-key'}))
+                                         'model': 'new-failure-model', 'api_key': 'alternate-failure-key',
+                                         'task': 'inspect alternate tray', 'prompt': 'alternate judgement'}))
     producer = root / 'producer'
     producer.mkdir()
     (producer / 'main.py').write_text('''
@@ -201,7 +201,7 @@ def release(context): pass
         assert controller.status()['state'] == 'paused', controller.read_events()
         if switch_backend:
             from test_chain_controller import operation
-            previous = controller._worker
+            previous = controller._worker.member_workers()['llm_failure']
             receipt = operation(controller, controller.submit('policy llm_failure switch-provider providers/openai_decisions.yaml'))
             assert previous.cleanup_confirmed and controller.status()['state'] == 'paused'
             assert 'alternate-failure-key' not in str(receipt) and not server.requests
@@ -221,15 +221,19 @@ def release(context): pass
         assert len(server.requests) == 1
         if switch_backend:
             request = server.requests[0]
+            assert request['body']['input'][0]['content'][0]['text'] == 'Task:\ninspect alternate tray'
+            assert request['body']['questions'][0]['instructions'].startswith('alternate judgement\n\n')
             assert (request['path'], request['body']['model'], request['authorization']) == (
                 '/v1/decisions', 'new-failure-model', 'Bearer alternate-failure-key')
         gate.set()
-        if verdict is False:
+        if verdict is False or verdict == 'invalid':
             wait(lambda: len(server.requests) >= 2)
             assert controller.get_policy_result(identity)['status'] == 'running'
             assert controller.status()['state'] == 'running'
+            assert controller.status()['control_owner'] == 'policy'
+            assert worker.runnable
             controller.submit('pause')
-        elif verdict in ('invalid', 'tail_failure'):
+        elif verdict == 'tail_failure':
             wait(lambda: controller.get_policy_result(identity)['finished'])
             assert controller.get_policy_result(identity)['status'] == 'failed'
             if verdict == 'tail_failure':
@@ -248,5 +252,42 @@ def release(context): pass
     finally:
         gate.set()
         service.close()
+        controller.submit('exit')
+        assert controller.done.wait(12)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('decision_api', [False, True])
+async def test_real_controller_registers_instance_widget_with_six_monitor_values(setup, tmp_path, decision_api):
+    server, root, create = setup
+    create(decision_api=decision_api)
+    path = tmp_path / 'rc-monitor.yaml'
+    path.write_text(json.dumps({'schema_version': 3, 'frequency_hz': 50,
+        'policy_directory': 'policy', 'startup_policy': 'llm_failure',
+        'robot': {'backend': 'mock'}, 'safety': {'enabled': False, 'reference_frequency_hz': 50,
+        'max_delta_per_step': [.1] * 14}, 'reset_qpos': [0.] * 14, 'outputs_directory': 'outputs',
+        'timeouts': {'initialize_s': 10, 'inference_s': 5, 'release_s': 2}}))
+    controller = RobotController(path, robot=MockRobot(), process_factory=LocalPolicyProcess)
+    controller.start()
+    try:
+        wait(lambda: controller.status()['state'] in ('paused', 'fault'), 12)
+        assert controller.status()['state'] == 'paused', controller.read_events()
+        assert controller._worker.supports_monitor
+        from robot_control.graphics import GraphicsSupport
+        from robot_control.tui import CommandInput, RobotControlApp
+        from robot_control.policy_monitor_tui import PolicyMonitorPanel
+        from test_policy_manager_tui import eventually
+        app = RobotControlApp(controller, start_controller=False, graphics=GraphicsSupport('kitty'))
+        async with app.run_test(size=(110, 36)) as pilot:
+            await eventually(pilot, lambda: 'monitor-llm_failure' in app.query_one(CommandInput).commands)
+            app.router.submit('monitor-llm_failure on')
+            await eventually(pilot, lambda: controller.policy_monitors.snapshot().get('llm_failure', {}).get('values'))
+            assert controller.policy_monitors.snapshot()['llm_failure']['values'] == {
+                'in_flight': 0, 'avg_http_s': '—', 'max_http_s': '—',
+                'avg_total_tokens': '—', 'max_total_tokens': '—', 'failed_requests': 0}
+            assert len(list(app.query(PolicyMonitorPanel))) == 1
+        assert controller.status()['state'] == 'paused'
+        assert not server.requests
+    finally:
         controller.submit('exit')
         assert controller.done.wait(12)

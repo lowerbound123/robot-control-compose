@@ -29,7 +29,9 @@ switch hold --reset
 exit
 ```
 
-`switch` 默认保持当前位置，只有 `--reset` 显式复位。每次切换和冷重载都先清理整个旧运行组，包括新旧链的交集成员，再创建新容器。成功后保持暂停，需要显式 `resume`。新组失败后停在空策略故障状态。
+`switch` 默认保持当前位置，只有 `--reset` 显式复位。显式切换和 `reload_all_policy` 先清理整个旧运行组，再创建新容器。`reload_policy` 只重建命令目标实例。成功后均保持暂停，使用 `resume` 继续。局部初始化失败时，健康成员驻留并等待恢复。
+
+`reinitialize_policy` 在目标原容器、host 和执行进程中先释放旧 context，再用当前配置或冷字段补丁初始化新 context。自链可用 `example-1-reinitialize` 体验。状态栏显示最近一次动作请求返回时的裁剪与缓存帧数，`logging.level: TRACE` 启用逐条摘要。在包含 llm_failure 的链上使用 `monitor-llm_failure on` 查看本轮请求耗时、token、失败次数和在途数。
 
 ```bash
 # 先关闭 RC，再回收动态策略与外部资源，最后关闭基础设施
@@ -57,13 +59,13 @@ policy/my_policy/
 
 原生 chain 只是成员列表，自身不增加容器；`[a,b,a]` 展开为 `a-0 → b → a-1`，创建三个独立容器、host、执行进程和 context。只有重复策略编号，单例保持原名；编号按同一策略在当前链中的出现顺序从 0 开始。多个实例使用原策略目录和同一镜像，容器内源码路径保持 `/workspace/policy/a`。生成的实例名冲突时，在停止旧组前拒绝应用。SDK 内部 `PolicyChain` 仍是单 worker 内模块组合。
 
-命令与监控按实例注册，例如 `policy a-0 <command>`、`a-0-<command>`、`monitor-a-0` 和 `monitor-a-1`。`a-0` 发起的配置重载仅改变自身参数，仍通过整条链冷重建生效，其他实例保留当前配置。
+命令与监控按实例注册，例如 `policy a-0 <command>`、`a-0-<command>`、`monitor-a-0` 和 `monitor-a-1`。`a-0` 发起的重载仅修改自身参数。命令声明的 `effect` 决定重建 `a-0` 还是整条链。
 
 `save-config a-0`（兼容 `save-config policy a-0`）将该实例配置保存到原目录 `policy/a/`，落盘 `id` 仍为 `a`；当前 `a-1` 不变。同时存在多个 a 实例时，`save-config a` 会报错并要求指定实例。多个实例依次保存到同一个来源文件时，最后一次成功保存成为下次加载的默认配置。链 YAML 和编辑器保存仍记录原策略顺序 `[a,b,a]`；显式 switch 或重新应用链会从来源默认配置重新生成实例。
 
 ## 配置与权限
 
-RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。两个 LLM 策略各自通过 `params.provider_config_path` 读取供应商 YAML。在 TUI 中用 `policy <实例> switch-provider <文件路径>` 切换，成功后暂停。
+RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。两个 LLM 策略各自通过 `params.provider_config_path` 读取供应商 YAML。在 TUI 中用 `policy <实例> switch-provider <文件路径>` 切换，成功后只重建该实例并暂停整链。目标初始化失败可修正文件后执行 `retry-reload <实例>`。
 
 主配置和 LLM 供应商配置使用 `.yaml.example`，模型配置使用 `.json.example`，部署环境使用 `deployment.env.example`。setup 从模板生成缺失文件，保留已有供应商文件。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。
 
@@ -89,6 +91,8 @@ mcp get_policy_result <operation_id>
 原有 `return(wait=true)` 仍只等待交接完成。新增能力使用前同步升级 RC 和使用回调的 policy 镜像；本轮没有为 `llm_direction` 或其他业务策略自动加入完成判断。回调规则见 [策略作者规范](docs/policy-authoring.md#任务完成与终止)。
 
 ## 文档与验证
+
+日常 RC 回归只需 `python3 scripts/test_scope.py`：用 mock 双臂、真实 worker 及两个独立的 example 链成员覆盖公共能力，不需要业务模型。改某个策略时加 `--policy <来源名>`；改了 RC 与策略之间的公共接口时用 `--interface` 运行完整套件。操作示例见 [example 使用说明](policy/example/README.md)，范围判定见 [验证文档](docs/verification.md#按改动选择测试)。
 
 - [部署与配置准备](docs/setup.md)
 - [Ubuntu 22.04 从零部署](docs/ubuntu22-amd64-from-scratch.md)

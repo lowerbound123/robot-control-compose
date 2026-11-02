@@ -16,13 +16,27 @@ from test_controller import until
 
 SOURCE = '''
 import time
-def initialize(config): return {'config':config, 'calls':0}
+def validate_config(config):
+    if config['params']['value'] < 0:
+        raise ValueError('invalid candidate value')
+def initialize(config):
+    from pathlib import Path
+    if config['params']['value'] == 77 and not Path(config['params']['allow_77']).exists():
+        raise ValueError('candidate unavailable')
+    return {'config':config, 'calls':0}
 def policy(context,state,action_chunk,images,config):
     time.sleep(config['params'].get('delay', 0))
     context['calls'] += 1
     return [state['qpos']] * 10
 def reset_context(context): context['calls'] = 0
-def release(context): pass
+def release(context):
+    from pathlib import Path
+    if context and context['config']['id'] == 'a-1':
+        marker = Path(context['config']['params']['allow_77']).with_name('fail_release')
+        if marker.is_file():
+            with marker.open('a') as stream:
+                stream.write('release failed\\n')
+            raise RuntimeError('injected release failure')
 def test(context): return context['config']['id']
 def change(context, value): return {'params.value':value}
 def monitor(context): return {'id':context['config']['id'], 'value':context['config']['params']['value']}
@@ -44,8 +58,11 @@ def native_controller(tmp_path):
         config = add_policy(root, identity, commands={
             'test': {'handler':'test', 'args':[]},
             'change': {'handler':'change', 'args':['int'], 'effect':'reload_policy'},
+            'change-all': {'handler':'change', 'args':['int'], 'effect':'reload_all_policy'},
+            'reinit': {'handler':'change', 'args':['int'], 'effect':'reinitialize_policy'},
         })
         config['hot_reloadable'] = []
+        config['params']['allow_77'] = str(tmp_path / 'allow_77')
         (root / identity / 'policy.yaml').write_text(json.dumps(config))
         (root / identity / 'main.py').write_text(SOURCE)
         (root / identity / 'main.py').with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
@@ -122,7 +139,8 @@ def test_chain_commands_and_member_reload_and_explicit_save(native_controller):
     old_versions = [member.version for member in old.record.members]
     operation(controller, controller.submit('a-0-change 9'))
     assert controller.status()['state'] == 'paused'
-    assert not old.alive and len(children) == 6
+    assert old is controller._worker and len(children) == 4
+    assert children[0].cleanup_confirmed and all(w.runnable for w in children[1:])
     record = controller._worker.record
     assert [member.config['params']['value'] for member in record.members] == [9, 1, 1]
     assert [member.version for member in record.members] == [old_versions[0]+1, *old_versions[1:]]
@@ -142,6 +160,162 @@ def test_chain_commands_and_member_reload_and_explicit_save(native_controller):
     assert read_config(path)['params']['value'] == 1
     assert controller.registry.get('a').config['params']['value'] == 1
     operation(controller, controller.submit('set policy.params.value 10'), 'failed')
+
+
+@pytest.mark.parametrize('command_name', ['change', 'reinit'])
+def test_failed_member_reload_can_retry_only_that_slot(native_controller, command_name):
+    controller, children, root = native_controller
+    chain = controller._worker
+    before = chain.config_version
+    original = chain.monitor_members()
+    hub = controller.policy_monitors
+    hub.set_enabled('b', True)
+    until(lambda: hub.snapshot()['b']['values'])
+    operation(controller, controller.submit(f'a-1-{command_name} 77'), 'failed')
+    assert controller.status()['retry_reload_instance'] == 'a-1'
+    assert controller.status()['state'] == 'fault'
+    assert chain.config_version == before and original['a-1'].cleanup_confirmed == (command_name == 'change')
+    assert original['b'].runnable and original['a-0'].runnable
+    sampled = hub.snapshot()['b']['updated_at']
+    until(lambda: hub.snapshot()['b']['updated_at'] > sampled)
+    for command in ('resume', 'retry-reload a', 'retry-reload b', 'retry-reload a-1'):
+        operation(controller, controller.submit(command), 'failed')
+    operation(controller, controller.submit('take'))
+    operation(controller, controller.submit('retry-reload a-1'), 'failed')
+    operation(controller, controller.submit('return'), 'failed')
+    (root / 'allow_77').touch()
+    operation(controller, controller.submit('retry-reload a-1'))
+    assert chain is controller._worker and chain.config_version == before + 1
+    assert controller.status()['state'] == 'paused' and controller.status()['retry_reload_instance'] is None
+    assert list(chain.monitor_members()) == ['a-0', 'b', 'a-1']
+    assert all(chain.monitor_members()[key] is original[key] for key in ('a-0', 'b'))
+    assert chain.record.members[-1].config['params']['value'] == 77
+    assert read_config(root / 'policy/a/policy.yaml')['params']['value'] == 1
+    operation(controller, controller.submit('resume'))
+    until(lambda: controller.status()['consumed'] > 0)
+
+
+def test_whole_group_failure_has_no_member_retry(native_controller):
+    controller, children, _ = native_controller
+    operation(controller, controller.submit('a-1-change-all 77'), 'failed')
+    assert controller._worker is None and all(w.cleanup_confirmed for w in children)
+    assert controller.status()['state'] == 'fault' and controller.status()['retry_reload_instance'] is None
+    operation(controller, controller.submit('retry-reload a-1'), 'failed')
+
+
+def test_unproved_member_exit_prevents_replacement(native_controller, monkeypatch):
+    controller, children, _ = native_controller
+    chain = controller._worker
+    original = children[-1].close
+    def missing_proof(*args, **kwargs):
+        raise RuntimeError('reader exit not proved')
+    monkeypatch.setattr(children[-1], 'close', missing_proof)
+    for line in ('a-1-change 8', 'retry-reload a-1'):
+        operation(controller, controller.submit(line), 'failed')
+        assert len(children) == 3 and all(w.runnable for w in children)
+        assert chain.record.members[-1].config['params']['value'] == 1
+    monkeypatch.setattr(children[-1], 'close', original)
+    operation(controller, controller.submit('retry-reload a-1'))
+    assert len(children) == 4 and controller.exit_code != 0
+
+
+@pytest.mark.parametrize(('command_name', 'reader_index'), [('change', 0), ('reinit', 0), ('reinit', -1)])
+def test_external_reader_blocks_reload_until_ack(native_controller, command_name, reader_index):
+    controller, children, _ = native_controller
+    chain = controller._worker
+    sibling = children[reader_index]
+    pool, resources = controller._pool, controller._external
+    # A callback returned its own view, but its independent external reader
+    # still owns a pin. A target's successful stop is not proof for that pin.
+    import numpy as np
+    for camera in ('head', 'left_wrist', 'right_wrist'):
+        pool.publish(camera, np.zeros((2, 2, 3), dtype=np.uint8), 1.)
+    lease = pool.acquire()
+    remote = dict(remote_id='sibling-reader', endpoint='http://127.0.0.1:1',
+                  owner_id='owner', instance_id='remote', model_id='m')
+    resources.handle(sibling, dict(method='register', context_id=sibling.context_id, **remote))
+    resources.handle(sibling, dict(method='retain', context_id=sibling.context_id, remote_id='sibling-reader', request_id='r', images=lease.descriptors))
+    lease.release()
+    chain.inference_timeout_s = .12
+    resources._http = lambda record, path, *args, **kw: (
+        {'instance_id':'remote'} if path == '/v1/status' else
+        {'operation_id':'done'} if path.endswith('unload') else
+        {'status':'succeeded','result':{'state':'unloaded','worker_pid':None,'instance_id':'remote'}})
+    try:
+        operation(controller, controller.submit(f'a-1-{command_name} 9'), 'failed')
+        assert len(children) == 3 and children[-1].runnable
+        assert controller.status()['retry_reload_instance'] == 'a-1'
+        assert 'r' in resources._records['sibling-reader']['leases']
+        resources.handle(sibling, dict(method='released', context_id=sibling.context_id, remote_id='sibling-reader', request_id='r'))
+        operation(controller, controller.submit('retry-reload a-1'))
+        assert len(children) == 4 and children[0].runnable
+    finally:
+        if 'sibling-reader' in resources._records:
+            resources.handle(sibling, dict(method='released', context_id=sibling.context_id,
+                                           remote_id='sibling-reader', request_id='r'))
+
+
+def test_rejected_inplace_candidate_preserves_original_context_and_command_gate(native_controller):
+    controller, children, _ = native_controller
+    chain = controller._worker
+    worker = children[-1]
+    old = worker.context_id, worker.config_version, chain.config_version
+    operation(controller, controller.submit('resume'))
+    until(lambda: controller.status()['consumed'])
+    generation = controller.buffer.generation
+    operation(controller, controller.submit('a-1-reinit -1'), 'failed')
+    assert controller.status()['state'] == 'running' and controller.status()['retry_reload_instance'] is None
+    assert controller.buffer.generation == generation
+    assert (worker.context_id, worker.config_version, chain.config_version) == old
+    assert operation(controller, controller.submit('a-1-test'))['result'] == 'a-1'
+
+
+def test_release_failure_leaves_target_parked_until_cold_retry(native_controller):
+    controller, children, root = native_controller
+    chain = controller._worker
+    target = children[-1]
+    version = target.config_version
+    marker = root / 'fail_release'
+    marker.touch()
+    operation(controller, controller.submit('a-1-reinit 4'), 'failed')
+    assert chain.member_workers()['a-1'] is target and target.config_version == version
+    assert controller.status()['state'] == 'fault'
+    operation(controller, controller.submit('resume'), 'failed')
+    operation(controller, controller.submit('retry-reload a-1'))
+    assert marker.read_text().splitlines() == ['release failed']
+    marker.unlink()
+    assert children[:2] == [chain.member_workers()['a-0'], chain.member_workers()['b']]
+    assert children[-1].pid != target.pid and children[-1].config_version == version + 1
+
+
+def test_member_preflight_losing_ipc_anchor_retires_invalid_group(native_controller, monkeypatch):
+    from types import SimpleNamespace
+    from robot_control.runtime_manager import BlockedInfrastructure
+    controller, children, _ = native_controller
+    operation(controller, controller.submit('resume'))
+    until(lambda: controller.status()['consumed'] > 0)
+    def invalid(*args, **kwargs):
+        raise BlockedInfrastructure('anchor generation changed')
+    runtime = SimpleNamespace(phase='PAUSED', error=None, cleanup_forced=False, prepare_spec=invalid,
+                              snapshot=lambda: {}, target=None)
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, 'runtime', runtime)
+        operation(controller, controller.submit('a-1-change 9'), 'failed')
+        assert runtime.phase == 'BLOCKED_INFRA' and controller.status()['state'] == 'fault'
+        assert controller._worker is None and all(w.cleanup_confirmed for w in children)
+        assert controller.status()['retry_reload_instance'] is None
+
+
+def test_missing_container_handle_cannot_be_treated_as_removal(native_controller, monkeypatch):
+    from types import SimpleNamespace
+    controller, children, _ = native_controller
+    runtime = SimpleNamespace(phase='PAUSED', error=None, cleanup_forced=False,
+                              prepare_spec=lambda *a, **kw: object(), snapshot=lambda: {})
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, 'runtime', runtime)
+        result = operation(controller, controller.submit('a-1-change 9'), 'failed')
+        assert 'container handle' in result['error']
+        assert len(children) == 3 and all(w.runnable for w in children)
 
 
 def test_edit_credentials_invalidated_by_switch_and_mcp_rejected(native_controller):
@@ -259,7 +433,9 @@ def test_repeated_instance_monitors_are_independent_and_reset_on_reload(native_c
     receipt = controller.submit('a-0-change 9')
     try:
         assert entered.wait(5)
-        assert all(row['values'] is None for row in hub.snapshot().values())
+        during = hub.snapshot()
+        assert during['a-0']['values'] is None
+        assert during['a-1']['values'] == initial['a-1']['values']
     finally:
         release.set()
     operation(controller, receipt)
@@ -267,7 +443,9 @@ def test_repeated_instance_monitors_are_independent_and_reset_on_reload(native_c
     updated = hub.snapshot()
     assert updated['a-0']['values'] == {'id': 'a-0', 'value': 9}
     assert updated['a-1']['values'] == {'id': 'a-1', 'value': 1}
-    assert all(controller._worker.monitor_members()[identity] is not worker for identity, worker in old_workers.items())
+    updated_workers = controller._worker.monitor_members()
+    assert updated_workers['a-0'] is not old_workers['a-0']
+    assert all(updated_workers[i] is old_workers[i] for i in ('b', 'a-1'))
     hub.set_enabled('a-0', False)
     assert list(hub.snapshot()) == ['a-1']
 

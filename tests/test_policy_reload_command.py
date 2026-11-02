@@ -76,9 +76,10 @@ def reload_controller(tmp_path, request):
         assert controller.done.wait(10)
 
 
-def test_reload_effect_manifest_is_preserved_and_unknown_effect_rejected():
-    spec = {"handler": "change", "args": [], "effect": "reload_policy"}
-    assert command_specs({"tui_commands": {"change": spec}})["change"]["effect"] == "reload_policy"
+@pytest.mark.parametrize("effect", ["reload_policy", "reload_all_policy"])
+def test_reload_effect_manifest_is_preserved_and_unknown_effect_rejected(effect):
+    spec = {"handler": "change", "args": [], "effect": effect}
+    assert command_specs({"tui_commands": {"change": spec}})["change"]["effect"] == effect
     with pytest.raises(ValueError):
         command_specs({"tui_commands": {"change": {**spec, "effect": "restart_robot"}}})
 
@@ -104,6 +105,20 @@ def test_same_path_forces_new_model_exit_then_initialize_and_paused_receipt(relo
     current = completed(controller, controller.submit("current"))["result"]
     assert current["name"] == "new" and current["pid"] != old_pid
     assert (root / "events").read_text().splitlines() == ["load:old", "release:old", "load:new"]
+
+
+def test_cancel_during_new_initialize_does_not_commit_late_ready(reload_controller):
+    controller, root, model = reload_controller
+    old = controller._worker
+    model.write_text(json.dumps({'name':'candidate', 'load_delay':.4}))
+    reload_id = controller.submit(f'switch-model {model}')
+    until(lambda: 'load:candidate' in (root / 'events').read_text())
+    completed(controller, controller.submit('pause'))
+    assert completed(controller, reload_id)['status'] == 'cancelled'
+    assert old.cleanup_confirmed and controller._worker is None
+    assert controller.registry.get('first').version == 1
+    assert controller.status()['retry_reload_command'] == 'retry-reload first'
+    assert completed(controller, controller.submit('retry-reload first'))['status'] == 'succeeded'
 
 
 @pytest.mark.parametrize("patch", [{}, [], {"params.missing": 1}, {"params.hot": 2}, {"id": "other"},
@@ -164,6 +179,24 @@ def test_new_initialization_failure_or_timeout_faults_without_rollback(reload_co
     assert not worker.alive
     assert controller.registry.get("first").version == 1
     assert (root / "events").read_text().count("load:old") == 1
+    assert controller.status()['retry_reload_instance'] == 'first'
+    model.write_text(json.dumps({"name": "repaired"}))
+    assert completed(controller, controller.submit('retry-reload first'), 7)['status'] == 'succeeded'
+    assert completed(controller, controller.submit('current'))['result']['name'] == 'repaired'
+
+
+@pytest.mark.parametrize('effect', ['reload_policy', 'reload_all_policy', None])
+def test_rc_checks_ready_v2_only_for_manifests_with_effects(tmp_path, effect):
+    from robot_control.process import PolicyProcess
+    spec = {'args': [], 'handler': 'handler'}
+    if effect:
+        spec['effect'] = effect
+    proc = PolicyProcess(tmp_path, {'id':'old', 'tui_commands':{'inspect':spec}}, host_socket='/unused')
+    proc._receive({'runtime_id':'one', 'event':{'type':'ready', 'tui_commands':True,
+                                               'tui_command_effects':['reload_policy']}})
+    assert proc._ready is (effect is None)
+    if effect:
+        assert effect in proc._failure
 
 
 def test_new_worker_rejects_old_host_before_initializing_model(reload_controller):
@@ -175,7 +208,8 @@ def test_new_worker_rejects_old_host_before_initializing_model(reload_controller
     thread=threading.Thread(target=run_session,args=(server,root,'rc_test_'+uuid.uuid4().hex))
     thread.start()
     try:
-        send_message(client, {'type':'initialize','config_version':1,'config':controller.registry.get('first').config})
+        send_message(client, {'type':'initialize','config_version':1,'config':controller.registry.get('first').config,
+                              'tui_command_effects':['reload_policy']})
         response=receive_message(client)
         assert response['type']=='error' and 'reload_policy' in response['error']
         assert (root/'events').read_text().splitlines()==['load:old']

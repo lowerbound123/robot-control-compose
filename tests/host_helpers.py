@@ -25,6 +25,7 @@ class LocalPolicyProcess(RemotePolicyProcess):
             _hosts[host_key] = (temporary, None)
         temporary, host = _hosts[host_key]
         destination = Path(temporary.name) / source_id
+        self.loaded_directory = destination
         shutil.copytree(directory, destination, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
         if host is None:
             host = Host(temporary.name, host_id, source_policy_id=source_id)

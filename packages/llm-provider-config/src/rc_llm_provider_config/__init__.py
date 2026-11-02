@@ -42,8 +42,8 @@ def _valid_base_url(address):
         return False
 
 
-def load_provider_config(filename, policy_root, formats):
-    """formats maps supported backend names to their configurable output formats."""
+def load_provider_config(filename, policy_root, formats, *, extra_fields=None):
+    """Validate the common profile and any additional fields required by the selected backend."""
     if not isinstance(filename, str) or not filename.strip():
         raise ValueError('params.provider_config_path must be a nonempty path')
     path = Path(policy_root) / filename
@@ -56,6 +56,8 @@ def load_provider_config(filename, policy_root, formats):
     required = {'type', 'model', 'base_url', 'api_key', 'timeout_s'}
     if formats[kind]:
         required.add('output_format')
+    if extra_fields:
+        required.update(extra_fields.get(kind, ()))
     if settings.keys() != required:
         raise ValueError(f'{path}: expected provider fields {", ".join(sorted(required))}')
     for field in ('model', 'api_key'):

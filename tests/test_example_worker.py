@@ -4,6 +4,7 @@ import copy
 import json
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from rc_policy_sdk.images import ImagePool
 from robot_control.chain_process import ChainProcess
 from robot_control.config import PolicyRegistry
+from robot_control.global_state import GlobalStateService
 from host_helpers import LocalPolicyProcess
 from project_templates import copy_templates
 from test_policy_monitor_worker import wait_until
@@ -23,17 +25,31 @@ def worker_factory(*args, **kwargs):
 
 
 def command_result(worker):
+    result = command_reply(worker)
+    assert result["type"] == "command_result", result
+    return result
+
+
+def command_reply(worker):
     def completed():
         message = worker.poll_command()
         return message if message and message["type"] != "command_started" else None
-    result = wait_until(completed, 5)
-    assert result["type"] == "command_result", result
-    return result
+    return wait_until(completed, 5)
 
 
 @pytest.fixture
 def image_readers():
     return []
+
+
+@pytest.fixture
+def globals_service(tmp_path):
+    service = GlobalStateService(tmp_path / "global.env", tmp_path / "ipc", run_id="example")
+    service.start()
+    try:
+        yield service
+    finally:
+        service.close(time.monotonic() + 3)
 
 
 @pytest.fixture
@@ -124,30 +140,47 @@ def test_hot_update_reaches_original_context_and_invalid_patch_is_atomic(example
     assert worker.cleanup_confirmed and not worker.alive
 
 
-def test_native_hold_example_chain_preserves_upstream_actions(tmp_path, frame_request, image_readers):
+def test_repeated_example_chain_preserves_actions_and_shares_only_explicit_state(
+        tmp_path, frame_request, image_readers, globals_service):
     root = tmp_path / "policy"
-    for identity in ("hold", "example"):
-        copy_templates(ROOT / "policy" / identity, root / identity)
-    chain = root / "demo"
-    chain.mkdir()
-    (chain / "policy.yaml").write_text(json.dumps({
-        "schema_version": 3, "kind": "chain", "policies": ["hold", "example", "example"],
-    }))
-    record = PolicyRegistry(root).get("demo")
+    copy_templates(ROOT / "policy/example", root / "example")
+    copy_templates(ROOT / "policy/example_chain", root / "example_chain")
+    record = PolicyRegistry(root).get("example_chain")
     worker = ChainProcess(record, process_factory=worker_factory,
-                          init_timeout_s=10, inference_timeout_s=5, release_timeout_s=2)
+                          init_timeout_s=10, inference_timeout_s=5, release_timeout_s=2,
+                          global_state=globals_service)
     image_readers.append(worker)
     try:
         worker.start()
-        worker.submit(frame_request)
+        actions = [[.125] * 14, [-.375] * 14]
+        worker.submit({**frame_request, "action_chunk": actions})
         result = wait_until(worker.poll, 6)
         assert result["type"] == "result", result
         assert result["images_released"] is True
-        assert result["actions"] == [[0.25] * 14] * 50
+        assert result["actions"] == actions
         assert not result.get("control_requests")
-        assert len(worker.monitor_members()) == 3
+        assert set(worker.monitor_members()) == {"example-0", "example-1"}
         for instance in ("example-0", "example-1"):
             worker.submit_command(instance, instance + "-example", [])
-            assert command_result(worker)["result"]["calls"] == 1
+            snapshot = command_result(worker)["result"]
+            assert snapshot["calls"] == 1 and snapshot["instance"] == instance
+        worker.submit_command("read", "example-0-shared-read", [])
+        version = command_result(worker)["result"]["version"]
+        worker.submit_command("write", "example-0-shared-write", ["来自首个实例", version])
+        assert command_result(worker)["result"] == version + 1
+        worker.submit_command("read2", "example-1-shared-read", [])
+        assert command_result(worker)["result"] == {"value": "来自首个实例", "version": version + 1}
+        worker.submit_command("stale", "example-1-shared-write", ["过期写入", version])
+        reply = command_reply(worker)
+        assert reply["type"] == "command_error" and "GlobalStateConflict" in reply["error"]
+        assert globals_service.proxy["example_note"] == "来自首个实例"
+
+        for instance, outcome in (("example-0", "completed"), ("example-1", "pause")):
+            worker.submit_command("arm-" + instance, instance + "-next-result", [outcome, instance])
+            assert command_result(worker)["result"] == {"queued": outcome}
+        worker.submit({**frame_request, "request_id": 2})
+        reply = wait_until(worker.poll, 6)
+        assert reply["images_released"] and reply["control_requests"] == [{
+            "type": "pause", "reason": "example-1", "source": {"policy_id": "example-1", "cell": 2}}]
     finally:
         assert not worker.close()

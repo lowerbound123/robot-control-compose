@@ -18,11 +18,13 @@ class _MemberResources:
     def handle(self, worker, message):
         if self.owner.resources is None:
             raise RuntimeError("chain has no external resource manager")
-        # Every RPC uses the same injective namespace, while the controller owns
-        # all registrations under the aggregate for its existing close protocol.
+        # The namespace is stable on disk; the live owner is this particular
+        # worker, so a late RPC cannot act on its replacement's registration.
         remote = str(message['remote_id'])
-        namespaced = f"{len(self.identity)}:{self.identity}:{remote}"
-        return self.owner.resources.handle(self.owner, {**message, 'remote_id': namespaced})
+        context_id = getattr(worker, 'context_id', None)
+        owner = f'{worker.session_id}:{context_id}' if context_id else worker.session_id
+        namespaced = f"{len(self.identity)}:{self.identity}:{owner}:{remote}"
+        return self.owner.resources.handle(worker, {**message, 'remote_id': namespaced})
 
 
 class ChainProcess:
@@ -58,6 +60,9 @@ class ChainProcess:
         self._forced = False
         self._failure = None
         self._commands_blocked = False
+        self.reloading_member = None
+        self._command_members = {}
+        self._cancelled_commands = deque()
 
     @property
     def alive(self):
@@ -67,15 +72,28 @@ class ChainProcess:
 
     @property
     def has_readers(self):
-        return any(getattr(w, 'has_readers', w.alive) for w in self._workers.values())
+        with self._condition:
+            return any(getattr(w, 'has_readers', w.alive) for w in self._workers.values())
 
     @property
     def cleanup_confirmed(self):
-        return all(getattr(w, 'cleanup_confirmed', not w.alive) for w in self._workers.values())
+        with self._condition:
+            return all(getattr(w, 'cleanup_confirmed', not w.alive) for w in self._workers.values())
 
     @property
     def runnable(self):
-        return self._ready and not self._failure and all(getattr(w, 'runnable', w.alive) for w in self._workers.values())
+        with self._condition:
+            return (self._ready and self.reloading_member is None and not self._failure
+                    and all(getattr(w, 'runnable', w.alive) for w in self._workers.values()))
+
+    def member_workers(self):
+        with self._condition:
+            return dict(self._workers)
+
+    @property
+    def reload_recoverable(self):
+        with self._condition:
+            return self.reloading_member is not None and not self._failure
 
     @property
     def supports_observe(self):
@@ -84,7 +102,24 @@ class ChainProcess:
 
     def monitor_members(self):
         with self._condition:
-            return dict(self._workers) if self._ready else {}
+            return {key: w for key, w in self._workers.items()
+                    if key != self.reloading_member} if self._ready else {}
+
+    def make_member(self, member, deadline, endpoint, factory=None):
+        identity = member.instance_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f'{identity}: chain initialization timeout')
+        limits = member.config.get('timeouts', {})
+        worker = (factory or self._factory)(member.directory, member.runtime_config, member.version,
+            init_timeout_s=min(remaining, limits.get('initialize_s', remaining)),
+            inference_timeout_s=min(self.inference_timeout_s, limits.get('inference_s', self.inference_timeout_s)),
+            release_timeout_s=min(self.release_timeout_s, limits.get('release_s', self.release_timeout_s)),
+            endpoint=endpoint, exit_authority=self._exit_authority, global_state=self.global_state,
+            on_log=(lambda message: self._log(f'[{identity}] {message}') if self._log else None),
+            **({'on_trace': self.on_trace} if self.on_trace is not None else {}))
+        worker.resources = _MemberResources(self, identity)
+        return worker
 
     def start(self, cancel_event=None):
         deadline = time.monotonic() + self.init_timeout_s
@@ -97,17 +132,7 @@ class ChainProcess:
                     identity = member.instance_id
                     if self._stop.is_set() or (cancel_event and cancel_event.is_set()):
                         raise RuntimeError('chain initialization cancelled')
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError(f'{identity}: chain initialization timeout')
-                    worker = self._factory(member.directory, member.runtime_config, member.version,
-                                           init_timeout_s=min(remaining, member.config.get('timeouts', {}).get('initialize_s', remaining)),
-                                           inference_timeout_s=min(self.inference_timeout_s, member.config.get('timeouts', {}).get('inference_s', self.inference_timeout_s)),
-                                           release_timeout_s=min(self.release_timeout_s, member.config.get('timeouts', {}).get('release_s', self.release_timeout_s)), endpoint=self._endpoints.get(identity),
-                                           exit_authority=self._exit_authority,
-                                           on_log=(lambda message, name=identity: self._log(f'[{name}] {message}') if self._log else None), global_state=self.global_state,
-                                           **({'on_trace': self.on_trace} if self.on_trace is not None else {}))
-                    worker.resources = _MemberResources(self, identity)
+                    worker = self.make_member(member, deadline, self._endpoints.get(identity))
                     with self._condition:
                         if self._stop.is_set():
                             raise RuntimeError('chain initialization cancelled')
@@ -128,8 +153,87 @@ class ChainProcess:
                 raise
 
     def _check_ready(self):
-        if not self._ready or self._stop.is_set() or self._failure:
+        if not self._ready or self.reloading_member is not None or self._stop.is_set() or self._failure:
             raise RuntimeError(self._failure or 'chain is not ready')
+
+    def begin_member_reload(self, identity):
+        with self._condition:
+            if self.reloading_member not in (None, identity) or self._failure:
+                raise RuntimeError(self._failure or 'another member is being replaced')
+            self.reloading_member = identity
+            self.cancel_inference()
+
+    def wait_other_readers(self, identity, deadline, cancel):
+        with self._condition:
+            while True:
+                if self._failure:
+                    raise RuntimeError(self._failure)
+                readers = self._active_readers()
+                readers.discard(identity)
+                if not readers:
+                    return
+                if cancel.is_set():
+                    raise RuntimeError('member reload cancelled')
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError('等待图像释放确认超时: ' + ', '.join(sorted(readers)))
+                self._condition.wait(min(.05, left))
+
+    def _active_readers(self):
+        readers = set(self._observation['pending']) if self._observation else set()
+        if self._request and self._request['child'] is not None:
+            readers.add(self.record.members[self._request['index']].instance_id)
+        return readers
+
+    def member_closed(self, identity, worker):
+        """The caller has proved this exact worker and its external readers gone."""
+        with self._condition:
+            if self._workers.get(identity) is not worker or not worker.cleanup_confirmed:
+                raise RuntimeError('missing member exit proof')
+            if self._request and self.record.members[self._request['index']].instance_id == identity:
+                self._finish('cancelled')
+            if self._observation:
+                self._observation['pending'].pop(identity, None)
+                self._drive_observation()
+            for command_id, member in list(self._command_members.items()):
+                if member == identity:
+                    del self._command_members[command_id]
+                    self._cancelled_commands.append(dict(type='command_cancelled', command_id=command_id,
+                        member_id=identity, error='policy instance was replaced', config_version=self.config_version))
+            del self._workers[identity]
+            self._endpoints.pop(identity, None)
+            self._condition.notify_all()
+
+    def finish_reinitialize(self, member, worker, record, flags):
+        with self._condition:
+            if (self.reloading_member != member.instance_id or self._workers.get(member.instance_id) is not worker
+                    or self._failure or not all(w.runnable for w in self._workers.values())):
+                raise RuntimeError(self._failure or 'stale member reinitialization')
+            worker.commit_reinitialize(member.runtime_config, member.version, flags)
+            self.record, self.config_version = record, record.version
+            self.reloading_member = None
+            self._condition.notify_all()
+
+    def keep_member_context(self, identity):
+        with self._condition:
+            if self.reloading_member != identity:
+                raise RuntimeError('member reinitialization changed')
+            self.reloading_member = None
+            self._condition.notify_all()
+
+    def install_member(self, identity, worker, record):
+        with self._condition:
+            if (self.reloading_member != identity or identity in self._workers or self._failure
+                    or any(not getattr(w, 'runnable', w.alive) for w in self._workers.values())):
+                raise RuntimeError(self._failure or 'stale member replacement')
+            members = {**self._workers, identity: worker}
+            self._workers = {m.instance_id: members[m.instance_id] for m in record.members}
+            endpoint = getattr(worker, 'endpoint', None)
+            if endpoint is not None:
+                self._endpoints[identity] = endpoint
+            self.record, self.config_version = record, record.version
+            self.reloading_member = None
+            self._condition.notify_all()
 
     @staticmethod
     def _identity(request):
@@ -187,6 +291,18 @@ class ChainProcess:
             return
         index = request['index']
         identity = self.record.members[index].instance_id
+        if self.reloading_member is not None:
+            child = request['child']
+            if child is None:
+                self._finish('cancelled')
+            else:
+                # Do not turn a timeout/EOF into release evidence. Keep the
+                # child's identity until its matching ACK or proven retirement.
+                response = self._workers[identity].poll_reader_result()
+                if (response and response.get('images_released') is True
+                        and all(response.get(k) == v for k, v in self._identity(child).items())):
+                    self._finish('cancelled')
+            return
         worker = self._workers[identity]
         try:
             if self._failure:
@@ -242,7 +358,7 @@ class ChainProcess:
             while not self._stop.is_set():
                 try:
                     for identity, worker in self._workers.items():
-                        if not getattr(worker, 'runnable', worker.alive):
+                        if identity != self.reloading_member and not getattr(worker, 'runnable', worker.alive):
                             self._failure = self._failure or f'chain {identity}: worker exited'
                     self._drive_inference()
                     self._drive_observation()
@@ -258,7 +374,7 @@ class ChainProcess:
 
     def observe(self, request):
         with self._condition:
-            if not self._ready or self._stop.is_set() or self._failure or self._observation is not None:
+            if not self.runnable or self._stop.is_set() or self._observation is not None:
                 return False
             pending, errors = {}, []
             for cell, (identity, worker) in enumerate(self._workers.items(), 1):
@@ -324,7 +440,7 @@ class ChainProcess:
 
     def resume_commands(self):
         with self._condition:
-            if not self._ready or self._stop.is_set() or self._failure:
+            if not self.runnable or self._stop.is_set():
                 return False
             for worker in self._workers.values():
                 worker.resume_commands()
@@ -338,17 +454,25 @@ class ChainProcess:
                 raise RuntimeError('chain commands are blocked')
             member, command = self.command_targets[name]
             self._workers[member].submit_command(identity, command, args)
+            self._command_members[identity] = member
 
     @property
     def has_command_results(self):
-        return any(getattr(w, 'has_command_results', False) for w in self._workers.values())
+        with self._condition:
+            return bool(self._cancelled_commands) or any(getattr(w, 'has_command_results', False) for w in self._workers.values())
 
     def poll_command(self):
         with self._condition:
+            if self._cancelled_commands:
+                return self._cancelled_commands.popleft()
             for identity, worker in self._workers.items():
                 message = worker.poll_command()
                 if message:
+                    if message['type'] != 'command_started':
+                        self._command_members.pop(message['command_id'], None)
                     if message['type'] == 'command_timeout' or message.get('fatal'):
+                        if identity == self.reloading_member:
+                            return {**message, 'type':'command_cancelled', 'fatal':False, 'member_id':identity}
                         self._failure = f'{identity}: {message.get("error", "command failed")}'
                         message = {**message, 'fatal': True}
                     return {**message, 'member_id': identity, 'config_version': self.config_version}

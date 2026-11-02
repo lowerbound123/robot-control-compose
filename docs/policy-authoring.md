@@ -2,7 +2,7 @@
 
 SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享内存，RC 统一提交写入，退出全量保存到 global.env。完整接口、并发与持久化约定见 [全局共享状态](global-state.md)。
 
-可直接运行的完整本地范例见 [example 策略](../policy/example/README.md)：Python 3.14、动作透传、空输入保持、共享图片、同名命令、观测、监控、热配置与注释的 RC 暂停请求。
+可直接运行的参考实现见 [example 策略](../policy/example/README.md)：Python 3.14、三种控制模式、动作透传、共享图片、观测/监控、热配置、实例冷重载、共享状态、pause/finish 及可选外部 reader。新增或修改公共能力时应一起更新 example 和真实 worker 的验收路径。
 
 ## 目录身份与声明
 
@@ -110,7 +110,13 @@ tui_commands:
 
 在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<instance_id>-<command>`。重复实例分别注册命令，例如 `policy a-0 set-gain 0.5`、`a-1-set-gain 0.8`，原名 a 不会指向其中某个实例。策略命令不自动向 MCP 开放。
 
-`effect=reload_policy` 的 handler 返回已有 `params.*` 冷叶字段补丁。例如 Qwen 的 `switch-model` 在旧实例验证模型配置，然后由 RC 执行完整清旧启新事务。链中只有目标实例的配置与版本变化，整组冷重建时其他实例保留当前配置。不得从 handler 调 Docker。部署参数通过本目录修改，在下次 switch 重新解析。
+`effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停，`resume` 仍重置上下文。Docker 生命周期由 RC 管理。
+
+候选校验被拒时原实例继续使用。局部重载在旧目标退出后初始化失败，健康成员驻留，链停止推理。`status.retry_reload_instance` 指示失败目标。修复文件后在本地 TUI 执行 `retry-reload <精确实例ID>`，按已校验的候选配置重新初始化；显式保存只使用最近生效的配置。整组重载初始化失败按整组清理，使用 `switch` 恢复。
+
+`effect: reinitialize_policy` 复用目标容器、host、执行 PID 和已导入模块。handler 返回 `{}` 表示沿用生效配置，或返回已有 `params.*` 冷叶字段的补丁。相同值也会重建 context。目标已加载模块先运行可选的 `validate_config(config)`。校验拒绝时，原 context、动作代次和正在运行的任务均保留。校验通过后 RC 暂停整链、清空动作缓存并等待各成员及外部 reader 确认图像释放。随后 SDK 排空目标推理、观测、命令和 monitor 回调，调用 `release(old_context)`，然后以新绑定调用 `initialize(config, *, runtime)`。其他实例的 context 继续驻留。Python 模块级变量跨初始化保留，轮次或配置相关的状态应放在 context 中。
+
+旧 `release` 可使用此前保存的 `runtime.globals`。回调退出后，旧 runtime 的资源登记和全局写入失效。释放时请自行结束创建的后台任务。`initialize` 可以正常返回 `None`，初始化抛错时也可能需要 `release(None)` 收尾。新 context 通过确认后，RC 才提交配置、更新目标及链的版本，等待显式 `resume`。释放、初始化或最终确认失败时，先检查 `status.retry_reload_command`，修复后手动冷重建目标实例。未确认释放的图像将继续占用租约。
 
 `save-config a-0` 或 `save-config policy a-0` 保存该实例的有效配置到来源目录 `policy/a/`，保留 YAML 注释和顺序，并将落盘 ID 写为 a。不会创建实例目录，也不会修改当前其他实例。重复实例存在时，`save-config a` 和 `save-config policy a` 都会报歧义且不写文件；必须明确选择一个实例。多个实例先后保存时，最后一次成功保存决定来源默认配置。`save-config policy` 在链模式仍保存策略顺序。
 
@@ -118,7 +124,7 @@ tui_commands:
 
 原生 chain：`{"schema_version":3,"kind":"chain","policies":["a","b","a"]}`。chain 自身无容器，每个环节独立实例化为 `a-0 → b → a-1`，分别初始化 context、执行进程和容器；回调收到的 `config.id` 也是实例名。只重复的策略编号，按该来源在链中的出现顺序从 0 开始；实例名最多 64 字符。`[a,a,a-0]` 产生实例名冲突，会在清理旧组前报错。链推理仍串行传递动作，pause/finish 来源、命令回执和外部 reader 都保留对应实例身份。
 
-任何冷切换都销毁整个旧组，包括与新链相同的来源或实例。显式 switch 或重新应用链从来源默认配置创建新快照；实例命令引发的重载保留其他成员当前快照。链 YAML 始终保存来源名和顺序，不持久化每个环节的参数。SDK 的 `PolicyChain` 是另一个层次：在一个 worker 内组合模块；`runtime.globals` 继续是显式共享状态。
+显式切链和 `reload_all_policy` 销毁整个旧组。`reload_policy` 保留其余成员和链中位置。显式 switch 或重新应用链从来源默认配置创建新快照；实例命令引发的重载保留其他成员当前快照。链 YAML 始终保存来源名和顺序，不持久化每个环节的参数。SDK 的 `PolicyChain` 是另一个层次：在一个 worker 内组合模块；`runtime.globals` 继续是显式共享状态。
 
 只有控制线程发送机器人动作和修改动作缓存。完整目标成功发送才消费；迟到推理、旧实例命令与旧版本回包不能越过切换屏障。策略失败不收回 MCP 已持有的控制权。
 

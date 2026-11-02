@@ -1,0 +1,4 @@
+schema_version: 3
+kind: chain
+# 两个独立实例 example-0、example-1；只需准备 example 一个来源镜像。
+policies: [example, example]

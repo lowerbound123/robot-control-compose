@@ -182,8 +182,9 @@ class PolicyHost:
                         deadlines.pop('initialize', None)
                     if kind in ('result', 'error'): deadlines.pop('infer', None)
                     if kind in ('observed', 'observation_error'): deadlines.pop('observe', None)
-                    if kind == 'ack' or (kind == 'error' and event.get('operation_id') is not None):
+                    if kind in ('ack', 'error') and event.get('operation_id') is not None and event.get('operation_id') == record.get('operation_id'):
                         deadlines.pop('operation', None)
+                        record.pop('operation_id', None)
                     if kind == 'command_started':
                         call = record['commands'].get(event['command_id'])
                         if call and call['timeout'] != -1:
@@ -248,7 +249,7 @@ class PolicyHost:
                     'protocol_version': PROTOCOL_VERSION, 'image_protocol_version': IMAGE_PROTOCOL_VERSION,
                     'python': sys.version.split()[0], 'policy_id': self.host_id,
                     'deployment_id': self.deployment_id, 'run_id': self.run_id, 'generation': self.generation,
-                    'healthy': not (self.closing or self.shutting_down or self.cleanup_failed)}
+                    'healthy': not (self.closing or self.shutting_down or self.cleanup_failed), 'reinitialize_policy': True}
         if not peer.owner: raise ValueError('hello required')
         if kind == 'ping':
             if self.owner == peer.owner:
@@ -289,12 +290,14 @@ class PolicyHost:
             record = self.sessions[message['session_id']]
             if record['closed']: raise RuntimeError('policy session closed')
             event = message['event']; event_kind = event['type']
-            if event_kind in ('infer', 'observe', 'update_config', 'reset_context'):
+            if event_kind in ('infer', 'observe', 'update_config', 'reset_context', 'reinit_validate', 'reinit_release', 'reinit_initialize'):
                 key = event_kind if event_kind in ('infer', 'observe') else 'operation'
                 timeout = message.get('operation_timeout_s', record['timeouts']['inference'])
                 if isinstance(timeout, bool) or not isinstance(timeout, (int,float)) or not math.isfinite(timeout) or timeout <= 0:
                     raise ValueError('invalid operation timeout')
                 record['deadlines'][key] = time.monotonic() + timeout
+                if key == 'operation':
+                    record['operation_id'] = event.get('operation_id')
             if event_kind == 'policy_command':
                 record['commands'][event['command_id']] = {'timeout': message['command_timeout']}
             self._send_runtime({'type': 'dispatch', 'session_id': message['session_id'], 'event': event})

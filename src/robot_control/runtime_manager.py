@@ -117,6 +117,10 @@ class ComposeRuntimeManager:
         atomic_json(self.state_dir / f'{handle.project}.json', asdict(handle))
         self.handles[handle.project] = handle
 
+    def attempt_handle(self, identity, generation):
+        project = project_name(self.context['deployment_id'], identity, self.run_id, generation)
+        return self.handles.get(project)
+
     def acquire(self, deadline):
         if self._lock_file is not None:
             return

@@ -50,14 +50,15 @@ def test_independent_entries_bind_workflow_and_use_registered_reload(identity, w
     assert [name for name, _ in backend.events].count('close') == 1
 
 
-def test_entry_discovery_does_not_import_model_framework(tmp_path):
+@pytest.mark.parametrize('identity', ['qwen35_single', 'qwen35_twostage'])
+def test_entry_discovery_does_not_import_model_framework(tmp_path, identity):
     from robot_control.config import PolicyRegistry
     import subprocess
     import sys
-    registry = PolicyRegistry(copy_templates(ROOT / 'policy', tmp_path / 'policy'))
-    for identity in ('qwen35_single', 'qwen35_twostage'):
-        assert registry.get(identity).config['id'] == identity
-        assert 'conda_env' not in registry.get(identity).config
+    copy_templates(ROOT / 'policy' / identity, tmp_path / 'policy' / identity)
+    registry = PolicyRegistry(tmp_path / 'policy')
+    assert registry.get(identity).config['id'] == identity
+    assert 'conda_env' not in registry.get(identity).config
     script = 'import sys; import rc_qwen35_policy; assert not ({"torch", "transformers", "rclpy"} & sys.modules.keys())'
     result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
                             env={'PYTHONPATH': str(ROOT / 'packages/qwen35-policy/src')})

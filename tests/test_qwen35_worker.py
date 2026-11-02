@@ -10,7 +10,6 @@ import pytest
 
 from robot_control.controller import RobotController
 from robot_control.robots import MockRobot
-from test_host_transport import Host
 from qwen_helpers import ROOT, events, prepare_policies, set_controls, wait
 
 
@@ -21,18 +20,17 @@ class ThreeCameraRobot(MockRobot):
                 for i, name in enumerate(('head', 'left_wrist', 'right_wrist'), 1)}
 
 
-@pytest.fixture
-def qwen_controller(tmp_path, monkeypatch):
+@pytest.fixture(params=('qwen35_single', 'qwen35_twostage'))
+def qwen_controller(tmp_path, monkeypatch, request):
     package = str(ROOT / 'packages/qwen35-policy/src')
     monkeypatch.setenv('PYTHONPATH', package + os.pathsep + os.environ.get('PYTHONPATH', ''))
-    root = prepare_policies(tmp_path / 'policy')
-    host = Host(root, 'qwen35_single')
+    identity = request.param
+    root = prepare_policies(tmp_path / 'policy', (identity,))
     rc = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))
     rc['safety']['enabled'] = False  # Deterministic test actions encode the policy identity.
-    rc.update(policy_directory=str(root), startup_policy='qwen35_single',
+    rc.update(policy_directory=str(root), startup_policy=identity,
               outputs_directory=str(tmp_path / 'outputs'), frequency_hz=100,
-              timeouts={'initialize_s': 5, 'inference_s': 3, 'release_s': 1},
-              host_socket=host.socket)
+              timeouts={'initialize_s': 5, 'inference_s': 3, 'release_s': 1})
     path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(rc))
     from host_helpers import LocalPolicyProcess
@@ -40,13 +38,10 @@ def qwen_controller(tmp_path, monkeypatch):
     controller.start()
     try:
         wait(lambda: controller.status()['state'] == 'paused' and controller._worker is not None)
-        yield controller, root / 'qwen35_single'
+        yield controller, root / identity
     finally:
         controller.submit('exit')
-        try:
-            assert controller.done.wait(15), controller.read_events()
-        finally:
-            host.close()
+        assert controller.done.wait(15), controller.read_events()
 
 
 def completed(controller, command):
@@ -79,6 +74,6 @@ def test_qwen_entry_runs_and_reloads_with_real_worker(qwen_controller):
     assert len(loads) == 2
     close = next(i for i, row in enumerate(rows) if row['phase'] == 'close')
     assert loads[0] < close < loads[1]
-    assert controller.registry.get('qwen35_single').config['params']['model_config_path'] == str(model)
+    assert controller.registry.get(directory.name).config['params']['model_config_path'] == str(model)
     assert completed(controller, 'save-config policy')['status'] == 'succeeded'
     assert read_config(directory / 'policy.yaml')['params']['model_config_path'] == str(model)

@@ -1,10 +1,26 @@
 """Shared log metadata formatting, without terminal/UI dependencies."""
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 import re
 
 UTC8 = timezone(timedelta(hours=8))
 _POLICY = re.compile(r'^\[([A-Za-z0-9][A-Za-z0-9_.-]*)\]\s')
 _COMMAND = re.compile(r'^policy command \[([^\]:\r\n]+)(?::[^\]\r\n]*)?\]')
+LEVELS = {'TRACE': 5, 'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40, 'CRITICAL': 50}
+
+
+class LogSource(Enum):
+    DIAGNOSTIC = 'diagnostic'
+    COMMAND = 'command'
+
+
+def logging_settings(value):
+    if not isinstance(value, dict) or set(value) - {'level'}:
+        raise ValueError('logging 必须为只包含 level 的对象')
+    level = value.get('level', 'INFO')
+    if not isinstance(level, str) or level.upper() not in LEVELS:
+        raise ValueError('logging.level 必须为 TRACE/DEBUG/INFO/WARNING/ERROR/CRITICAL')
+    return {'level': level.upper()}
 
 
 def format_log_time(value):

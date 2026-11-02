@@ -1,5 +1,6 @@
 """RC-owned model registrations and remote frame pins survive policy process death."""
 import json
+from contextlib import contextmanager
 import threading
 import time
 from urllib.parse import quote, urlparse
@@ -18,6 +19,7 @@ class ExternalResources:
         self._lock = threading.RLock()
         self._records = {}
         self._closing_workers = set()
+        self._suspended_readers = set()
         self._stop = threading.Event()
         self._thread = None
         if start:
@@ -41,8 +43,13 @@ class ExternalResources:
     def handle(self, worker, message):
         method, rid = message['method'], message['remote_id']
         with self._lock:
+            context_id = getattr(worker, 'context_id', None)
+            if getattr(worker, '_context_enabled', True) is False or (context_id is not None and message.get('context_id') != context_id):
+                raise RuntimeError('stale policy context')
             if worker in self._closing_workers and method in ('register','retain'):
                 raise RuntimeError('RC is closing this policy; no new external work is accepted')
+            if worker in self._suspended_readers and method == 'retain':
+                raise RuntimeError('chain is paused for member reload')
             if method == 'register':
                 parsed = urlparse(message['endpoint'])
                 if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password:
@@ -71,6 +78,29 @@ class ExternalResources:
                     raise ValueError('unknown external resource method')
             self._persist()
         return {'retained':True}
+
+    @contextmanager
+    def reader_barrier(self, members, deadline, cancel):
+        """Keep sibling models loaded, but seal admission of new image pins."""
+        owners = {worker: name for name, worker in members.items()}
+        with self._lock:
+            self._suspended_readers.update(owners)
+        try:
+            while True:
+                with self._lock:
+                    pending = {owners[r['worker']] for r in self._records.values()
+                               if r['worker'] in owners and r['leases']}
+                if not pending:
+                    break
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError('等待外部图像释放确认超时: ' + ', '.join(sorted(pending)))
+                if cancel.wait(min(.05, left)):
+                    raise RuntimeError('member reload cancelled')
+            yield
+        finally:
+            with self._lock:
+                self._suspended_readers.difference_update(owners)
 
     def begin_close(self,worker, *, deadline=None):
         with self._lock:
@@ -158,6 +188,12 @@ class ExternalResources:
                 self._persist()
             raise RuntimeError(f'remote model/image cleanup unconfirmed; retained {self.recovery_path}: ' + '; '.join(errors))
         return forced
+
+    def reopen_context(self, worker):
+        with self._lock:
+            if any(record['worker'] is worker for record in self._records.values()):
+                raise RuntimeError('old external readers have not been cleared')
+            self._closing_workers.discard(worker)
 
     @staticmethod
     def _reclaim_segments(descriptors, deadline=None):

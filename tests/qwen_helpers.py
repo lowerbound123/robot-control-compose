@@ -10,9 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 IDENTITIES = ('qwen35_single', 'qwen35_twostage')
 
 
-def prepare_policies(root):
+def prepare_policies(root, identities=IDENTITIES):
     root = Path(root)
     for identity, workflow, value in zip(IDENTITIES, ('single', 'two_stage'), (11, 22)):
+        if identity not in identities:
+            continue
         directory = root / identity
         checkpoint = directory / 'weights'
         checkpoint.mkdir(parents=True, exist_ok=True)
@@ -47,7 +49,7 @@ def probe(context):
     chain = root / 'qwen_test_chain'
     chain.mkdir(exist_ok=True)
     (chain / 'policy.yaml').write_text(json.dumps({
-        'schema_version': 3, 'id': 'qwen_test_chain', 'kind': 'chain', 'policies': list(IDENTITIES)}))
+        'schema_version': 3, 'id': 'qwen_test_chain', 'kind': 'chain', 'policies': list(identities)}))
     # Compose-stop fixture initializes both independent models but stays paused:
     # it exercises chain lifecycle without inventing dual-generator inference.
     rc = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))

@@ -39,11 +39,9 @@ def container():
     with model_server(host='0.0.0.0') as server:
         path = root / 'policy/llm_failure/policy.yaml'
         config = read_config(path)
-        config['params']['task'] = 'put the block in the tray'
         profile = path.parent / config['params']['provider_config_path']
         profile.write_text(json.dumps({**read_config(profile), 'base_url': f'http://robot-control:{server.server_port}/v1',
-                                      'api_key': 'local-test-key', 'timeout_s': 15.}))
-        path.write_text(json.dumps(config))
+                                      'task': 'put the block in the tray', 'api_key': 'local-test-key', 'timeout_s': 15.}))
         gate = threading.Event()
         server.responses.extend([
             {'wait': gate, 'body': response_for('deepseek', {'failed': False})},

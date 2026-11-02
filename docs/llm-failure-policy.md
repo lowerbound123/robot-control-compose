@@ -14,7 +14,7 @@
 
 ## 判断结果与控制权
 
-默认 DeepSeek 后端的模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。选择 `type: openai_decisions` 的供应商文件后，改用单次 `POST /v1/decisions`，只提一个名为 `failed` 的 choice 问题，在 `not_failed` / `failed` 两个字符串选项中选择，再严格映射为布尔值。返回多个答案、错误名称、其他答案类型、未提供的选项或非字符串值均判为协议错误；拒答按供应商故障处理。两种后端的系统契约都明确说明：正常过渡、尚未完成、暂时遮挡或证据不足不能单独判定失败。
+默认 DeepSeek 后端的模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。选择 `type: openai_decisions` 的供应商文件后，改用单次 `POST /v1/decisions`，只提一个名为 `failed` 的 choice 问题，在 `not_failed` / `failed` 两个字符串选项中选择，再严格映射为布尔值。返回多个答案、错误名称、其他答案类型、未提供的选项或非字符串值均判为协议错误；拒答按供应商故障处理。两个出厂提示模板都要求在有明确证据时才判定失败，正常过渡、尚未完成、暂时遮挡或证据不足均属正常情况。可在所选供应商的配置中调整这条判断规则。
 
 `failed=true` 在下一次有效 `policy()` 回调调用：
 
@@ -26,9 +26,10 @@ runtime.finish("llm_failure：<当前供应商> 判断任务已进入失败状�
 
 - 有 `return_and_wait` 任务时：交还 MCP，回执 `status=succeeded`、`result.outcome=terminated`，附带固定 message 和来源位置。
 - 没有等待任务时：暂停并保留 policy 所有权。
-- API 超时、断连、拒答、HTTP 错误或违反响应契约：抛出策略故障，不伪造 `failed=true`；有等待任务时回执为 `failed` 并交还 MCP。
+- API 超时、断连、拒答、HTTP 错误或违反响应契约：本次检查失败，继续原样透传动作；不会卸载、锁死、暂停或结束任务，MCP 等待任务继续运行。累计供应商失败次数会显示在实例监控中。
+- 本地配置、动作/图像校验、请求超过 32 MiB 或程序异常仍为策略故障。
 
-请求不自动重试，不切换模型或接口。每个请求有提交时开始计算的 所选后端的 `timeout_s` 预算，后续回调检查超时；迟到响应不能成为有效判断。暂停/恢复、MCP 归还及 reset 会清空历史和计数并丢弃旧结果。reset/release 先使结果失效，再等待旧请求收尾，卡死请求由现有 host 的统一生命周期期限和进程树清理兜底。
+SDK 对同一查询不自动重试，不切换模型或接口。供应商失败后，仍按 `check_every_steps` 从上次实际提交步数累计；满足间隔且旧查询真正结束时，下一次回调使用最新图像发起一次新检查。每个请求有从提交时开始计算的所选后端 `timeout_s` 预算，后续回调检查超时；迟到响应不能成为有效判断。超时但尚未结束的请求仍占用唯一在途位置，不会并发补发。暂停/恢复、MCP 归还及 reset 会清空历史和计数并丢弃旧结果。reset/release 先使结果失效，再等待旧请求收尾，卡死请求由现有 host 的统一生命周期期限和进程树清理兜底。
 
 ## 配置
 
@@ -36,27 +37,34 @@ runtime.finish("llm_failure：<当前供应商> 判断任务已进入失败状�
 ./setup.sh --policies llm_failure
 ```
 
-在生成的 `policy.yaml` 中填写 `params.task`，在 `params.provider_config_path` 指向的文件中填写 `api_key`。每个实例在自己的 worker 中读取所选文件，初始化和切换预检只做本地校验。
+在 `params.provider_config_path` 指向的供应商文件中填写 `task` 和 `api_key`。每个供应商有自己的任务、判断提示和图像说明，每个实例只读取所选文件。初始化和切换预检只做本地校验。
 
-| 字段 | 默认值 / 要求 |
+| policy.yaml 中的参数 | 默认值 / 要求 |
 |---|---|
-| `task` | 必填任务文本 |
-| `prompt` | 可编辑的失败判断提示词；程序追加所选后端契约；用户文本保持原样，建议不要在自定义提示中限定 JSON 格式 |
 | `check_every_steps` | 60，正整数 |
 | `history_size` | 5，范围 2–16，包含当前组 |
 | `image_max_side` | 1024，范围 1–4096，保持比例，不放大小图 |
 | `jpeg_quality` | 85，范围 1–95 |
 | `provider_config_path` | 默认 `provider.yaml`，相对本策略来源目录，也可用容器内可见的绝对路径 |
 
-默认的 `provider.yaml` 选择 DeepSeek。GPT Decisions 模板位于本策略的 `providers/openai_decisions.yaml`。两种文件都在顶层填写后端类型、模型、API 地址、密钥和超时。例如：
+DeepSeek 默认使用 `provider.yaml`，GPT Decisions 使用 `providers/openai_decisions.yaml`。两种文件都在顶层填写 `type`、`model`、`base_url`、`api_key`、`timeout_s` 和下表中的提示字段。可直接从对应后端的完整模板开始。[DeepSeek 模板](../policy/llm_failure/provider.yaml.example) · [Decisions 模板](../policy/llm_failure/providers/openai_decisions.yaml.example)
 
-```yaml
-type: openai_decisions
-model: gpt-6-luna
-base_url: https://api.openai.com/v1
-api_key: ''
-timeout_s: 30.0
+| 供应商字段 | 如何使用 |
+|---|---|
+| `task` | 必填，填写这个供应商要检查的机器人任务。 |
+| `prompt`、`response_instructions` | 判断规则与输出说明。两段原样以一个空行连接，送入 Chat 的 system 消息或 Decisions 的问题指令。可以把全部指令写进 `prompt`，此时将 `response_instructions` 设为 `''`。文字中的 JSON 花括号按原文发送。 |
+| `input_templates.task` | 第一段输入文本，必须包含 `{task}`。 |
+| `input_templates.history_snapshot`、`input_templates.current_snapshot` | 历史帧组与当前帧组的标注，可引用从 1 开始的 `{index}` 和实际执行步数 `{step}`。 |
+| `input_templates.camera` | 每张图像前的标注，可引用相机名 `{camera}`。输入模板如需显示字面花括号，写成 `{{` 和 `}}`。 |
+| `choice_descriptions.not_failed`、`choice_descriptions.failed` | 仅 Decisions 使用，分别填写两项的说明。协议选项值和 Chat 的布尔字段 `failed` 由响应解析器识别。 |
+
+**从旧部署迁移**。更新源码和 `.example` 模板后，在项目根目录用 setup 所用的 Python 运行以下命令。迁移与 setup、手动编辑分开执行。
+
+```bash
+python3 scripts/migrate_llm_failure_prompts.py
 ```
+
+工具把旧 `params.task` 和 `params.prompt` 迁入各供应商文件，按后端补齐模板，将已有文件的变更前副本放入 `.setup/backups/`。它会识别策略目录和子目录中的备用配置，用旧任务和提示填补缺失或仍为出厂默认值的字段，保留各供应商已经定制的值。跳过目录中的本地配置可用 `--profile` 指定。标准容器路径 `/workspace/policy/llm_failure/…` 会映回本地策略目录，其他外部挂载文件按相应的 `.example` 手动迁移。已经运行的旧策略链需执行一次 `switch <当前链名>`，让 RC 重新读取磁盘上的清单。此后，单独编辑某个供应商文件再执行同路径的 `switch-provider` 即可。
 
 填写所选文件的密钥后，可在 TUI 中切换。如果链中有两个失败检测实例，以下命令对第二个生效：
 
@@ -66,15 +74,28 @@ save-config policy llm_failure-1
 resume
 ```
 
-只有一个实例时使用 `llm_failure`。候选文件校验失败时，原实例继续使用已加载的设置。校验成功后 RC 冷重载整个运行组，新组保持暂停，其他实例保留各自的路径。再次指定同一路径会重读文件。`save-config` 是可选步骤，只将选定路径写回来源策略的 `policy.yaml`。该文件是以后创建实例时的默认配置。
+只有一个实例时使用 `llm_failure`。候选文件校验失败时，原实例继续使用已加载的设置。校验成功后 RC 只冷重载目标实例并暂停整链，其他成员保留现有模型和路径。若新实例初始化失败，修正文件后可执行 `retry-reload llm_failure-1`。再次指定同一路径会重读文件。`save-config` 是可选步骤，只将选定路径写回来源策略的 `policy.yaml`。该文件是以后创建实例时的默认配置。
 
 默认 `control_mode=qpos`，可改为 `epos` 或 `mixed`，但必须与链首策略一致。检查器要求非空前序动作，因此应作为链成员使用，不能单独启动后依靠它生成保持动作。
 
 供应商只接收 task、prompt 和带相机/步数标注的图片，不接收动作块。请求内容上限 32 MiB，超限明确失败，请减小历史数量、图像尺寸或质量；不上传到图床或 Files API。诊断日志保存有界的供应商原始响应，输出前会脱敏配置密钥及 Authorization 凭证；日志不包含请求图片、task、prompt 或配置凭证。
 
+## 实例监控
+
+通过 `monitor-llm_failure on` 打开单实例监控；重复实例使用明确名称，例如 `monitor-llm_failure-1 on`。`monitor(context)` 只读取内存中的六个标量，不执行 HTTP、文件或控制操作，也不等待供应商请求、诊断输出或 reset 收尾。
+
+| 字段 | 当前 episode 内的含义 |
+|---|---|
+| `in_flight` | 已提交且后台尚未真正结束的请求数，包含超时仍在运行的请求；完成但尚未采集的结果为 0 |
+| `avg_http_s` / `max_http_s` | 已结束请求真实 `http_duration_s` 的平均值 / 最大值，仅统计 HTTP `.create()` 耗时，不包含图像编码、解析和等待采集 |
+| `avg_total_tokens` / `max_total_tokens` | 供应商实际 `usage.total_tokens` 样本的平均值 / 最大值；不使用输入/输出 token 求和或估算 |
+| `failed_requests` | 超时、网络、HTTP 状态、拒答或无效响应造成的检查失败次数，每个查询最多计一次；合法 `failed=true` 不计作请求失败 |
+
+HTTP 耗时或 total token 没有样本时显示 `—`；缺失样本不按 0 纳入平均值。失败响应若带有有效 HTTP 耗时或 total token，仍纳入对应样本。每次 `reset_context()` 切换代次时立即清空累计值；旧请求随后完成也不会污染新 episode，`in_flight` 则始终反映后台实际收尾状态。每个运行实例独立累计，以常数空间、常数时间维护。
+
 ## 请求与采集诊断
 
-策略独立输出单行 JSON 事件，`event` 始终以 `llm_failure.` 开头。启用 RC 录制时，这些策略日志会另存到该次录制的 `llm_failure.jsonl`；诊断本身持续输出，不需要给策略新增启停命令。直接使用 `ProviderClient` 时默认不输出日志，调用者可以传入可选的 `diagnostics` 回调收集脱敏元信息，`decide()` 仍只返回布尔值，HTTP 请求数量与重试设置不变。
+策略独立输出单行 JSON 事件，`event` 始终以 `llm_failure.` 开头。启用 RC 录制时，这些策略日志会另存到该次录制的 `llm_failure.jsonl`。直接使用 `ProviderClient(load_provider(...))` 时，调用 `decide(snapshots)` 即可得到布尔判断。构造时可传入 `diagnostics` 回调收集脱敏元信息。
 
 每次实际发起检查生成唯一的 `query_id`，由请求、采集和清理事件共同引用。`instance_id` 来自运行配置的 `id`，因此重复出现的策略实例仍能独立关联。供应商返回的请求标识单独存放在 `provider_request_id`，不与本地查询 ID 混用。
 

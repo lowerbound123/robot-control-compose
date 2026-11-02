@@ -88,9 +88,9 @@ class GlobalStateControl:
             try:
                 version = result.result()
                 self.operations.update(request.operation_id, 'succeeded', result={'version': version})
-                self._emit(f'global.{key} 已提交，版本 {version}')
+                self._emit_command(f'global.{key} 已提交，版本 {version}')
             except Exception as exc:
                 self.operations.update(request.operation_id, 'failed', error=exc)
-                self._emit(f'共享状态操作失败：{exc}', 'error')
+                self._emit_command(f'共享状态操作失败：{exc}', 'error')
         future.add_done_callback(complete)
         return True

@@ -57,6 +57,9 @@ class GlobalStateService:
                 raise RuntimeError('global state closed')
             binding = dict(run_id=self.run_id, store_id=self.descriptor['store_id'],
                            session_id=worker.session_id, generation=(worker.expected_host or {}).get('generation', 0))
+            context_id = getattr(worker, 'context_id', None)
+            if context_id is not None:
+                binding['context_id'] = context_id
             self.sessions[worker] = dict(binding=binding, requests=OrderedDict())
             return dict(self.descriptor, binding=binding)
 
@@ -76,7 +79,7 @@ class GlobalStateService:
             raise ValueError('invalid expected_version')
         future = Future()
         with self.lock:
-            if not self.accepting or (session is not None and session not in self.sessions):
+            if not self.accepting or (session is not None and self.sessions.get(session[0]) is not session[1]):
                 raise RuntimeError('global state session closed')
             try:
                 self.queue.put_nowait((future, raw, delete, expected_version, guard, session, time.monotonic() + self.timeout_s))
@@ -111,7 +114,7 @@ class GlobalStateService:
                 elif requests and identity <= next(reversed(requests)):
                     raise ValueError('expired global request id')
                 else:
-                    future = self.submit(message['values'], message.get('delete', ()), message.get('expected_version'), session=worker)
+                    future = self.submit(message['values'], message.get('delete', ()), message.get('expected_version'), session=(worker, record))
                     requests[identity] = future
                     while len(requests) > 256 and next(iter(requests.values())).done():
                         requests.popitem(last=False)
@@ -135,7 +138,7 @@ class GlobalStateService:
                 proposed = encode(values, self.max_bytes)
                 with self.memory.locked(write=True, deadline=deadline):
                     with guard(), self.lock:
-                        if session is not None and session not in self.sessions:
+                        if session is not None and self.sessions.get(session[0]) is not session[1]:
                             raise RuntimeError('stale global state session')
                         if time.monotonic() >= deadline:
                             raise TimeoutError('global state request expired')

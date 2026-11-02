@@ -30,7 +30,7 @@ def test_passthrough_identity_and_actual_step_boundaries(mode, value):
         runtime.consumed_actions = 360
         assert instance.policy(value, images(30), runtime) is value
         done(instance)
-        assert [sample.step for sample in provider.calls[0][2]] == [0, 60]
+        assert [sample.step for sample in provider.calls[0]] == [0, 60]
         for count in (360, 360, 419):
             runtime.consumed_actions = count
             assert instance.policy(value, {}, runtime) is value
@@ -38,7 +38,7 @@ def test_passthrough_identity_and_actual_step_boundaries(mode, value):
         runtime.consumed_actions = 420
         assert instance.policy(value, images(40), runtime) is value
         done(instance)
-        assert [sample.step for sample in provider.calls[1][2]] == [0, 60, 120]
+        assert [sample.step for sample in provider.calls[1]] == [0, 60, 120]
         assert runtime.finishes == []
         if isinstance(value, np.ndarray):
             np.testing.assert_array_equal(value, original)
@@ -70,7 +70,7 @@ def test_busy_request_never_blocks_or_queues_and_uses_latest_snapshot():
         instance.policy(chunk, images(90), runtime)
         done(instance)
         assert len(provider.calls) == 2
-        assert [sample.step for sample in provider.calls[-1][2]] == [0, 60, 245]
+        assert [sample.step for sample in provider.calls[-1]] == [0, 60, 245]
         runtime.consumed_actions = 304
         instance.policy(chunk, {}, runtime)
         assert len(provider.calls) == 2
@@ -112,14 +112,14 @@ def test_history_is_bounded_ordered_and_owns_pixels_after_callback():
             instance.policy(chunk, images(20 + step // 6), runtime)
             done(instance)
             instance.policy(chunk, {}, runtime)
-        first = provider.calls[0][2][0]
+        first = provider.calls[0][0]
         encoded = dict(first.images)['head']
         with Image.open(io.BytesIO(base64.b64decode(encoded.split(',')[1]))) as decoded:
             assert np.asarray(decoded).max() <= 11
-        latest = provider.calls[-1][2]
+        latest = provider.calls[-1]
         assert [sample.step for sample in latest] == [120, 180, 240, 300, 360]
         assert all(tuple(name for name, _ in sample.images) == ('head', 'left_wrist', 'right_wrist') for sample in latest)
-        assert len(provider.calls[0][2]) == 2, 'later samples must not mutate an in-flight snapshot'
+        assert len(provider.calls[0]) == 2, 'later samples must not mutate an in-flight snapshot'
     finally:
         instance.close()
 
@@ -149,7 +149,7 @@ def test_new_context_discards_old_results_and_restarts_step_count(reset):
         runtime.consumed_actions += 1
         instance.policy(chunk, images(90), runtime)
         done(instance)
-        assert [sample.step for sample in provider.calls[-1][2]] == [0, 60]
+        assert [sample.step for sample in provider.calls[-1]] == [0, 60]
     finally:
         instance.close()
 
@@ -185,7 +185,7 @@ def test_reset_waits_for_old_request_without_applying_its_error():
     assert provider.closed == 1
 
 
-def test_background_error_and_deadline_are_reported_in_policy_thread(monkeypatch):
+def test_background_supplier_error_and_deadline_keep_passing_actions(monkeypatch):
     from rc_llm_failure.errors import ProviderError
     import rc_llm_failure.runtime as module
     provider, runtime = Provider(ProviderError('API HTTP 503')), Runtime()
@@ -196,8 +196,8 @@ def test_background_error_and_deadline_are_reported_in_policy_thread(monkeypatch
         runtime.consumed_actions = 60
         instance.policy(chunk, images(), runtime)
         done(instance)
-        with pytest.raises(ProviderError, match='503'):
-            instance.policy(chunk, {}, runtime)
+        assert instance.policy(chunk, {}, runtime) is chunk
+        assert instance.monitor()['failed_requests'] == 1
         assert runtime.finishes == []
     finally:
         instance.close()
@@ -211,8 +211,8 @@ def test_background_error_and_deadline_are_reported_in_policy_thread(monkeypatch
         runtime.consumed_actions = 60
         instance.policy(chunk, images(), runtime)
         now[0] = 104.
-        with pytest.raises(ProviderError, match='超时'):
-            instance.policy(chunk, {}, runtime)
+        assert instance.policy(chunk, {}, runtime) is chunk
+        assert instance.monitor()['failed_requests'] == 1
         assert runtime.finishes == []
     finally:
         gate.set()

@@ -116,9 +116,9 @@ save-config policy llm_direction
 resume
 ```
 
-候选文件未通过校验时，当前实例继续使用已加载的配置。校验通过后，RC 清理旧运行组并冷重载，完成后暂停。更新同一文件里的模型或密钥时，再次执行相同命令即可。RC 的命令回执和配置保存只涉及所选路径。
+候选文件未通过校验时，当前实例继续使用已加载的配置。校验通过后，RC 替换目标实例并暂停整链。更新同一文件里的模型或密钥时，再次执行相同命令即可。RC 的命令回执和配置保存只涉及所选路径。
 
-原生链通过 `manage-policy` 编排，所有成员须为 `epos`。同一策略出现多次时，每个环节各有实例，例如 `policy llm_direction-1 switch-provider provider.yaml`。冷重载会重建整条链，只有指定实例采用新路径。使用 `save-config policy llm_direction-1` 可将该实例的选择写回来源目录，作为以后加载时的默认值。
+原生链通过 `manage-policy` 编排，所有成员须为 `epos`。同一策略出现多次时，每个环节各有实例，例如 `policy llm_direction-1 switch-provider provider.yaml`。只重建指定实例并采用新路径，其他成员的模型保持驻留。使用 `save-config policy llm_direction-1` 可将该实例的选择写回来源目录，作为以后加载时的默认值。
 
 暂停、MCP 接管、配置冷重载和退出都会使旧动作失效。HTTP 请求可能仍需等返回或超时，迟到结果不能恢复动作。用户 `resume` 才允许下一次模型决策；硬超时或 worker 故障后先重新加载 policy。
 

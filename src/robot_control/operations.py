@@ -35,6 +35,8 @@ class ControlRequest:
     chain_policies: tuple = ()
     edit_token: int | None = None
     save_target: PolicySaveTarget | None = None
+    retry_candidate: object = None
+    retry_generation: int | None = None
 
 
 class Operations:

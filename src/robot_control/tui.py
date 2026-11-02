@@ -332,7 +332,7 @@ class RobotControlApp(App):
             panel.clear_images()
         except Exception:
             pass  # a broken terminal writer must not take down control/exit
-        self.query_one(StructuredLog).write(Text(f"相机预览已关闭：{error}", style="red"))
+        self.controller._emit(f"相机预览已关闭：{error}", 'error')
         self.screen.refresh(layout=True)
 
     def refresh_preview(self):
@@ -384,7 +384,10 @@ class RobotControlApp(App):
         self.query_one(CommandInput).commands = (*COMMANDS, *getattr(self.controller, "local_commands", lambda: [])(), *monitor_commands)
         self.query_one(CommandInput).mcp_tools = self.router.tool_names
         status = self.controller.status()
-        fields = [f"{key}={value}" for key, value in status.items() if key not in ("direct", "runtime")]
+        fields = [f"{key}={value}" for key, value in status.items() if key not in ("direct", "runtime", "last_action_request")]
+        last_request = status.get('last_action_request')
+        if last_request is not None:
+            fields.append(f"请求 {last_request['request_id']}：裁剪 {last_request['trim']}，缓存 {last_request['cached']}")
         runtime = status.get('runtime')
         if runtime:
             fields.extend([f"runtime={runtime['phase']}", f"target={runtime['target']}"])

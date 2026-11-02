@@ -2,7 +2,7 @@
 import copy
 import json
 
-from rc_policy_sdk.commands import command_usage, parse_command
+from rc_policy_sdk.commands import RELOAD_EFFECTS, command_usage, parse_command
 from .operations import ControlRequest, PolicySaveTarget
 from .config import PolicyRecord, changed_config, dotted_get
 
@@ -12,10 +12,13 @@ class PolicyCommandSupport:
         self._policy_calls = {}
         self._policy_reloads = {}
         self._command_faults = set()
+        self._retry_candidate = None
+        self._reload_owner = None
+        self._pending_reload_cleanup = None
 
     def _local_specs(self):
         worker = self._worker
-        if (worker is None or not getattr(worker, "runnable", worker.alive) or worker in self._command_faults
+        if (self._retry_candidate is not None or worker is None or not getattr(worker, "runnable", worker.alive) or worker in self._command_faults
                 or self._operation is not None or self._stop.is_set()):
             return {}
         return getattr(worker, "command_specs", {})
@@ -100,10 +103,10 @@ class PolicyCommandSupport:
         if not self._local_specs():
             raise RuntimeError("busy: no active policy accepting commands")
         name, args = parse_command(line, specs)
-        reload_effect = specs[name].get("effect") == "reload_policy"
+        reload_effect = specs[name].get("effect") in RELOAD_EFFECTS
         if reload_effect and (self.control_owner == "mcp" or self._return_requested):
             raise PermissionError("reload_policy commands are unavailable during MCP takeover")
-        self._emit(f"policy command [{identity}] queued: {line}")
+        self._emit_command(f"policy command [{identity}] queued: {line}")
         request = ControlRequest(identity, line, "tui", self._control_epoch,
                               policy_worker=self._worker, policy_version=self._worker.config_version,
                               policy_name=name, policy_args=tuple(args))
@@ -123,11 +126,14 @@ class PolicyCommandSupport:
         request, generation = snapshot
         if not self._reload_is_current(request, generation):
             self.operations.update(identity, "cancelled", error="policy/control state changed during reload command")
-            self._emit(f"policy command [{identity}] cancelled: policy/control state changed")
+            self._emit_command(f"policy command [{identity}] cancelled: policy/control state changed")
             return
         try:
-            if not isinstance(patch, dict) or not patch:
-                raise ValueError("reload_policy result must be a nonempty params leaf patch")
+            effect = request.policy_worker.command_specs[request.policy_name]['effect']
+            if not isinstance(patch, dict):
+                raise ValueError(f"{effect} requires a params leaf patch")
+            if not patch and effect != 'reinitialize_policy':
+                raise ValueError(f"{effect} requires a nonempty params leaf patch")
             record = getattr(request.policy_worker, 'record', None) or self.registry.get(self._identity)
             member_id = None
             target = record
@@ -137,27 +143,27 @@ class PolicyCommandSupport:
             config = target.config
             for path, value in patch.items():
                 if not isinstance(path, str) or not path.startswith("params."):
-                    raise ValueError("reload_policy may change only existing params.* leaves")
+                    raise ValueError(f"{effect} may change only existing params.* leaves")
                 if isinstance(dotted_get(target.config, path), dict) or isinstance(value, dict):
-                    raise ValueError("reload_policy must address existing params.* leaves")
+                    raise ValueError(f"{effect} must address existing params.* leaves")
                 config, hot = changed_config(config, path, value)
                 if hot:
-                    raise ValueError(f"reload_policy requires cold params: {path}")
+                    raise ValueError(f"{effect} requires cold params: {path}")
             proposed = PolicyRecord(target.directory, config, target.version + 1, instance_id=target.instance_id)
+            member = proposed
             if member_id is not None:
-                proposed = self.registry.resolve_chain(
-                    PolicyRecord(record.directory, record.config, record.version + 1, record.members), {member_id: proposed})
+                members = tuple(member if m.instance_id == member_id else m for m in record.members)
+                proposed = PolicyRecord(record.directory, record.config, record.version + 1, members)
             self._invalidate_policy_editor()
-            # The command callback has finished. Transfer its receipt to the
-            # existing cold lifecycle, whose prepare handshake invalidates all
-            # cached actions before closing the old worker. Even equal patches
-            # must run initialize again (the file at that path may have changed).
-            self._operation_start("switch", record=proposed, old_worker=request.policy_worker,
-                                  reset=False, commit=True, version=proposed.version, public_id=identity)
+            if effect == 'reload_all_policy':
+                self._operation_start("switch", record=proposed, old_worker=request.policy_worker,
+                                      reset=False, commit=True, version=proposed.version, public_id=identity)
+            else:
+                self._start_member_reload(proposed, member, identity, in_place=effect == 'reinitialize_policy')
             self.operations.update(identity, "running")
         except Exception as exc:
             self.operations.update(identity, "failed", error=exc)
-            self._emit(f"policy command [{identity}] failed: {exc}", "error")
+            self._emit_command(f"policy command [{identity}] failed: {exc}", "error")
 
     def _policy_save_request(self, operation_id, line, words, origin):
         if not words or words[0] != 'save-config':
@@ -203,7 +209,7 @@ class PolicyCommandSupport:
         if (worker is not self._worker or worker.config_version != request.policy_version
                 or worker in self._command_faults or not getattr(worker, "runnable", worker.alive)):
             self.operations.update(request.operation_id, "cancelled", error="policy instance/configuration changed")
-            self._emit(f"policy command [{request.operation_id}] cancelled: policy changed")
+            self._emit_command(f"policy command [{request.operation_id}] cancelled: policy changed")
             return
         if request.origin != "tui":
             raise PermissionError("policy commands are local-only")
@@ -235,7 +241,7 @@ class PolicyCommandSupport:
             if request.policy_worker is worker:
                 self._policy_reloads.pop(request.operation_id, None)
                 self.operations.update(request.operation_id, "cancelled", error="policy lifecycle operation")
-                self._emit(f"policy command [{request.operation_id}] cancelled: lifecycle operation")
+                self._emit_command(f"policy command [{request.operation_id}] cancelled: lifecycle operation")
             else:
                 retained.append(request)
         for request in retained:
@@ -253,7 +259,7 @@ class PolicyCommandSupport:
                 kind = message["type"]
                 if kind == "command_started":
                     self.operations.update(identity, "running")
-                    self._emit(f"policy command [{identity}] running")
+                    self._emit_command(f"policy command [{identity}] running")
                     continue
                 self._policy_calls.pop(identity)
                 snapshot = self._policy_reloads.pop(identity, None)
@@ -264,7 +270,7 @@ class PolicyCommandSupport:
                           "command_cancelled": "cancelled", "command_timeout": "failed"}[kind]
                 self.operations.update(identity, status, result=message.get("result"), error=message.get("error"))
                 value = json.dumps(message.get("result"), ensure_ascii=False) if kind == "command_result" else message.get("error", "cancelled")
-                self._emit(f"policy command [{identity}] {status}: {value}", "error" if status == "failed" else "info")
+                self._emit_command(f"policy command [{identity}] {status}: {value}", "error" if status == "failed" else "info")
                 if kind == "command_timeout" or message.get("fatal"):
                     self._command_faults.add(worker)
                     for other, owner in list(self._policy_calls.items()):
@@ -272,7 +278,7 @@ class PolicyCommandSupport:
                             self._policy_calls.pop(other)
                             self._policy_reloads.pop(other, None)
                             self.operations.update(other, "cancelled", error=f"policy worker failed: {message.get('error')}")
-                            self._emit(f"policy command [{other}] cancelled: worker failure")
+                            self._emit_command(f"policy command [{other}] cancelled: worker failure")
                     self._gate_policy_commands(worker)
                     if worker is self._worker:
                         self._pause(cancel_wait=False)
@@ -292,7 +298,7 @@ class PolicyCommandSupport:
                         self._policy_calls.pop(identity)
                         self._policy_reloads.pop(identity, None)
                         self.operations.update(identity, "cancelled", error="policy worker exited")
-                        self._emit(f"policy command [{identity}] cancelled: worker exited")
+                        self._emit_command(f"policy command [{identity}] cancelled: worker exited")
 
     def _unload_command_fault(self):
         if self._worker in self._command_faults and self._operation is None and not self._stop.is_set():

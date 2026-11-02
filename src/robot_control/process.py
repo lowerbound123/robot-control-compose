@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from rc_policy_sdk.commands import command_specs, validate_arguments
+from rc_policy_sdk.commands import RELOAD_EFFECTS, check_command_effects, command_specs, validate_arguments
 from rc_policy_sdk.configuration import apply_patch, prepare_patch
 from rc_policy_sdk.control import RUNTIME_TOOLS, control_requests, runtime_tools
 from rc_policy_sdk.wire import encode_message
@@ -52,6 +52,10 @@ def _emit_inference_trace(callback, instance_id, source_id, kind, context, data,
         pass
 
 
+class CandidateRejected(ValueError):
+    """The policy explicitly rejected a candidate before any release."""
+
+
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
                  init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None, on_trace=None):
@@ -89,6 +93,12 @@ class PolicyProcess(MonitorClient):
         self._init_monitor()
         self.resources = None
         self.command_specs = command_specs(config)
+        self._reinitialize_enabled = any(spec.get("effect") == "reinitialize_policy" for spec in self.command_specs.values())
+        self.context_id = uuid.uuid4().hex if self._reinitialize_enabled else None
+        self._context_enabled = True
+        self._reinitializing = False
+        self.release_dispatched = False
+        self._release_confirmed = False
         self.supports_commands = self.supports_observe = False
         self.runtime_tools = frozenset()
         self._commands_blocked = self._command_fatal = False
@@ -161,6 +171,8 @@ class PolicyProcess(MonitorClient):
                 self.host = HostClient.get(self.host_socket, self.config['id'], expected=self.expected_host)
                 if self.endpoint and self.host.instance_id != self.endpoint.host_instance_id:
                     raise RuntimeError('host restarted after readiness; stale endpoint')
+                if self._reinitialize_enabled and not getattr(self.host, "reinitialize_policy", False):
+                    raise RuntimeError("policy host lacks reinitialize_policy capability; upgrade rc-policy-sdk")
                 self.host.register(self)
                 self.host.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
                 self._submitted_load = True
@@ -169,8 +181,8 @@ class PolicyProcess(MonitorClient):
                     session_id=self.session_id, policy_id=self.config['id'],
                     timeouts=dict(initialize=self.init_timeout_s,inference=self.inference_timeout_s,release=self.release_timeout_s),
                     event=dict(type='initialize',config=self.config,config_version=self.config_version,
-                               tui_command_effects=['reload_policy'], runtime_tools=list(RUNTIME_TOOLS),
-                               global_state=global_descriptor))
+                               tui_command_effects_v2=list(RELOAD_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
+                               global_state=global_descriptor, **({"context_id": self.context_id} if self._reinitialize_enabled else {})))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
             with self._condition:
@@ -195,6 +207,8 @@ class PolicyProcess(MonitorClient):
         packet = dict(type='dispatch', runtime_id=self.runtime_id, session_id=self.session_id, event=event)
         if event['type'] in ('infer','observe','update_config','reset_context'):
             packet['operation_timeout_s'] = self.inference_timeout_s
+        if event['type'] in ('reinit_validate', 'reinit_release', 'reinit_initialize'):
+            packet['operation_timeout_s'] = (self.release_timeout_s if event['type'] == 'reinit_release' else self.init_timeout_s if event['type'] == 'reinit_initialize' else self.inference_timeout_s)
         if event['type'] == 'policy_command': packet['command_timeout'] = self.command_specs[event['name']]['timeout_s']
         self.host.enqueue(packet)
 
@@ -218,12 +232,16 @@ class PolicyProcess(MonitorClient):
                 self.supports_commands = message.get('tui_commands', False)
                 if self.command_specs and not self.supports_commands:
                     self._record_failure('upgrade rc-policy-sdk: missing TUI commands'); return
-                if any(spec.get('effect') == 'reload_policy' for spec in self.command_specs.values()) and 'reload_policy' not in message.get('tui_command_effects', []):
-                    self._record_failure('upgrade rc-policy-sdk: missing reload_policy capability'); return
+                try:
+                    check_command_effects(self.command_specs, message)
+                except ValueError as exc:
+                    self._record_failure(str(exc)); return
                 self._ready = True
             elif kind == 'capabilities': self.supports_observe = message.get('observe', False)
             elif kind in ('observed','observation_error'):
-                self._observation_responses.append(message); self._observation = None
+                if self._observation and all(message.get(k) == v for k, v in self._observation.items()):
+                    self._observation_responses.append(message)
+                    self._observation = None
             elif kind in ('monitor_result', 'monitor_error'):
                 self._receive_monitor(message)
             elif kind.startswith('command_'): self._receive_command(message)
@@ -348,7 +366,7 @@ class PolicyProcess(MonitorClient):
         with self._condition:
             if self._state != "running" or self._failure:
                 raise RuntimeError(self._failure or "policy process is not ready")
-            if self._inflight is not None or self._pending_operation:
+            if self._inflight is not None or self._pending_operation or self._reinitializing:
                 raise RuntimeError("policy already has an operation in flight")
             if request["config_version"] != self.config_version:
                 raise ValueError("inference config version differs from supervisor")
@@ -363,10 +381,10 @@ class PolicyProcess(MonitorClient):
 
     def observe(self, request):
         with self._condition:
-            if self._state != 'running' or self._failure or self._pending_operation or self._observation is not None:
+            if self._state != 'running' or self._failure or self._pending_operation or self._reinitializing or self._observation is not None:
                 return False
             self._enqueue({**request, 'type':'observe'})
-            self._observation = request['request_id']
+            self._observation = {k:request[k] for k in ('request_id', 'generation', 'config_version')}
             return True
 
     def poll_observation(self):
@@ -385,6 +403,11 @@ class PolicyProcess(MonitorClient):
                 self._trace('timeout', response)
                 return response
             return None
+
+    def poll_reader_result(self):
+        """Drain actual replies during replacement without synthesizing a timeout."""
+        with self._condition:
+            return self._responses.popleft() if self._responses else None
 
     def _operation(self, kind, extras, cancel_event):
         with self._operation_lock:
@@ -425,6 +448,116 @@ class PolicyProcess(MonitorClient):
                 with self._condition:
                     self._pending_operation = False
 
+    def _reinitialize_operation(self, kind, extras, cancel_event, timeout, *, stop=None):
+        changing_context = kind != 'reinit_validate'
+        with self._operation_lock:
+            with self._condition:
+                if not self._reinitialize_enabled or self._state != 'running' or self._failure:
+                    raise RuntimeError(self._failure or 'policy reinitialization unavailable')
+                if changing_context and self._inflight is not None:
+                    raise RuntimeError('inference still in flight')
+                self._check_wait(time.monotonic() + timeout, cancel_event, kind)
+                if stop is not None and stop.is_set():
+                    raise RuntimeError('policy reinitialization interrupted by shutdown')
+                self.stop_commands()
+                self._operation_number += 1
+                operation_id = self._operation_number
+                # Pure validation may queue beside the last infer of a running chain.
+                # The SDK serializes both, and validation only sees a copy of the candidate.
+                self._pending_operation = changing_context
+                try:
+                    self._enqueue(dict(type=kind, operation_id=operation_id, **extras))
+                    if kind == 'reinit_release':
+                        self.release_dispatched = True
+                        self._reinitializing = True
+                        self.supports_monitor = False
+                        self.supports_observe = False
+                except BaseException:
+                    self._pending_operation = False
+                    raise
+            try:
+                deadline = time.monotonic() + timeout
+                with self._condition:
+                    while True:
+                        if stop is not None and stop.is_set():
+                            raise RuntimeError('policy reinitialization interrupted by shutdown')
+                        self._check_wait(deadline, None if kind == 'reinit_release' else cancel_event, kind)
+                        if operation_id in self._acks:
+                            response = self._acks.pop(operation_id)
+                            if (response.get('config_version') != extras['config_version'] or
+                                    response.get('context_id') != extras['context_id']):
+                                raise RuntimeError('stale reinitialization acknowledgement')
+                            if response.get('type') == 'error':
+                                if kind == 'reinit_validate' and response.get('error_type') == 'candidate_rejected':
+                                    raise CandidateRejected(response.get('error', 'candidate rejected'))
+                                raise RuntimeError(response.get('error', 'policy reinitialization failed'))
+                            if response.get('type') != 'ack':
+                                raise RuntimeError('invalid reinitialization acknowledgement')
+                            return response
+                        self._condition.wait(.05)
+            finally:
+                with self._condition:
+                    self._pending_operation = False
+
+    def validate_reinitialize(self, candidate_runtime_config, next_version, cancel=None):
+        if type(next_version) is not int or next_version <= self.config_version:
+            raise ValueError('config version must increase')
+        return self._reinitialize_operation('reinit_validate', dict(config=candidate_runtime_config,
+            config_version=self.config_version, context_id=self.context_id, new_config_version=next_version),
+            cancel, self.inference_timeout_s)
+
+    def release_context(self, cancel=None, *, stop=None):
+        self.release_dispatched = False
+        self._release_confirmed = False
+        try:
+            response = self._reinitialize_operation('reinit_release', dict(config_version=self.config_version,
+                context_id=self.context_id), cancel, self.release_timeout_s, stop=stop)
+            self._release_confirmed = True
+            return response
+        finally:
+            if self.release_dispatched:
+                if stop is not None and stop.is_set() and not self._release_confirmed:
+                    with self._condition:
+                        self._context_enabled = False
+                else:
+                    self.revoke_context()
+
+    def initialize_context(self, candidate_runtime_config, next_version, cancel=None):
+        if not self._release_confirmed:
+            raise RuntimeError('successful release is required before initialization')
+        self._release_confirmed = False
+        if self.global_state is not None:
+            self.global_state.revoke(self)
+        self.context_id = uuid.uuid4().hex
+        self._context_enabled = True
+        try:
+            descriptor = self.global_state.attach_session(self) if self.global_state is not None else None
+            response = self._reinitialize_operation('reinit_initialize', dict(config=candidate_runtime_config,
+                config_version=next_version, context_id=self.context_id, global_state=descriptor),
+                cancel, self.init_timeout_s)
+            if type(response.get('observe')) is not bool or type(response.get('monitor')) is not bool:
+                raise RuntimeError('invalid reinitialization capabilities')
+            return {'observe': response['observe'], 'monitor': response['monitor']}
+        except BaseException:
+            self.revoke_context()
+            raise
+
+    def revoke_context(self):
+        with self._condition:
+            self._context_enabled = False
+            if self.global_state is not None:
+                self.global_state.revoke(self)
+
+    def commit_reinitialize(self, config, version, flags):
+        with self._condition:
+            self.config = config
+            self.config_version = version
+            self.command_specs = command_specs(config)
+            self.supports_observe = flags['observe']
+            self.supports_monitor = flags['monitor']
+            self._reinitializing = False
+            self._monitor_pending = self._monitor_response = None
+
     def submit_command(self, identity, name, args):
         with self._condition:
             if (self._state != "running" or self._failure or self._pending_operation
@@ -453,7 +586,7 @@ class PolicyProcess(MonitorClient):
         """Undo a gate only when no context-changing operation was launched."""
         with self._condition:
             if (self._state != "running" or self._failure or self._pending_operation
-                    or self._command_fatal or not self.runnable):
+                    or self._command_fatal or self._reinitializing or not self.runnable):
                 return False
             if self.supports_commands:
                 self._enqueue({"type": "command_resume"})

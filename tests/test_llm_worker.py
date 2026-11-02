@@ -237,9 +237,10 @@ def test_switch_provider_reloads_only_selected_chain_config_and_saves_path(setup
         for count, model in enumerate(('first-model', 'edited-model'), 1):
             if count == 2:
                 profile.write_text(json.dumps({**settings, 'model': model}))
+            previous = old.member_workers()
             receipt = operation(controller, controller.submit(cmd + relative))
-            assert old.cleanup_confirmed and controller._worker is not old
-            old = controller._worker
+            assert previous['llm_direction-0'].cleanup_confirmed and controller._worker is old
+            assert old.member_workers()['llm_direction-1'] is previous['llm_direction-1']
             assert controller.status()['state'] == 'paused'
             assert len(server.requests) == count - 1
             members = {m.instance_id: m.config['params']['provider_config_path'] for m in old.record.members}

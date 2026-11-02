@@ -7,13 +7,14 @@ import threading
 import time
 
 import numpy as np
+from config_helpers import read_config
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'packages/llm-failure-policy/src'))
 
 
-def provider_settings(**changes):
-    return {'type': 'deepseek', 'model': 'deepseek-flash', 'base_url': 'https://api.deepseek.com',
+def provider_settings(*, profile='provider.yaml.example', **changes):
+    return {**read_config(ROOT / 'policy/llm_failure' / profile), 'task': 'put the block in the tray',
             'api_key': 'test-key-not-a-real-secret', 'timeout_s': 3., **changes}
 
 
@@ -21,7 +22,6 @@ def manifest(**params):
     return {'schema_version': 3, 'id': 'llm_failure',
             'execution': {'mode': 'sync', 'call_every_actions': 1, 'control_mode': 'qpos'},
             'hot_reloadable': [], 'params': {
-                'task': 'put the block in the tray', 'prompt': 'Check failure using the task and images.',
                 'check_every_steps': 60, 'history_size': 5, 'image_max_side': 1024, 'jpeg_quality': 85,
                 'provider_config_path': 'provider.yaml', **copy.deepcopy(params)}}
 
@@ -57,8 +57,8 @@ class Provider:
         self.closed = 0
         self.gates = []
 
-    def decide(self, task, prompt, snapshots):
-        self.calls.append((task, prompt, snapshots))
+    def decide(self, snapshots):
+        self.calls.append(snapshots)
         value = self.responses.popleft() if self.responses else False
         if isinstance(value, tuple):
             gate, value = value

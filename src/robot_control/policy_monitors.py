@@ -63,13 +63,14 @@ class PolicyMonitors:
             self._wake.set()
             return True
 
-    def invalidate(self):
+    def invalidate(self, identity=None):
         # Called synchronously before lifecycle work, even if it completes
         # entirely between two polling ticks.
         with self.lock:
             self._revision += 1
-            for entry in self.entries.values():
-                self._reset(entry)
+            for name, entry in self.entries.items():
+                if identity is None or name == identity:
+                    self._reset(entry)
 
     def tick(self):
         with self.lock:
@@ -83,7 +84,7 @@ class PolicyMonitors:
             if self._closed or revision != self._revision:
                 return
             for identity, entry in list(self.entries.items()):
-                if blocked:
+                if blocked is True or (blocked and identity in blocked):
                     entry["status"] = "waiting"
                     continue
                 worker = members.get(identity)

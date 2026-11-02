@@ -41,7 +41,7 @@ class RecordingController:
         self.lines.append(line)
         return "ordinary-operation"
 
-    def _emit(self, message, level="info"):
+    def _emit_command(self, message, level="info"):
         self.logs.append((level, message))
 
 

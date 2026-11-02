@@ -101,8 +101,7 @@ def test_pending_timeout_logs_once_and_eventual_completion_is_still_recorded(mon
         wait(lambda: provider.calls)
         clock[0] = 104.
         for _ in range(2):
-            with pytest.raises(ProviderError, match='超时'):
-                instance.policy(chunk, {}, runtime)
+            assert instance.policy(chunk, {}, runtime) is chunk
         before = events(capsys)
         assert [value['event'] for value in before] == [
             'llm_failure.request.started', 'llm_failure.collection.timeout']
@@ -139,8 +138,7 @@ def test_result_that_completed_after_deadline_is_discarded(monkeypatch, capsys):
         gate.set()
         done(instance)
         clock[0] = 109.
-        with pytest.raises(ProviderError, match='超时'):
-            instance.policy(chunk, {}, runtime)
+        assert instance.policy(chunk, {}, runtime) is chunk
         values = events(capsys)
         assert [value['event'] for value in values] == [
             'llm_failure.request.started', 'llm_failure.request.completed', 'llm_failure.collection.discarded']
@@ -166,8 +164,7 @@ def test_provider_error_is_recorded_before_next_policy_callback_and_redacted(cap
             'llm_failure.request.started', 'llm_failure.request.error']
         assert secret not in json.dumps(before)
         assert '[REDACTED]' in before[1]['error']
-        with pytest.raises(ProviderError):
-            instance.policy(chunk, {}, runtime)
+        assert instance.policy(chunk, {}, runtime) is chunk
         after = events(capsys)
         assert after[0]['event'] == 'llm_failure.collection.discarded'
         assert after[0]['reason'] == 'provider_error'

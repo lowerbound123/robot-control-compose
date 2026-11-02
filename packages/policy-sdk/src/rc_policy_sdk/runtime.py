@@ -23,6 +23,9 @@ class WorkerChannel:
         self.on_command = None
         self.on_command_gate = None
         self.on_command_resume = None
+        self.context_id = None
+        self.observations_gated = False
+        self.reinitialize_enabled = False
         self.runtime_tools = frozenset()
         self._send_lock = threading.Lock()
         self._condition = threading.Condition()
@@ -68,13 +71,16 @@ class WorkerChannel:
                     if self.on_monitor:
                         self.on_monitor(message)
                 elif message.get('type') == 'observe':
-                    if self.on_observe:
+                    if self.on_observe and not self.observations_gated:
                         self.observations.submit(self.on_observe, message)
                 else:
-                    if message.get("type") in ("update_config", "reset_context", "shutdown") and self.on_command_gate:
+                    lifecycle = message.get("type") in ("update_config", "reset_context", "shutdown") or (message.get("type") == "reinit_release" and self.reinitialize_enabled)
+                    if lifecycle and self.on_command_gate:
                         self.on_command_gate()
-                    if message.get("type") in ("update_config", "reset_context", "shutdown") and self.on_monitor_gate:
+                    if lifecycle and self.on_monitor_gate:
                         self.on_monitor_gate()
+                    if message.get("type") == "reinit_release" and self.reinitialize_enabled:
+                        self.observations_gated = True
                     self.commands.put(message)
         except (EOFError, OSError):
             with self._condition:
@@ -105,16 +111,35 @@ class WorkerChannel:
         from .global_state import SharedState, GlobalStateProxy
         self.global_memory = SharedState.attach(descriptor)
         self.global_binding = descriptor['binding']
-        self.global_proxy = GlobalStateProxy(self.global_memory.snapshot, self.global_patch, self.check_globals)
+        memory = self.global_memory
+        binding = dict(self.global_binding)
+        def check():
+            if self.global_memory is not memory or self.global_binding != binding:
+                raise RuntimeError('global state context is no longer active')
+            self.check_globals()
+        def patch(values, delete, expected_version):
+            check()
+            return self.global_patch(values, delete, expected_version, memory=memory, binding=binding)
+        self.global_proxy = GlobalStateProxy(memory.snapshot, patch, check)
+
+    def detach_globals(self):
+        if self.global_memory is not None:
+            self.global_memory.close()
+        self.global_memory = None
+        self.global_proxy = None
 
     def check_globals(self):
         if self._closed or self.global_memory is None or self.global_memory.closed:
             raise RuntimeError('global state session unavailable')
 
-    def global_patch(self, values, delete, expected_version):
+    def global_patch(self, values, delete, expected_version, *, memory=None, binding=None):
         from .global_state import GlobalStateConflict
         self.check_globals()
-        deadline = time.monotonic() + self.global_memory.descriptor['timeout_s']
+        memory = memory or self.global_memory
+        binding = dict(self.global_binding if binding is None else binding)
+        if self.global_memory is not memory or self.global_binding != binding:
+            raise RuntimeError('global state context is no longer active')
+        deadline = time.monotonic() + memory.descriptor['timeout_s']
         # Serialize request-id allocation AND enqueue to preserve per-session order.
         if not self._send_lock.acquire(timeout=max(0, deadline - time.monotonic())):
             raise TimeoutError('global state send lock timeout')
@@ -124,7 +149,7 @@ class WorkerChannel:
                 serial = self._serial
                 self._global_pending.add(serial)
             try:
-                self.sender.send(dict(type='global_state_request', rpc_id=serial, binding=self.global_binding,
+                self.sender.send(dict(type='global_state_request', rpc_id=serial, binding=binding,
                                       values=values, delete=delete, expected_version=expected_version),
                                  timeout=max(.001, deadline - time.monotonic()))
             except BaseException:
@@ -161,14 +186,17 @@ class PolicyRuntime:
         self.consumed_actions = metadata.get('consumed_actions', 0)
         self.control_epoch = metadata.get('control_epoch', message.get('generation', 0))
         self.config_version = message.get('config_version', 1)
+        self.context_id = message.get('context_id', getattr(channel, 'context_id', None))
+        self._globals = getattr(channel, 'global_proxy', None)
         self._inference_thread = None
         self._control_requests = []
 
     @property
     def globals(self):
-        proxy = getattr(self.channel, 'global_proxy', None)
+        proxy = self._globals
         if proxy is None:
             raise RuntimeError('global state is unsupported; upgrade robot-control and policy SDK')
+        self._check_context()
         self.channel.check_globals()
         return proxy
 
@@ -215,18 +243,28 @@ class PolicyRuntime:
         self._control_requests = merge_control_requests(self._control_requests, [
             {"type": "finish", "outcome": outcome, "message": message}])
 
+    def _check_context(self):
+        if self.context_id is not None and self.context_id != getattr(self.channel, "context_id", None):
+            raise RuntimeError("policy context is no longer active")
+
+    def _rpc(self, method, **payload):
+        self._check_context()
+        if self.context_id is not None:
+            payload["context_id"] = self.context_id
+        return self.channel.rpc(method, **payload)
+
     def register_remote(self, remote_id, endpoint, owner_id, model_id, instance_id=None):
-        return self.channel.rpc('register', remote_id=remote_id, endpoint=endpoint,
+        return self._rpc('register', remote_id=remote_id, endpoint=endpoint,
                                 owner_id=owner_id, model_id=model_id, instance_id=instance_id)
 
     def update_remote(self, remote_id, generation):
-        return self.channel.rpc('generation', remote_id=remote_id, generation=generation)
+        return self._rpc('generation', remote_id=remote_id, generation=generation)
 
     def retain_remote(self, remote_id, request_id, descriptors):
-        return self.channel.rpc('retain', remote_id=remote_id, request_id=request_id, images=descriptors)
+        return self._rpc('retain', remote_id=remote_id, request_id=request_id, images=descriptors)
 
     def release_images(self, remote_id, request_id):
-        return self.channel.rpc('released', remote_id=remote_id, request_id=request_id)
+        return self._rpc('released', remote_id=remote_id, request_id=request_id)
 
 
 def invoke(function, args, runtime):

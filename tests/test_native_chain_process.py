@@ -214,21 +214,26 @@ def observe(context, state, images, config, *, runtime):
         assert worker.observe(frames)
         wait_for(lambda: ['a-0','observe-done'] in rows(events) and ['b','observe-start'] in rows(events))
         assert worker.poll_observation() is None, 'failed A cannot acknowledge live B image reader'
+        worker.begin_member_reload('a-1')
+        with pytest.raises(TimeoutError, match='b'):
+            worker.wait_other_readers('a-1', time.monotonic() + .05, threading.Event())
+        assert worker.poll_observation() is None and worker.member_workers()['b'].runnable
         gate.touch()
         response = wait_for(worker.poll_observation)
         assert response['type'] == 'observation_error' and 'a' in response['error']
         assert ['b','observe-done'] in rows(events)
+        worker.wait_other_readers('a-1', time.monotonic() + 1, threading.Event())
     finally:
         gate.touch()
         worker.close()
 
 
-def test_external_resource_rpc_namespace_and_owner_are_aggregate(setup_chain, frames):
-    worker, _, _ = setup_chain()
+def test_external_resource_rpc_uses_exact_member_owner(setup_chain, frames):
+    worker, children, _ = setup_chain()
     messages = []
     class Resources:
         def handle(self, owner, message):
-            assert owner is worker
+            assert owner in children and owner.config['id'] in message['remote_id']
             messages.append(dict(message))
             return {'retained':True}
     worker.resources = Resources()

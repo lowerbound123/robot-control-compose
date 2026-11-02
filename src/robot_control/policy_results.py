@@ -25,7 +25,7 @@ class PolicyResultSupport:
                     or self._operation is not None):
                 raise RuntimeError('busy: robot connection or lifecycle operation')
             worker = self._worker
-            if (worker is None or worker in self._command_faults
+            if (self._retry_candidate is not None or worker is None or worker in self._command_faults
                     or not getattr(worker, 'runnable', worker.alive)):
                 raise RuntimeError('no runnable policy; switch a policy first')
             identity = self.operations.create('return_and_wait')
