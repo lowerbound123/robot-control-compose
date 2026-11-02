@@ -3,13 +3,17 @@
 ## 配置和镜像
 
 ```bash
+# 首次准备宿主 python3 的 YAML 依赖
+python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock
 ./setup.sh --policies hold
 # 或准备任意合规范目录；省略 --policies 时准备全部有效策略
 ./setup.sh --policies my_policy,qwen35_twostage
 ./setup.sh --config-only
 ```
 
-setup 使用宿主 Python 3.9+、venv 和 Docker CLI，无 Conda。`SETUP_PYTHON` 可选择宿主解释器；setup 在忽略的 `.setup/tools-venv` 中按版本与 hash 锁准备 YAML 工具依赖，仅首次使用或锁/解释器变化时安装，不修改全局 Python。正式 `policy.yaml` 是发现依据，`.example` 只是补齐缺失配置的模板；只有模板时目录显示 needs_config。无效目录会显示原因。通用校验不解释 provider、model.json、GPU 或 HF 业务字段，真正业务校验由目标策略执行。
+setup 直接使用 PATH 上的 `python3`（3.9 或更高版本）和 Docker CLI。也可用 `SETUP_PYTHON` 指定宿主解释器。若所选解释器缺少 `ruamel.yaml==0.19.1` 或版本不匹配，setup 会在写入配置前退出，并显示使用该解释器安装锁定依赖的命令。
+
+正式 `policy.yaml` 是发现依据，`.example` 只是补齐缺失配置的模板；只有模板时目录显示 needs_config。无效目录会显示原因。通用校验不解释 provider、model.json、GPU 或 HF 业务字段，真正业务校验由目标策略执行。
 
 setup 先合并、验证，再以原子写入更新本机文件。既有值保留，发生变更的文件备份到 `.setup/backups/`，权限为 0600。配置、密钥、输出与运行账本都被 Git 和镜像构建上下文忽略。
 

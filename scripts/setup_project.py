@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import uuid
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
+SETUP_YAML_VERSION = '0.19.1'
 sys.path[:0] = [str(ROOT/'src'), str(ROOT/'packages/policy-sdk/src')]
 
 from config_files import configuration_updates, initialize_provider_files, merge_rc_env, read_json, write_updates
@@ -83,7 +84,11 @@ def docker_endpoint(root):
 
 
 def prepare_context(root, *, config_only):
-    path = root/'.setup/runtime.json'
+    state = root / '.setup'
+    if state.is_symlink():
+        raise ValueError(f'{state}: symlink setup directory is not supported')
+    state.mkdir(mode=0o700, exist_ok=True)
+    path = state / 'runtime.json'
     old = read_json(path) if path.is_file() else {}
     if old.get('host_root') != str(root):
         old = {}
@@ -139,8 +144,18 @@ def prepare_images(root, policies, context):
 
 def setup(root, policies=None, *, config_only=False):
     root = Path(root).resolve()
+    if sys.version_info < (3, 9):
+        raise ValueError('setup requires Python 3.9+; select it with SETUP_PYTHON')
     if os.getuid() == 0:
         raise ValueError('run setup as the normal host user, not root')
+    try:
+        from ruamel.yaml import __version__ as yaml_version
+    except ImportError:
+        yaml_version = None
+    if yaml_version != SETUP_YAML_VERSION:
+        install = shlex.join([sys.executable, '-m', 'pip', 'install', '--require-hashes',
+                              '--only-binary=:all:', '-r', str(root / 'requirements/setup.lock')])
+        raise ValueError(f'宿主 Python 需要 ruamel.yaml=={SETUP_YAML_VERSION}，请手动运行\n{install}')
     changes, documents = configuration_updates(root)
     validate_documents(documents)
     # Global state is runtime data: initialize once, never merge/reset it.

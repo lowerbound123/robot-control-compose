@@ -9,6 +9,8 @@
 本版配置为 **schema 3**，不兼容旧 host/socket 表与根级策略 Compose。支持范围是本地 Linux Docker 部署；其他环境的测试证据单独记录。
 
 ```bash
+# 首次为宿主 python3 安装锁定的 YAML 依赖
+python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock
 # 只准备所需策略镜像，不启动机器人或策略
 ./setup.sh --policies hold
 ./scripts/compose.sh up -d
