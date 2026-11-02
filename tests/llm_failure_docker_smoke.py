@@ -40,8 +40,13 @@ def container():
         path = root / 'policy/llm_failure/policy.yaml'
         config = read_config(path)
         profile = path.parent / config['params']['provider_config_path']
-        profile.write_text(json.dumps({**read_config(profile), 'base_url': f'http://robot-control:{server.server_port}/v1',
-                                      'task': 'put the block in the tray', 'api_key': 'local-test-key', 'timeout_s': 15.}))
+        local = {'base_url': f'http://robot-control:{server.server_port}/v1', 'api_key': 'local-test-key',
+                 'task': 'put the block in the tray: {$stage}', 'timeout_s': 15.}
+        profile.write_text(json.dumps({**read_config(profile), **local}))
+        score_profile = path.parent / 'providers/gpt-decision-score.yaml'
+        score = {**read_config(score_profile), **local}
+        score['levels'][-1]['description'] = '阶段={$stage}'
+        score_profile.write_text(json.dumps(score))
         gate = threading.Event()
         server.responses.extend([
             {'wait': gate, 'body': response_for('deepseek', {'failed': False})},
@@ -71,6 +76,7 @@ def container():
             assert members['producer'].host.instance_id != members['llm_failure'].host.instance_id
             service.start()
             assert not server.requests
+            command('set global.stage "抓取"')
             assert not tool('take').is_error
             receipt = tool('return_and_wait', timeout_s=0).structured_content
             identity = receipt['operation_id']
@@ -84,6 +90,7 @@ def container():
             first_body = server.requests[0]['body']
             assert first_body['thinking'] == {'type': 'disabled'}
             assert first_body['response_format'] == {'type': 'json_object'}
+            assert 'put the block in the tray: 抓取' in first_body['messages'][1]['content'][0]['text']
             assert json.dumps(first_body).count('data:image/jpeg;base64,') == 6
             gate.set()
             wait(lambda: controller.get_policy_result(identity)['finished'])
@@ -107,14 +114,35 @@ def container():
             assert controller._worker is worker and worker.runnable
             outcomes.append('no wait only pauses; reset establishes fresh history; both workers retained')
 
-            server.responses.append({'body': response_for('deepseek', {'failed': 'invalid'})})
+            command('policy llm_failure switch-provider providers/gpt-decision-score.yaml')
+            after = worker.member_workers()
+            assert after['producer'] is members['producer'] and after['llm_failure'] is not members['llm_failure']
+            assert controller.status()['state'] == 'paused'
+            command('set global.stage "放置"')
+            gate.clear()
+            answer = {'type': 'score', 'name': score['question_name']}
+            server.responses.extend([
+                {'body': {'answers': [{**answer, 'score': '1.5'}]}},
+                {'wait': gate, 'body': {'answers': [{**answer, 'score': 1.5}]}},
+            ])
             assert not tool('take').is_error
-            result = tool('return_and_wait').structured_content
-            assert result['status'] == 'failed' and '契约' in result['reason']
+            controller.policy_monitors.set_enabled('llm_failure', True)
+            identity = tool('return_and_wait', timeout_s=0).structured_content['operation_id']
+            wait(lambda: len(server.requests) == 5)
+            assert server.requests[-1]['path'] == '/v1/decisions'
+            sent, = server.requests[-1]['body']['questions']
+            assert sent['type'] == 'score' and sent['levels'][-1]['description'] == '阶段=放置'
+            assert 'fail_if' not in sent
+            wait(lambda: (controller.policy_monitors.snapshot()['llm_failure']['values'] or {}).get('failed_requests') == 1)
+            assert controller.get_policy_result(identity)['status'] == 'running'
+            assert controller.status()['control_owner'] == 'policy'
+            gate.set()
+            wait(lambda: controller.get_policy_result(identity)['finished'])
+            result = tool('get_policy_result', operation_id=identity).structured_content
+            assert result['status'] == 'succeeded' and result['result']['outcome'] == 'terminated'
             assert result['controller']['control_owner'] == 'mcp'
-            wait(lambda: controller._worker is None and controller._operation is None)
-            assert not controller.status()['in_flight']
-            outcomes.append('invalid JSON value produces policy fault, returns MCP and cleans complete runtime group')
+            assert controller._worker is worker and worker.runnable
+            outcomes.append('switched only llm_failure to score; sampled global in level description; invalid score counted once; 1.5 terminates and returns control to MCP')
         finally:
             gate.set()
             service.close()

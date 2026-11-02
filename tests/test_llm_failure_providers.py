@@ -36,7 +36,8 @@ def test_profile_owns_every_model_facing_string(tmp_path, server, decisions, suf
                     input_templates={'task': '目标={task}', 'history_snapshot': '过去/{index}/{step}',
                                      'current_snapshot': '现在/{index}/{step}', 'camera': '视角={camera}'})
     if decisions:
-        settings['choice_descriptions'] = {'failed': '已偏离', 'not_failed': '可继续'}
+        settings['choices'] = [{'value': 'not_failed', 'description': '可继续', 'failed': False},
+                               {'value': 'failed', 'description': '已偏离', 'failed': True}]
     path = tmp_path / 'custom.yaml'
     path.write_text(json.dumps(settings))
     server.responses.append({'body': decision_response('not_failed') if decisions else response_for('deepseek', {'failed': False})})
@@ -188,12 +189,20 @@ def test_invalid_prompt_template_rejected_before_switch(tmp_path, field, text):
     assert settings['api_key'] not in str(error.value)
 
 
-def test_decisions_requires_both_choice_descriptions(tmp_path):
+@pytest.mark.parametrize('kind', ['openai_decisions', 'gpt-decision-choice', 'deepseek'])
+def test_old_decisions_contract_is_rejected_on_load_and_client_creation(tmp_path, kind):
     from rc_llm_failure.configuration import load_provider
-    settings = decision_settings(choice_descriptions={'failed': 'yes'})
+    from rc_llm_failure.providers import ProviderClient
+
+    settings = provider_settings(type=kind, choice_descriptions={'failed': 'yes', 'not_failed': 'no'})
+    if kind == 'gpt-decision-choice':
+        settings.update(question_name='failed', choices=[{'value': True, 'failed': True},
+                                                        {'value': False, 'failed': False}])
     (tmp_path / 'candidate.yaml').write_text(json.dumps(settings))
-    with pytest.raises(ValueError, match='choice_descriptions'):
+    with pytest.raises(ValueError):
         load_provider('candidate.yaml', tmp_path)
+    with pytest.raises(ValueError):
+        ProviderClient(settings)
 
 
 def test_optional_diagnostic_callback_preserves_boolean_and_no_default_output(server, capsys):
@@ -386,7 +395,7 @@ def test_small_raw_response_is_retained_in_full_even_when_contract_is_invalid(se
 
 
 def decision_settings(server=None, **patch):
-    return {**provider_settings(profile='providers/openai_decisions.yaml.example'),
+    return {**provider_settings(profile='providers/gpt-decision-choice.yaml.example'),
             'model': 'gpt-test', 'base_url': server.url if server else 'https://api.openai.com/v1',
             'api_key': 'decision-private-key', 'timeout_s': 2., **patch}
 
@@ -432,7 +441,7 @@ def test_decisions_real_sdk_preserves_history_and_diagnostics(server, monkeypatc
     text = '\n'.join(item['text'] for item in content if item['type'] == 'input_text')
     assert text.index('step=0') < text.index('step=60')
     terminal = next(event for event in events if event['event'] == 'llm_failure.request.completed')
-    assert terminal['provider'] == 'openai_decisions'
+    assert terminal['provider'] == 'gpt-decision-choice'
     assert terminal['parsed_failed'] is expected
     assert terminal['provider_request_id'] == 'decision-request-123'
     assert terminal['usage'] == {'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11}
@@ -460,7 +469,7 @@ def test_only_selected_provider_file_needs_usable_credentials(tmp_path):
     from rc_llm_failure.configuration import load_provider
     (tmp_path / 'deepseek.yaml').write_text(json.dumps(provider_settings(api_key='')))
     (tmp_path / 'decisions.yaml').write_text(json.dumps(decision_settings()))
-    assert load_provider('decisions.yaml', tmp_path)['type'] == 'openai_decisions'
+    assert load_provider('decisions.yaml', tmp_path)['type'] == 'gpt-decision-choice'
     with pytest.raises(ValueError, match='api_key'):
         load_provider('deepseek.yaml', tmp_path)
 
@@ -497,7 +506,7 @@ def test_decisions_errors_keep_diagnostics_and_never_retry(server, kind):
         assert 'API 请求超时' in str(error.value)
     assert 'decision-private-key' not in str(error.value) + json.dumps(metadata)
     assert len(server.requests) == len(metadata) == 1
-    assert metadata[0]['provider'] == 'openai_decisions'
+    assert metadata[0]['provider'] == 'gpt-decision-choice'
     assert metadata[0]['error'] and metadata[0]['http_duration_s'] >= 0
 
 
@@ -524,7 +533,7 @@ def test_decisions_runtime_keeps_backend_metadata_and_scrubs_profile_key(server,
     events = [json.loads(line) for line in text.splitlines()]
     assert [event['event'] for event in events] == [
         'llm_failure.request.started', 'llm_failure.request.completed', 'llm_failure.collection.accepted']
-    assert all(event['provider'] == 'openai_decisions' for event in events)
+    assert all(event['provider'] == 'gpt-decision-choice' for event in events)
     assert events[1]['usage']['input_tokens_details']['cached_tokens'] == 8
     assert events[1]['usage']['output_tokens_details']['reasoning_tokens'] == 1
 
@@ -559,7 +568,7 @@ def test_decisions_reset_discards_late_true_and_recording_keeps_backend(server, 
         session.close()
     saved = [json.loads(line) for line in (session.root / 'llm_failure.jsonl').read_text().splitlines()]
     assert len(saved) == 3
-    assert all(event['provider'] == 'openai_decisions' for event in saved)
+    assert all(event['provider'] == 'gpt-decision-choice' for event in saved)
     assert all(event['policy_instance_id'] == 'llm_failure-0' for event in saved)
     assert saved[1]['parsed_failed'] is True
     assert len(server.requests) == 1

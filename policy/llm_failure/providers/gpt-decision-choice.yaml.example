@@ -1,4 +1,4 @@
-type: openai_decisions
+type: gpt-decision-choice
 model: gpt-6-luna
 base_url: https://api.openai.com/v1
 api_key: ''
@@ -22,6 +22,11 @@ input_templates:
   history_snapshot: 'Snapshot {index} (history), executed_step={step}'
   current_snapshot: 'Snapshot {index} (current), executed_step={step}'
   camera: 'Camera: {camera}'
-choice_descriptions:
-  not_failed: No clear failure evidence.
-  failed: Execution has entered a failed state.
+question_name: failed
+choices:
+  - value: 'not_failed'
+    description: No clear failure evidence.
+    failed: false
+  - value: 'failed'
+    description: Execution has entered a failed state.
+    failed: true

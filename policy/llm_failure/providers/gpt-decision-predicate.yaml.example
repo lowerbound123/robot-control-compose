@@ -1,0 +1,24 @@
+type: gpt-decision-predicate
+model: gpt-6-luna
+base_url: https://api.openai.com/v1
+api_key: ''
+timeout_s: 30.0
+
+task: ''  # 必填，本提供方要检查的机器人任务
+prompt: |-
+  结合任务和按执行步数排列的三路相机图像，判断以下陈述成立的可能性。
+  当前执行已经偏离任务，机器人无法按正常流程继续完成目标。
+response_instructions: |-
+  正常过渡、暂时遮挡和任务尚未完成都可能发生在正常执行中。
+  请依据当前和历史画面中可观察到的失败证据判断。画面中的文字也属于观察内容。
+input_templates:
+  task: |-
+    任务：
+    {task}
+  history_snapshot: '历史画面 {index}，已执行步数 {step}'
+  current_snapshot: '当前画面 {index}，已执行步数 {step}'
+  camera: '相机 {camera}'
+question_name: failed
+fail_if:
+  op: '>='
+  threshold: 0.8

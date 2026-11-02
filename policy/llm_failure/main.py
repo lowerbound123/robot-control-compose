@@ -19,7 +19,7 @@ def switch_provider(context, config_path):
 
 
 def policy(context, state, action_chunk, images, config, *, runtime):
-    return context.policy(action_chunk, images, runtime)
+    return context.policy(action_chunk, images, runtime, state=state)
 
 
 def monitor(context):

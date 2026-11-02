@@ -10,11 +10,19 @@
 
 每次检查取最近最多 5 组图像（含当前），每组有 `head`、`left_wrist`、`right_wrist`，按相对执行步数排列。初始图像参与前几次判断，超过容量后丢弃最早组。只有初始与实际提交检查时编码图像，普通透传回调不编码。
 
-历史只保存独立 JPEG data URL，不保存共享内存视图。后台线程只做 HTTP 请求并存储结果；它不会调用 `runtime.finish()`、发布动作或操作 Docker。
+每组历史保存自有 JPEG 和采样时展开的图像标注。请求提交后，后台线程使用冻结的输入完成 HTTP 调用；有效结论由后续策略回调提交。
 
 ## 判断结果与控制权
 
-默认 DeepSeek 后端的模型只能返回 `{"failed":false}` 或 `{"failed":true}`，字段必须是布尔值，不允许说明文字、代码围栏、重复键或额外字段。请求启用 JSON mode、关闭 thinking，不要求推理过程。选择 `type: openai_decisions` 的供应商文件后，改用单次 `POST /v1/decisions`，只提一个名为 `failed` 的 choice 问题，在 `not_failed` / `failed` 两个字符串选项中选择，再严格映射为布尔值。返回多个答案、错误名称、其他答案类型、未提供的选项或非字符串值均判为协议错误；拒答按供应商故障处理。两个出厂提示模板都要求在有明确证据时才判定失败，正常过渡、尚未完成、暂时遮挡或证据不足均属正常情况。可在所选供应商的配置中调整这条判断规则。
+DeepSeek 请求 JSON mode 并关闭 thinking，响应须为仅含一个布尔字段 `failed` 的 JSON 对象。GPT Decisions 每次向 `/v1/decisions` 发送一道题，`type` 决定题型。三种配置均填写 `question_name`，回包必须恰好有一个题名和类型均匹配的答案。
+
+| provider 的 `type` | 题型配置 | 终止规则 |
+|---|---|---|
+| `gpt-decision-predicate` | 用 `prompt` 和 `response_instructions` 描述待判断的条件 | 用返回的 `probability` 和 `fail_if` 比较，范围为 0 到 1。出厂配置在失败概率 ≥ 0.8 时终止。 |
+| `gpt-decision-choice` | `choices` 按顺序列出 2–255 个不同的选项。每项填写 `value`、布尔值 `failed` 和可选的 `description` | 返回值按类型和值匹配，选中 `failed: true` 的任意一项即终止。YAML 的布尔值 `true` 与字符串 `"true"` 是两项不同的选择。 |
+| `gpt-decision-score` | `levels` 按顺序列出 2–10 个等级，每级填写 `label` 和可选的 `description` | `score` 是从 0 开始的等级序号的概率加权平均。三级量表的范围为 0 到 2，出厂配置在分数 ≥ 1.5 时终止。 |
+
+数值规则写作 `fail_if: {op: '>=', threshold: 0.8}`，也支持 `'<='`。等于阈值时命中，小数直接参与比较。`fail_if` 和选项的 `failed` 由策略在本地使用。拒答、错题名、未配置的选项、非有限数和越界数值均按供应商请求失败处理。[Decisions 题型和评分说明](https://developers.openai.com/api/docs/guides/decisions)
 
 `failed=true` 在下一次有效 `policy()` 回调调用：
 
@@ -47,7 +55,7 @@ SDK 对同一查询不自动重试，不切换模型或接口。供应商失败�
 | `jpeg_quality` | 85，范围 1–95 |
 | `provider_config_path` | 默认 `provider.yaml`，相对本策略来源目录，也可用容器内可见的绝对路径 |
 
-DeepSeek 默认使用 `provider.yaml`，GPT Decisions 使用 `providers/openai_decisions.yaml`。两种文件都在顶层填写 `type`、`model`、`base_url`、`api_key`、`timeout_s` 和下表中的提示字段。可直接从对应后端的完整模板开始。[DeepSeek 模板](../policy/llm_failure/provider.yaml.example) · [Decisions 模板](../policy/llm_failure/providers/openai_decisions.yaml.example)
+DeepSeek 默认使用 `provider.yaml`。三个 Decisions 模板各自对应一个 `type`，可分别填写凭证、模型、任务和提示。四份配置都使用 `model`、`base_url`、`api_key`、`timeout_s` 以及下表中的文字字段。[DeepSeek 模板](../policy/llm_failure/provider.yaml.example) · [predicate 模板](../policy/llm_failure/providers/gpt-decision-predicate.yaml.example) · [choice 模板](../policy/llm_failure/providers/gpt-decision-choice.yaml.example) · [score 模板](../policy/llm_failure/providers/gpt-decision-score.yaml.example)
 
 | 供应商字段 | 如何使用 |
 |---|---|
@@ -56,20 +64,35 @@ DeepSeek 默认使用 `provider.yaml`，GPT Decisions 使用 `providers/openai_d
 | `input_templates.task` | 第一段输入文本，必须包含 `{task}`。 |
 | `input_templates.history_snapshot`、`input_templates.current_snapshot` | 历史帧组与当前帧组的标注，可引用从 1 开始的 `{index}` 和实际执行步数 `{step}`。 |
 | `input_templates.camera` | 每张图像前的标注，可引用相机名 `{camera}`。输入模板如需显示字面花括号，写成 `{{` 和 `}}`。 |
-| `choice_descriptions.not_failed`、`choice_descriptions.failed` | 仅 Decisions 使用，分别填写两项的说明。协议选项值和 Chat 的布尔字段 `failed` 由响应解析器识别。 |
+| `choices[].description`、`levels[].description` | 各选项或等级的可选说明。题名、`value`、`label` 与本地终止规则在加载 provider 时确定。 |
 
-**从旧部署迁移**。更新源码和 `.example` 模板后，在项目根目录用 setup 所用的 Python 运行以下命令。迁移与 setup、手动编辑分开执行。
+### 提示词变量
+
+`{$变量名}` 可用于任务、判断指令、输出说明、所有图像输入模板和选项／等级的说明。例如，共享字典中 `time=20`、`phase="抓取"` 时，`time={$time}，阶段={$phase}` 会发送为 `time=20，阶段=抓取`。
+
+- `{$qpos}`、`{$qvel}`、`{$effort}`、`{$timestamp}` 取本次采样的同名机器人反馈。`{$epos}` 和 `{$eef}` 均取实测的 `state["eef"]`。这些名字优先，即使反馈缺失也不会改用同名共享值。
+- 其他变量按顶层键从同一份共享字典快照读取，命名规则是 `[A-Za-z_][A-Za-z0-9_]*`。字符串原样发送，其余值使用紧凑 JSON 并保留中文。缺键或无法序列化时填空串。`false`、`0` 和 `null` 各自保留。共享快照读取失败时，仅本次采样的共享变量为空。
+- 在采样回调内每帧组最多读一次共享字典。历史图像及其相机标注保留当时的值，当前任务和问题描述取提交时的值。即使共享字典随后改变，已采样的变量也不会重新展开。插入值里的 `{$other}`、`{task}` 或 JSON 花括号均是普通文字。`{index}` 仍是该帧组在本次请求中的位置。
+- 例如把 `history_snapshot` 写成 `'历史 {index}，步数 {step}，姿态 {$qpos}，阶段 {$phase}'`。阶段后来变为“放置”时，原图旁仍是“抓取”。窗口淘汰、reset 或卸载会移除本轮历史引用，已在途的请求可使用自己的快照直到完成。
+
+### 升级与切换
+
+`llm_failure` 的旧 `type: openai_decisions` 和 `choice_descriptions` 需要手工修改。沿用旧二选一行为时，将类型设为 `gpt-decision-choice`、题名设为 `failed`，把两个旧说明按顺序写入 `choices`，分别填写 `value: not_failed, failed: false` 和 `value: failed, failed: true`。可保留原文件路径。
+
+使用当前源码挂载部署和已锁定依赖时，这次更新可沿用现有镜像。如果策略已在运行，更新源码和选定的配置后执行一次 `switch <当前链名>`，让策略进程加载新实现。此后通过 `switch-provider` 切换题型或重读同一配置文件。
+
+如果旧部署仍将 `params.task` 和 `params.prompt` 保存在策略清单中，先手工更新旧 Decisions 题型，再用 setup 所用的 Python 运行已有的提示词迁移命令。迁移与 setup、手动编辑分开执行。
 
 ```bash
 python3 scripts/migrate_llm_failure_prompts.py
 ```
 
-工具把旧 `params.task` 和 `params.prompt` 迁入各供应商文件，按后端补齐模板，将已有文件的变更前副本放入 `.setup/backups/`。它会识别策略目录和子目录中的备用配置，用旧任务和提示填补缺失或仍为出厂默认值的字段，保留各供应商已经定制的值。跳过目录中的本地配置可用 `--profile` 指定。标准容器路径 `/workspace/policy/llm_failure/…` 会映回本地策略目录，其他外部挂载文件按相应的 `.example` 手动迁移。已经运行的旧策略链需执行一次 `switch <当前链名>`，让 RC 重新读取磁盘上的清单。此后，单独编辑某个供应商文件再执行同路径的 `switch-provider` 即可。
+工具把旧 `params.task` 和 `params.prompt` 迁入各供应商文件，按后端补齐模板，将已有文件的变更前副本放入 `.setup/backups/`。它会识别策略目录和子目录中的备用配置，用旧任务和提示填补缺失或仍为出厂默认值的字段，保留各供应商已经定制的值。跳过目录中的本地配置可用 `--profile` 指定。标准容器路径 `/workspace/policy/llm_failure/…` 会映回本地策略目录，其他外部挂载文件按相应的 `.example` 手动迁移。
 
 填写所选文件的密钥后，可在 TUI 中切换。如果链中有两个失败检测实例，以下命令对第二个生效：
 
 ```text
-policy llm_failure-1 switch-provider providers/openai_decisions.yaml
+policy llm_failure-1 switch-provider providers/gpt-decision-choice.yaml
 save-config policy llm_failure-1
 resume
 ```
@@ -78,7 +101,7 @@ resume
 
 默认 `control_mode=qpos`，可改为 `epos` 或 `mixed`，但必须与链首策略一致。检查器要求非空前序动作，因此应作为链成员使用，不能单独启动后依靠它生成保持动作。
 
-供应商只接收 task、prompt 和带相机/步数标注的图片，不接收动作块。请求内容上限 32 MiB，超限明确失败，请减小历史数量、图像尺寸或质量；不上传到图床或 Files API。诊断日志保存有界的供应商原始响应，输出前会脱敏配置密钥及 Authorization 凭证；日志不包含请求图片、task、prompt 或配置凭证。
+供应商接收展开后的指令与带标注的图像。只有模板明确引用的反馈量和共享变量才会进入请求。请求内容上限 32 MiB，超限明确失败，请减小历史数量、图像尺寸或质量；不上传到图床或 Files API。诊断日志保存有界的供应商原始响应，输出前会脱敏配置密钥及 Authorization 凭证；日志不包含请求图片、task、prompt 或配置凭证。
 
 ## 实例监控
 
@@ -119,8 +142,8 @@ HTTP 耗时或 total token 没有样本时显示 `—`；缺失样本不按 0 �
 | `started_wall_s`、`started_mono_s`、`finished_wall_s`、`finished_mono_s`、`elapsed_s` | 后台查询开始、结束时间及查询总耗时 |
 | `http_started_wall_s`、`http_started_mono_s`、`http_finished_wall_s`、`http_finished_mono_s`、`http_duration_s` | 真实 HTTP 调用两端的时间及耗时，在 `.create()` 周围测量，不包括解析响应或等候下次策略回调 |
 | `collected_wall_s`、`collected_mono_s`、`collection_wait_s` | 采集时间及后台完成到采集之间的等待；请求尚未完成时等待值为 `null` |
-| `provider`、`model`、`response_model`、`provider_request_id`、`http_status` | 实际后端（`deepseek` / `openai_decisions`）、请求模型、响应模型、供应商请求 ID 与 HTTP 状态；不可取得时为 `null` |
-| `usage`、`finish_reason` | 响应 token 统计与终结原因；DeepSeek 保留 prompt/completion 及缓存计数，Decisions 保留 input/output/total 及缓存、reasoning 明细（供应商有返回时）；Decisions 的 finish_reason 为 choice/refusal 等答案类型，原始响应保留其他附加字段 |
+| `provider`、`model`、`response_model`、`provider_request_id`、`http_status` | 所选 provider 的完整 `type`、请求模型、响应模型、供应商请求 ID 与 HTTP 状态；不可取得时为 `null` |
+| `usage`、`finish_reason` | 响应 token 统计与终结原因；DeepSeek 保留 prompt/completion 及缓存计数，Decisions 保留 input/output/total 及缓存、reasoning 明细（供应商有返回时）；Decisions 的 finish_reason 为 predicate、choice、score 或 refusal 等答案类型，原始响应保留其他附加字段 |
 | `raw_response`、`parsed_failed`、`error` | 脱敏响应正文、解析布尔值、脱敏错误；JSON 响应正文规范化为 JSON 字符串，非 JSON 正文保留文本 |
 | `late`、`invalidated` | 是否超出提交期限、是否已因上下文变化或已报告的超时而失效 |
 | `truncated`、`truncated_fields` | 是否因长度上限截断及对应字段路径 |
@@ -146,11 +169,11 @@ mcp return_and_wait {"timeout_s":30}
 mcp get_policy_result
 ```
 
-不指定 `timeout_s` 时一直等待；MCP 调用超时或断连不会取消任务，随后可以查询结果。需要 SDK/RC 0.10 或更新版本，更新源代码后重建 RC 和该策略镜像。
+不指定 `timeout_s` 时会一直等待。MCP 调用超时或断连后，原任务继续执行，随后可以查询结果。
 
 ## 验证与边界
 
-单元测试覆盖动作原对象透传、实际步数与忙碌合并、不可变历史、代次隔离和严格 JSON / 二选一响应。本地 HTTP 服务测试使用真实 OpenAI 兼容客户端；真实 SDK host/worker/链测试覆盖异步请求期间图像释放、完成回调和 MCP 所有权。Docker 验收使用隔离的 mock 机器人与本地模型替身。
+单元测试覆盖动作原对象透传、实际步数与忙碌合并、历史文字冻结、代次隔离、严格 JSON 以及三种 Decisions 回包。本地 HTTP 服务测试使用真实 OpenAI 兼容客户端；真实 SDK host/worker/链测试覆盖异步请求期间图像释放、完成回调和 MCP 所有权。Docker 验收使用隔离的 mock 机器人与本地模型替身。
 
 这些测试证明调用与控制协议，不证明真实供应商的失败判断准确率或真机表现。部署后需以实际 task 和相机画面评估误判与漏判。
 

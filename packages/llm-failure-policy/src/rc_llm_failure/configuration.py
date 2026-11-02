@@ -4,6 +4,7 @@ from pathlib import Path
 
 from rc_llm_provider_config import load_provider_config
 from rc_policy_sdk.actions import CONTROL_MODES
+from .decisions import DECISION_FIELDS
 from .prompts import validate_prompt_fields
 
 
@@ -36,7 +37,7 @@ def validate_config(config):
 
 def load_provider(path, policy_root):
     fields = {'task', 'prompt', 'response_instructions', 'input_templates'}
-    settings = load_provider_config(path, policy_root, {'deepseek': (), 'openai_decisions': ()},
-                                   extra_fields={'deepseek': fields, 'openai_decisions': fields | {'choice_descriptions'}})
+    profile_fields = {'deepseek': fields, **{kind: fields | extra for kind, extra in DECISION_FIELDS.items()}}
+    settings = load_provider_config(path, policy_root, dict.fromkeys(profile_fields, ()), extra_fields=profile_fields)
     validate_prompt_fields(settings, Path(policy_root) / path)
     return settings

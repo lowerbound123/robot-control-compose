@@ -10,17 +10,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'packages/llm-failure-policy/src')]
 
 import config_files
+from rc_llm_failure.decisions import DECISION_FIELDS
 from rc_llm_failure.prompts import validate_prompt_fields
 from robot_control.yaml_config import load_yaml_config, render_yaml_config
 
 
-FACTORY = {'deepseek': 'provider.yaml', 'openai_decisions': 'providers/openai_decisions.yaml'}
+FACTORY = {'deepseek': 'provider.yaml', **{kind: f'providers/{kind}.yaml' for kind in DECISION_FIELDS}}
 CONTAINER_FOLDER = Path('/workspace/policy/llm_failure')
 ARTIFACT_DIRS = {'.git', '.setup', '.runtime', '.venv', 'venv', '__pycache__', '.pytest_cache',
                  '.ruff_cache', 'cache', '.cache', 'vendor', 'node_modules', 'build', 'dist',
                  'outputs', 'snapshot', 'models', 'weights', 'checkpoints'}
 CONCURRENT_CHANGE = '文件在准备迁移期间发生变化。请等待 setup 和配置编辑完成后重试。'
-MANUAL = ('请手动按各文件的 type 从对应 .yaml.example 补齐提示词，复制旧 task/prompt，'
+MANUAL = ('如需手动迁移提示词，请按各文件的 type 从对应 .yaml.example 补齐提示词，复制旧 task/prompt，'
           '核对全部供应商配置后再删除 policy.yaml 中的 params.task 和 params.prompt。')
 
 
@@ -86,10 +87,9 @@ def _prompt_fields(profile, template, legacy):
         # Setup may have created a new stock profile before this command ran.
         if value == default and legacy.get(name, '').strip():
             result[name] = legacy[name]
-    for name in ('input_templates', 'choice_descriptions'):
-        current = result.get(name, {})
-        if name in template and isinstance(current, dict):
-            result[name] = {**template[name], **current}
+    current = result.get('input_templates', {})
+    if isinstance(current, dict):
+        result['input_templates'] = {**template['input_templates'], **current}
     return result
 
 
@@ -140,12 +140,17 @@ def migrate(root, extra_profiles=()):
         if path.exists():
             current = _read(path, snapshots)
             kind = current.get('type')
+            retired = kind == 'openai_decisions'
+            known_type = isinstance(kind, str) and (kind in FACTORY or retired)
             # A local YAML outside providers/ can be unrelated to this policy's model.
             if (path not in required and not path.is_relative_to(folder / 'providers')
-                    and not (isinstance(kind, str) and kind in FACTORY) and 'api_key' not in current
-                    and not {'model', 'base_url'} <= current.keys()):
+                    and not known_type and 'api_key' not in current and not {'model', 'base_url'} <= current.keys()):
                 del snapshots[path]
                 continue
+            if retired or 'choice_descriptions' in current:
+                setting = 'type: openai_decisions' if retired else 'choice_descriptions'
+                raise MigrationError(f'{path.relative_to(folder)} 中的 {setting} 已停用。'
+                                     '请手动按所选 gpt-decision-* 模板配置题型和失败判据，然后重试。')
         else:
             current = None
             kind = factory_types.get(path)

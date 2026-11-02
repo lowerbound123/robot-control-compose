@@ -1,9 +1,13 @@
 """Provider prompt validation shared by the worker and the offline migration."""
+import re
 from string import Formatter
+
+from .decisions import validate_decision_fields
 
 
 _INPUT_FIELDS = {'task': {'task'}, 'history_snapshot': {'index', 'step'},
                  'current_snapshot': {'index', 'step'}, 'camera': {'camera'}}
+VARIABLE_FIELD = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)')
 
 
 def _valid_template(name, template):
@@ -14,7 +18,7 @@ def _valid_template(name, template):
         for _, field, spec, conversion in Formatter().parse(template):
             if field is None:
                 continue
-            if field not in _INPUT_FIELDS[name] or spec or conversion:
+            if (field not in _INPUT_FIELDS[name] and not VARIABLE_FIELD.fullmatch(field)) or spec or conversion:
                 return False
             used.add(field)
     except ValueError:
@@ -36,10 +40,4 @@ def validate_prompt_fields(settings, path, *, allow_empty_task=False):
         if not _valid_template(name, templates[name]):
             raise ValueError(f'{path}: invalid input_templates.{name}; '
                              f'use plain placeholders from {", ".join(sorted(allowed))}')
-    if settings.get('type') == 'openai_decisions':
-        choices = settings.get('choice_descriptions')
-        if (not isinstance(choices, dict) or choices.keys() != {'failed', 'not_failed'}
-                or not all(isinstance(value, str) and value.strip() for value in choices.values())):
-            raise ValueError(f'{path}: choice_descriptions requires text for failed and not_failed')
-    elif 'choice_descriptions' in settings:
-        raise ValueError(f'{path}: choice_descriptions is only supported by openai_decisions')
+    validate_decision_fields(settings, path)

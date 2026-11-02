@@ -5,9 +5,12 @@ from time import monotonic, time
 
 from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError, OpenAIError
 
+from .decisions import DECISION_TYPES, decision_failed, decision_question
 from .errors import LocalPolicyError, ProviderError
 from .diagnostics import provider_metadata, sanitized_metadata
-from .images import MAX_REQUEST_BYTES
+from .images import CheckInput
+from .request_size import MAX_REQUEST_BYTES, TextBudget, check_body_size
+from .prompt_variables import PromptTemplates
 from .prompts import validate_prompt_fields
 
 
@@ -33,25 +36,26 @@ class ProviderClient:
     def __init__(self, settings, *, diagnostics=None):
         self.settings = copy.deepcopy(settings)
         self.diagnostics = diagnostics
-        self.kind = settings.get('type', 'deepseek')
-        self.label = 'GPT Decisions' if self.kind == 'openai_decisions' else 'DeepSeek'
+        self.kind = settings.get('type')
         key = settings.get('api_key')
         if not isinstance(key, str) or not key.strip():
             raise ValueError('provider.api_key is required')
         validate_prompt_fields(self.settings, 'provider')
+        self.label = 'GPT Decisions' if self.kind in DECISION_TYPES else 'DeepSeek'
+        self.prompts = PromptTemplates(self.settings)
         self.client = OpenAI(api_key=key.strip(), base_url=settings['base_url'],
                              timeout=settings['timeout_s'], max_retries=0)
-        if self.kind == 'openai_decisions' and not hasattr(self.client, 'decisions'):
+        if self.kind in DECISION_TYPES and not hasattr(self.client, 'decisions'):
             self.client.close()
             raise ValueError('OpenAI SDK lacks Decisions; install the policy dependency lock')
 
     def decide(self, snapshots):
         metadata = provider_metadata(self.settings['model'], self.kind)
         try:
-            instructions = '\n\n'.join(part for part in (self.settings['prompt'], self.settings['response_instructions']) if part)
-            content = self._input_content(snapshots)
-            failed = (self._decide_decisions(instructions, content, metadata)
-                      if self.kind == 'openai_decisions' else self._decide(instructions, content, metadata))
+            text = snapshots.text if isinstance(snapshots, CheckInput) else self.prompts.request_text({})
+            content = self._input_content(snapshots, text.task)
+            failed = (self._decide_decisions(text.instructions, content, metadata, text.descriptions)
+                      if self.kind in DECISION_TYPES else self._decide(text.instructions, content, metadata))
             metadata['parsed_failed'] = failed
             return failed
         except (LocalPolicyError, ProviderError) as exc:
@@ -103,16 +107,26 @@ class ProviderClient:
         except Exception:
             pass
 
-    def _input_content(self, snapshots):
-        decisions = self.kind == 'openai_decisions'
+    def _input_content(self, snapshots, task):
+        decisions = self.kind in DECISION_TYPES
         text_type = 'input_text' if decisions else 'text'
-        templates = self.settings['input_templates']
-        content = [{'type': text_type, 'text': templates['task'].format(task=self.settings['task'])}]
+        budget = TextBudget(MAX_REQUEST_BYTES, self.label)
+        content = [{'type': text_type, 'text': budget.text(task)}]
         for index, sample in enumerate(snapshots, 1):
-            template = templates['current_snapshot' if index == len(snapshots) else 'history_snapshot']
-            content.append({'type': text_type, 'text': template.format(index=index, step=sample.step)})
-            for camera, data in sample.images:
-                content.append({'type': text_type, 'text': templates['camera'].format(camera=camera)})
+            captions = sample.captions
+            if captions is None:  # Direct decide() calls can pass plain JPEG snapshots.
+                latest = index == len(snapshots)
+                history, current = self.prompts.frame_texts({}, sample.step, (name for name, _ in sample.images),
+                                                           include_current=latest)
+                captions = current if latest else history
+            parts = captions.caption
+            for part in parts:
+                budget.text(part)
+            budget.reserve((len(parts) - 1) * len(str(index)))
+            content.append({'type': text_type, 'text': str(index).join(parts)})
+            for caption, (_, data) in zip(captions.cameras, sample.images, strict=True):
+                budget.reserve(len(data))
+                content.append({'type': text_type, 'text': budget.text(caption)})
                 content.append({'type': 'input_image', 'image_url': data} if decisions else
                                {'type': 'image_url', 'image_url': {'url': data}})
         return content
@@ -123,8 +137,7 @@ class ProviderClient:
                              {'role': 'user', 'content': content}],
                 'response_format': {'type': 'json_object'}, 'temperature': 0, 'max_tokens': 128,
                 'thinking': {'type': 'disabled'}}
-        if len(json.dumps(body, ensure_ascii=True, allow_nan=False).encode('utf-8')) > MAX_REQUEST_BYTES:
-            raise LocalPolicyError(f'{self.label} 请求超过32MiB；请减小历史数量、图像尺寸或JPEG质量')
+        check_body_size(body, MAX_REQUEST_BYTES, self.label)
         metadata['http_started_wall_s'], metadata['http_started_mono_s'] = time(), monotonic()
         try:
             try:
@@ -154,15 +167,11 @@ class ProviderClient:
         except (ValueError, RecursionError):
             raise ProviderError(f'{self.label} 响应不符合失败判断契约') from None
 
-    def _decide_decisions(self, instructions, content, metadata):
+    def _decide_decisions(self, instructions, content, metadata, descriptions):
         body = {'model': self.settings['model'],
                 'input': [{'role': 'user', 'content': content}],
-                'questions': [{'type': 'choice', 'name': 'failed',
-                               'instructions': instructions,
-                               'choices': [{'value': value, 'description': self.settings['choice_descriptions'][value]}
-                                           for value in ('not_failed', 'failed')]}]}
-        if len(json.dumps(body, ensure_ascii=True, allow_nan=False).encode('utf-8')) > MAX_REQUEST_BYTES:
-            raise LocalPolicyError('GPT Decisions 请求超过32MiB；请减小历史数量、图像尺寸或JPEG质量')
+                'questions': [decision_question(self.settings, instructions, descriptions)]}
+        check_body_size(body, MAX_REQUEST_BYTES, self.label)
         metadata['http_started_wall_s'], metadata['http_started_mono_s'] = time(), monotonic()
         try:
             try:
@@ -174,32 +183,34 @@ class ProviderClient:
             self._capture_http(metadata, exc.response, exc.request_id)
             raise
         self._capture_http(metadata, raw)
-        response = self._parse_response(raw)
-        metadata['response_model'] = getattr(response, 'model', None)
-        metadata['provider_request_id'] = getattr(response, '_request_id', None) or metadata['provider_request_id']
-        usage = getattr(response, 'usage', None)
-        if usage is not None:
+        # The SDK's model parser coerces JSON booleans to float for predicate
+        # and score. Check the actual wire types before applying a failure rule.
+        def reject_constant(_):
+            raise ValueError('nonstandard JSON number')
+
+        try:
+            response = json.loads(raw.content, object_pairs_hook=_unique_object, parse_constant=reject_constant)
+        except (ValueError, RecursionError):
+            raise ProviderError('GPT Decisions 响应不符合失败判断契约') from None
+        if not isinstance(response, dict):
+            raise ProviderError('GPT Decisions 响应不符合失败判断契约')
+        metadata['response_model'] = response.get('model')
+        usage = response.get('usage')
+        if isinstance(usage, dict):
             metadata['usage'] = {name: value for name in ('input_tokens', 'output_tokens', 'total_tokens')
-                                 if type(value := getattr(usage, name, None)) is int}
+                                 if type(value := usage.get(name)) is int}
             for name, fields in (('input_tokens_details', ('cached_tokens', 'cache_write_tokens')),
                                  ('output_tokens_details', ('reasoning_tokens',))):
-                details = getattr(usage, name, None)
-                if details is not None:
+                details = usage.get(name)
+                if isinstance(details, dict):
                     metadata['usage'][name] = {field: value for field in fields
-                                              if type(value := getattr(details, field, None)) is int}
-        answers = getattr(response, 'answers', None)
-        if not isinstance(answers, list) or len(answers) != 1:
+                                              if type(value := details.get(field)) is int}
+        answers = response.get('answers')
+        if not isinstance(answers, list) or len(answers) != 1 or not isinstance(answers[0], dict):
             raise ProviderError('GPT Decisions 响应不符合失败判断契约')
         answer = answers[0]
-        metadata['finish_reason'] = getattr(answer, 'type', None)
-        if metadata['finish_reason'] == 'refusal':
-            raise ProviderError('GPT Decisions 拒绝本次检查')
-        if metadata['finish_reason'] != 'choice' or getattr(answer, 'name', None) != 'failed':
-            raise ProviderError('GPT Decisions 响应不符合失败判断契约')
-        choice = getattr(answer, 'choice', None)
-        if type(choice) is not str or choice not in ('failed', 'not_failed'):
-            raise ProviderError('GPT Decisions 响应不符合失败判断契约')
-        return answer.choice == 'failed'
+        metadata['finish_reason'] = answer.get('type')
+        return decision_failed(self.settings, answer)
 
     def _parse_response(self, raw):
         # Only decoding remote bytes turns parse errors into recoverable failures.

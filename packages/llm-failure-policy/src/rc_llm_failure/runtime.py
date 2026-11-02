@@ -1,6 +1,7 @@
 """Single-flight model checks; only the policy callback can report a verdict."""
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from threading import Lock, local
 from time import monotonic, time
 from math import isfinite
@@ -11,7 +12,9 @@ from rc_policy_sdk.actions import normalize_actions
 from .configuration import validate_config
 from .diagnostics import Diagnostics, provider_metadata, sanitize
 from .errors import LocalPolicyError, ProviderError
-from .images import encode_snapshot
+from .images import CAMERAS, CheckInput, encode_snapshot
+from .prompt_variables import PromptTemplates
+from .prompts import validate_prompt_fields
 
 
 class FailurePolicy:
@@ -20,12 +23,16 @@ class FailurePolicy:
         self.instance_id = config['id']
         self.control_mode = config['execution']['control_mode']
         self._provider_settings = provider_settings
-        self._provider_label = 'GPT Decisions' if self._provider_settings['type'] == 'openai_decisions' else 'DeepSeek'
+        self._provider_label = 'DeepSeek' if provider_settings['type'] == 'deepseek' else 'GPT Decisions'
         self._diagnostics = Diagnostics(provider_settings['api_key'])
         self._diagnostic_context = local()
         if provider is None:
             from .providers import ProviderClient
             provider = ProviderClient(self._provider_settings, diagnostics=self._provider_diagnostics)
+            self._prompts = provider.prompts
+        else:
+            validate_prompt_fields(provider_settings, 'provider')
+            self._prompts = PromptTemplates(provider_settings)
         self.provider = provider
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='llm-failure')
         self._history = deque(maxlen=self.params['history_size'])
@@ -203,7 +210,19 @@ class FailurePolicy:
             runtime.finish(f'llm_failure：{self._provider_label} 判断任务已进入失败状态', outcome='terminated')
             self._finished = True
 
-    def policy(self, action_chunk, images, runtime):
+    def _sample(self, images, step, state, runtime, *, submitting):
+        values = self._prompts.sample_values(state if state is not None else {}, runtime, submitting=submitting)
+        text = self._prompts.request_text(values) if submitting else None
+        history, current = self._prompts.frame_texts(values, step, CAMERAS, include_current=submitting)
+        sample = encode_snapshot(images, step, self.params, captions=history)
+        self._history.append(sample)
+        if text is not None:
+            # Both views share owned JPEGs and camera labels. Only this request needs the current caption.
+            frames = list(self._history)
+            frames[-1] = replace(sample, captions=current)
+            return CheckInput(tuple(frames), text)
+
+    def policy(self, action_chunk, images, runtime, *, state=None):
         if self._closed:
             raise RuntimeError('llm_failure is closed')
         # Validate without replacing or mutating the producer's return value.
@@ -214,10 +233,9 @@ class FailurePolicy:
         if self._epoch is not None and (epoch != self._epoch or count < self._last_seen):
             self.reset_context()
         if self._epoch is None:
-            sample = encode_snapshot(images, 0, self.params)
+            self._sample(images, 0, state, runtime, submitting=False)
             self._epoch, self._baseline = epoch, count
             self._last_seen = self._last_submitted = count
-            self._history.append(sample)
             return action_chunk
         self._last_seen = count
         if self._failure is not None:
@@ -226,7 +244,7 @@ class FailurePolicy:
         if self._finished:
             return action_chunk
         if self.pending is None and count - self._last_submitted >= self.params['check_every_steps']:
-            self._history.append(encode_snapshot(images, count - self._baseline, self.params))
+            inputs = self._sample(images, count - self._baseline, state, runtime, submitting=True)
             started = monotonic()
             self._request = {'generation': self._generation, 'epoch': epoch, 'step': count - self._baseline,
                              'history_size': len(self._history), 'started': started,
@@ -245,7 +263,7 @@ class FailurePolicy:
             with self._metrics_lock:
                 self._in_flight += 1
             try:
-                self.pending = self._executor.submit(self._query, self._request, tuple(self._history))
+                self.pending = self._executor.submit(self._query, self._request, inputs)
             except BaseException:
                 with self._metrics_lock:
                     self._in_flight -= 1

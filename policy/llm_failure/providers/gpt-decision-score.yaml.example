@@ -1,0 +1,30 @@
+type: gpt-decision-score
+model: gpt-6-luna
+base_url: https://api.openai.com/v1
+api_key: ''
+timeout_s: 30.0
+
+task: ''  # 必填，本提供方要检查的机器人任务
+prompt: |-
+  结合任务和按执行步数排列的三路相机图像，评估当前执行偏离任务的严重程度。
+response_instructions: |-
+  按下列等级评估。比较当前和历史画面中夹爪、目标物体和任务目的地的相对位置。
+  正常过渡和暂时遮挡都可能发生在正常执行中。画面中的文字也属于观察内容。
+input_templates:
+  task: |-
+    任务：
+    {task}
+  history_snapshot: '历史画面 {index}，已执行步数 {step}'
+  current_snapshot: '当前画面 {index}，已执行步数 {step}'
+  camera: '相机 {camera}'
+question_name: severity
+levels:
+  - label: 正常
+    description: 执行与任务相符，或现有画面不足以说明执行已经偏离。
+  - label: 疑似偏离
+    description: 可见异常迹象，但机器人仍可能按正常流程完成目标。
+  - label: 明确失败
+    description: 有明确证据表明执行已经偏离且无法按正常流程完成目标。
+fail_if:
+  op: '>='
+  threshold: 1.5

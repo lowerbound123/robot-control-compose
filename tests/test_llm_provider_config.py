@@ -16,7 +16,9 @@ PROFILES = [
     ('llm_direction', 'providers/openai_compatible.yaml'),
     ('llm_direction', 'providers/openai_decisions.yaml'),
     ('llm_failure', 'provider.yaml'),
-    ('llm_failure', 'providers/openai_decisions.yaml'),
+    ('llm_failure', 'providers/gpt-decision-choice.yaml'),
+    ('llm_failure', 'providers/gpt-decision-predicate.yaml'),
+    ('llm_failure', 'providers/gpt-decision-score.yaml'),
 ]
 
 
