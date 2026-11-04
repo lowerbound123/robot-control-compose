@@ -19,10 +19,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, Strict, StrictBool, StrictInt, StrictStr, field_validator
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Mount, Route
 import uvicorn
 
@@ -32,12 +32,21 @@ from .mcp_config import mcp_settings
 from .direct_types import finite_number, finite_vector
 from .operations import TERMINAL
 from .policy_results import PolicyWaitActive
+from .web_preview import WebPreview, multipart_frames
 
 Timeout = Annotated[float, Field(ge=0, le=120)]
 PolicyWaitTimeout = Annotated[FiniteFloat, Field(ge=0)]
 Quality = Annotated[int, Field(ge=1, le=100)]
 Vector6 = Annotated[list[FiniteFloat], Field(min_length=6, max_length=6)]
 Arm = Literal["left", "right"]
+PolicyArgument = StrictStr | StrictBool | StrictInt | Annotated[FiniteFloat, Strict()]
+
+
+class ControlGuard(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    run_id: StrictStr
+    control_epoch: StrictInt
+    generation: StrictInt
 
 
 class TargetOptions(BaseModel):
@@ -89,11 +98,15 @@ def result(payload, images=(), *, error=False):
 
 def create_server(controller):
     server = MCPServer("robot-control", version="0.3.0", instructions=(
-        "Read-only until take. take pauses new policy inference and retains its model. "
+        "Read-only until take, except recording on/off/toggle never requires takeover or changes motion/ownership. "
+        "take pauses new policy inference and retains its model. "
         "return cancels manual motions, resets policy context from fresh feedback and resumes policy. "
         "return_and_wait resumes policy and awaits runtime.finish; its timeout or disconnection does not cancel the episode. "
         "Use get_policy_result to query it later. Completed and terminated outcomes are both valid policy reports. "
         "All clients share control ownership. Read props for units, speeds, topics and command grammar. "
+        "Use policy_commands/help to discover manifest commands without loading models. "
+        "policy_chain accepts an ordered source list: apply rebuilds while paused; save only writes default_chain. "
+        "policy_command/retry_reload require exact instances and take; lifecycle success keeps MCP ownership. "
         "Only confirmed operation success means completion; wait timeout does not cancel motion."
     ))
     read = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -170,9 +183,22 @@ def create_server(controller):
         return await query("show " + scope)
 
     @server.tool(annotations=read)
-    async def help() -> CallToolResult:
-        """List built-in RC commands supported by command(line); policy extensions are local-only."""
+    async def help(policy_id: str | None = None, command: str | None = None) -> CallToolResult:
+        """Read RC help, or a policy/instance's declared capabilities and one optional command."""
+        if policy_id is not None or command is not None:
+            try:
+                return result(await asyncio.to_thread(controller.policy_help, policy_id, command))
+            except (ValueError, RuntimeError) as exc:
+                return result({'error': str(exc)}, error=True)
         return await query("help")
+
+    @server.tool(annotations=read)
+    async def policy_commands(policy_id: str | None = None) -> CallToolResult:
+        """Discover typed commands/effects without importing models; a repeated source lists all instances."""
+        try:
+            return result(await asyncio.to_thread(controller.policy_capabilities, policy_id))
+        except (ValueError, RuntimeError) as exc:
+            return result({'error': str(exc)}, error=True)
 
     @server.tool(annotations=read)
     async def props() -> CallToolResult:
@@ -222,32 +248,91 @@ def create_server(controller):
         except (ValueError, RuntimeError) as exc:
             return result({"error": str(exc)}, error=True)
 
-    async def submit(line, wait, timeout_s):
+    def rejected(tool, exc):
+        payload = {'error': str(exc)}
+        controller._emit_command(f'MCP {tool} rejected: ' + json.dumps(payload, ensure_ascii=False), 'error')
+        return result(payload, error=True)
+
+    async def submit(line, wait, timeout_s, expected_control=None):
         try:
             if not line.strip():
                 raise ValueError("command cannot be empty")
-            identity = await asyncio.to_thread(controller.submit, line, origin="mcp")
+            identity = await asyncio.to_thread(controller.submit, line, origin="mcp",
+                expected_control=expected_control.model_dump() if expected_control is not None else None)
             # Shutdown acknowledges acceptance before the server closes its listener.
             if line.strip() in ("exit", "quit"):
                 return result({"operation_id": identity, "status": "accepted"})
             return await finish_operation(identity, wait, timeout_s)
         except (ValueError, RuntimeError, PermissionError) as exc:
-            return result({"error": str(exc)}, error=True)
+            return rejected(line if line in ('take', 'return') else 'command', exc)
 
     @server.tool(annotations=write)
-    async def command(line: str, wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
-        """Execute any TUI command. Queries work read-only; other commands require take. RC settings remain cold."""
-        return await submit(line, wait, timeout_s)
+    async def command(line: str, wait: bool = False, timeout_s: Timeout = 30,
+                      expected_control: ControlGuard | None = None) -> CallToolResult:
+        """Execute RC/policy commands. Queries and recording need no take; other writes require take. UI commands stay local."""
+        return await submit(line, wait, timeout_s, expected_control)
+
+    async def manage(tool, method, *args, wait=False, timeout_s=30, **kwargs):
+        try:
+            identity = await asyncio.to_thread(method, *args, **kwargs)
+            return await finish_operation(identity, wait, timeout_s)
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            return rejected(tool, exc)
 
     @server.tool(annotations=write)
-    async def take(wait: bool = True, timeout_s: Timeout = 30) -> CallToolResult:
+    async def policy_chain(policies: list[StrictStr], action: Literal['apply', 'save'] = 'apply',
+                           wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+        """After take, apply an ordered source list (duplicates allowed) or save it as default_chain.
+
+        Apply rebuilds the group, stays paused under MCP, and does not save or reset.
+        Save only writes the supplied list; it does not change the active group or member parameters.
+        """
+        return await manage('policy_chain', controller.submit_policy_chain, policies, action,
+                            wait=wait, timeout_s=timeout_s)
+
+    @server.tool(annotations=write)
+    async def record(action: Literal['status', 'on', 'off', 'toggle'] = 'status',
+                     wait: bool = False, timeout_s: Timeout = 30,
+                     expected_control: ControlGuard | None = None) -> CallToolResult:
+        """Query/control recording without take, independently of policy execution and control ownership.
+
+        off succeeds only after accepted data is flushed. Waiting timeout never cancels the operation.
+        """
+        if action == 'status':
+            return await query('record status')
+        return await manage('record', controller.submit, 'record' if action == 'toggle' else 'record ' + action,
+                            origin='mcp', mcp_tool='record', wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
+
+    @server.tool(annotations=write)
+    async def policy_command(instance_id: str, command: str, args: list[PolicyArgument] = [],
+                             wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+        """After take, execute one declared command on an exact loaded instance using strictly typed JSON arguments.
+
+        Query policy_commands/help for argument types and effects. Lifecycle effects preserve MCP ownership and pause policy.
+        timeout_s bounds this wait, not the manifest's handler deadline. No automatic retry.
+        """
+        return await manage('policy_command', controller.submit_policy_command, instance_id, command, list(args),
+                            wait=wait, timeout_s=timeout_s)
+
+    @server.tool(annotations=write)
+    async def retry_reload(instance_id: str, wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+        """After take, cold-retry the exact failed instance reported by status.retry_reload_instance; keep MCP ownership."""
+        import shlex
+        return await manage('retry_reload', controller.submit, shlex.join(['retry-reload', instance_id]),
+                            origin='mcp', mcp_tool='retry_reload', wait=wait, timeout_s=timeout_s)
+
+    @server.tool(annotations=write)
+    async def take(wait: bool = True, timeout_s: Timeout = 30,
+                   expected_control: ControlGuard | None = None) -> CallToolResult:
         """Take control, invalidate policy output and pause new inference while retaining the model."""
-        return await submit("take", wait, timeout_s)
+        return await submit("take", wait, timeout_s, expected_control)
 
     @server.tool(name="return", annotations=write)
-    async def return_control(wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+    async def return_control(wait: bool = False, timeout_s: Timeout = 30,
+                             expected_control: ControlGuard | None = None) -> CallToolResult:
         """Cancel manual motion, restore read-only MCP and resume policy after resetting its context."""
-        return await submit("return", wait, timeout_s)
+        return await submit("return", wait, timeout_s, expected_control)
 
     @server.tool(annotations=read)
     async def get_policy_result(operation_id: str | None = None) -> CallToolResult:
@@ -284,18 +369,19 @@ def create_server(controller):
             return result({**payload, 'timed_out': not payload['finished'], 'controller': controller.status()},
                           error=payload['status'] in ('failed', 'cancelled'))
         except PolicyWaitActive as exc:
+            rejected('return_and_wait', exc)
             return result({'error': str(exc), 'operation_id': exc.operation_id}, error=True)
         except (ValueError, RuntimeError, PermissionError) as exc:
-            return result({'error': str(exc)}, error=True)
+            return rejected('return_and_wait', exc)
 
-    async def motion(make_steps, wait, timeout_s, clear_queue, include_images, cameras, image_quality):
+    async def motion(tool, make_steps, wait, timeout_s, clear_queue, include_images, cameras, image_quality):
         try:
             validate_images(cameras, image_quality)
             steps = make_steps()
-            identity = await asyncio.to_thread(controller.submit_direct, steps, clear_queue=clear_queue)
+            identity = await asyncio.to_thread(controller.submit_direct, steps, clear_queue=clear_queue, tool_name=tool)
             return await finish_operation(identity, wait, timeout_s, include_images, cameras, image_quality)
         except (ValueError, RuntimeError, PermissionError) as exc:
-            return result({"error": str(exc)}, error=True)
+            return rejected(tool, exc)
 
     @server.tool(annotations=write)
     async def send_command(commands: str | list[str | list[str]], wait: bool = False, timeout_s: Timeout = 30,
@@ -308,14 +394,14 @@ def create_server(controller):
         open/close, hold, home. Moves use meters/radians; gripper values are raw absolute commands.
         clear_queue removes pending steps only. wait timeout does not cancel motion.
         """
-        return await motion(lambda: parse_commands(commands, direct["default_speed"]), wait, timeout_s, clear_queue, include_images, cameras, image_quality)
+        return await motion('send_command', lambda: parse_commands(commands, direct["default_speed"]), wait, timeout_s, clear_queue, include_images, cameras, image_quality)
 
     @server.tool(annotations=write)
     async def move_eef(targets: dict[Arm, EefTarget], wait: bool = False, timeout_s: Timeout = 30,
                        clear_queue: bool = False, include_images: bool = False, cameras: list[str] | None = None,
                        image_quality: Quality | None = None) -> CallToolResult:
         """Queue absolute xyz/RPY (meters/radians) for selected arms; optional raw gripper and speed. Requires take."""
-        return await motion(lambda: [structured_step(4, {arm: value.model_dump(exclude_none=True) for arm, value in targets.items()}, direct["default_speed"])],
+        return await motion('move_eef', lambda: [structured_step(4, {arm: value.model_dump(exclude_none=True) for arm, value in targets.items()}, direct["default_speed"])],
                             wait, timeout_s, clear_queue, include_images, cameras, image_quality)
 
     @server.tool(annotations=write)
@@ -323,26 +409,47 @@ def create_server(controller):
                           clear_queue: bool = False, include_images: bool = False, cameras: list[str] | None = None,
                           image_quality: Quality | None = None) -> CallToolResult:
         """Queue six absolute joint angles per selected arm, with separate raw gripper and speed. Requires take."""
-        return await motion(lambda: [structured_step(5, {arm: value.model_dump(exclude_none=True) for arm, value in targets.items()}, direct["default_speed"])],
+        return await motion('move_joints', lambda: [structured_step(5, {arm: value.model_dump(exclude_none=True) for arm, value in targets.items()}, direct["default_speed"])],
                             wait, timeout_s, clear_queue, include_images, cameras, image_quality)
 
     return server
 
 
-def create_app(controller, settings, *, server=None):
+def create_app(controller, settings, *, server=None, preview=None):
     server = server if server is not None else create_server(controller)
+    preview = preview if preview is not None else WebPreview(
+        lambda: controller.robot.camera_preview_snapshot(), stopping=controller.done.is_set)
     mcp_app = server.streamable_http_app(stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(allowed_hosts=settings["allowed_hosts"], allowed_origins=settings["allowed_origins"]))
 
     @asynccontextmanager
     async def lifespan(app):
-        async with server.session_manager.run():
-            yield
+        try:
+            async with server.session_manager.run():
+                yield
+        finally:
+            deadline = getattr(controller, '_shutdown_deadline', None)
+            if not preview.close(min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1):
+                controller.exit_code = 1
 
     async def health(request):
         return JSONResponse(controller.status())
 
-    app = Starlette(routes=[Route("/health", health), Mount("/", app=mcp_app)], lifespan=lifespan)
+    async def preview_status(request):
+        return JSONResponse(preview.status(), headers={'Cache-Control': 'no-store'})
+
+    async def preview_stream(request):
+        try:
+            reader = preview.subscribe(request.path_params['camera'])
+        except ValueError:
+            return JSONResponse({'error': 'unknown camera'}, status_code=404)
+        except RuntimeError:
+            return JSONResponse({'error': 'preview is stopping'}, status_code=503)
+        return StreamingResponse(multipart_frames(reader), media_type='multipart/x-mixed-replace; boundary=frame',
+                                 headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+
+    app = Starlette(routes=[Route("/health", health), Route('/preview/status', preview_status),
+        Route('/preview/{camera}.mjpg', preview_stream), Mount("/", app=mcp_app)], lifespan=lifespan)
     token = os.environ.get(settings["token_env"])
     if token:
         app.add_middleware(BearerTokenMiddleware, token=token)
@@ -357,6 +464,8 @@ class MCPService:
         self.port = self.settings["port"]
         self.listener = self.server = self.thread = None
         self.closing = threading.Event()
+        self.preview = WebPreview(lambda: controller.robot.camera_preview_snapshot(),
+                                  stopping=lambda: self.closing.is_set() or controller.done.is_set())
         self.failure = None
         self.mcp_server = None
         self.tools = ()
@@ -390,7 +499,7 @@ class MCPService:
             raise RuntimeError("MCP service has already been started or closed")
         self.bind()
         self.mcp_server = create_server(self.controller)
-        app = create_app(self.controller, self.settings, server=self.mcp_server)
+        app = create_app(self.controller, self.settings, server=self.mcp_server, preview=self.preview)
         self.server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False, ws="none", timeout_graceful_shutdown=5))
 
         async def serve():
@@ -466,6 +575,8 @@ class MCPService:
             pending = tuple(self._futures)
         for future in pending:
             future.cancel()
+        deadline = getattr(self.controller, '_shutdown_deadline', None)
+        preview_ok = self.preview.close(min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1)
         if self.server is not None:
             self.server.should_exit = True
         if self.thread is not None:
@@ -475,3 +586,6 @@ class MCPService:
         if self.listener is not None:
             self.listener.close()
             self.listener = None
+        if not preview_ok:
+            self.controller.exit_code = 1
+            raise RuntimeError('Web preview encoder did not stop before cleanup deadline')

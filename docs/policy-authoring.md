@@ -108,11 +108,15 @@ tui_commands:
     timeout_s: 5
 ```
 
-在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<instance_id>-<command>`。重复实例分别注册命令，例如 `policy a-0 set-gain 0.5`、`a-1-set-gain 0.8`，原名 a 不会指向其中某个实例。策略命令不自动向 MCP 开放。
+在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<instance_id>-<command>`。重复实例分别注册命令，例如 `policy a-0 set-gain 0.5`、`a-1-set-gain 0.8`，原名 a 不会指向其中某个实例。声明的命令同时向 MCP 开放：`policy_commands(policy_id=...)` 和 `help(policy_id=..., command=...)` 只读查询参数、时限、effect 与运行状态，不导入模型；重复来源查询展开全部实例。
+
+MCP 执行必须先 `take`，再调用 `policy_command(instance_id=..., command=..., args=[...])`；参数保留 JSON 原生 str/int/float/bool 类型，布尔值不能作为整数，字符串不自动转为数字。`command("policy <实例> <命令> ...")` 与已注册且无歧义的命令别名也受支持，沿用本地字符串参数解析。工具 `timeout_s` 仅限制回执等待，handler 执行时限仍来自 manifest。等待超时或断连不取消已受理命令。普通命令不自动恢复推理，三种生命周期 effect 完成后继续由 MCP 持有控制权，显式 `return` 或 `return_and_wait` 才恢复 policy。
 
 `effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停，`resume` 仍重置上下文。Docker 生命周期由 RC 管理。
 
 候选校验被拒时原实例继续使用。局部重载在旧目标退出后初始化失败，健康成员驻留，链停止推理。`status.retry_reload_instance` 指示失败目标。修复文件后在本地 TUI 执行 `retry-reload <精确实例ID>`，按已校验的候选配置重新初始化；显式保存只使用最近生效的配置。整组重载初始化失败按整组清理，使用 `switch` 恢复。
+
+MCP 持有控制权时可用 `retry_reload(instance_id=...)` 或 `command("retry-reload <实例>")` 冷重试同一失败候选，不能使用来源名代替重复实例。成功和失败均不抢夺 MCP 控制权。TUI 的重载、重初始化及重试仍要求 policy 拥有控制权。MCP 生命周期变更在预检通过后取消手动运动并保持当前目标；预检失败保留原状态。所有延迟回包和提交都必须通过控制代次、worker、实例、配置版本及动作代次复核。
 
 `effect: reinitialize_policy` 复用目标容器、host、执行 PID 和已导入模块。handler 返回 `{}` 表示沿用生效配置，或返回已有 `params.*` 冷叶字段的补丁。相同值也会重建 context。目标已加载模块先运行可选的 `validate_config(config)`。校验拒绝时，原 context、动作代次和正在运行的任务均保留。校验通过后 RC 暂停整链、清空动作缓存并等待各成员及外部 reader 确认图像释放。随后 SDK 排空目标推理、观测、命令和 monitor 回调，调用 `release(old_context)`，然后以新绑定调用 `initialize(config, *, runtime)`。其他实例的 context 继续驻留。Python 模块级变量跨初始化保留，轮次或配置相关的状态应放在 context 中。
 

@@ -37,6 +37,8 @@ class ControlRequest:
     save_target: PolicySaveTarget | None = None
     retry_candidate: object = None
     retry_generation: int | None = None
+    generation: int | None = None
+    expected_control: dict | None = None
 
 
 class Operations:
@@ -44,9 +46,10 @@ class Operations:
         self.on_event = None
         self._condition = threading.Condition()
         self._items = OrderedDict()
+        self._observers = {}
         self.history, self.max_pending = history, max_pending
 
-    def create(self, command):
+    def create(self, command, *, observer=None):
         reject_secret_edit(command)
         with self._condition:
             if (command not in ("pause", "return", "exit", "quit")
@@ -54,15 +57,21 @@ class Operations:
                 raise RuntimeError("command queue is full")
             identity = uuid.uuid4().hex
             self._items[identity] = {"operation_id": identity, "command": command, "status": "queued", "created_at": time.time()}
+            if observer is not None:
+                self._observers[identity] = observer
             self._prune()
             event = dict(self._items[identity])
-        self._notify(event)
+        self._notify(event, observer)
         return identity
 
-    def _notify(self, item):
-        if self.on_event:
+    def _notify(self, item, observer=None):
+        # Observability must not affect execution, and callbacks run outside the
+        # receipt lock (the controller may already hold its own lifecycle lock).
+        for callback in (self.on_event, observer):
+            if callback is None:
+                continue
             try:
-                self.on_event(item)
+                callback(item)
             except Exception:
                 pass
 
@@ -91,8 +100,10 @@ class Operations:
                 self._items.move_to_end(identity)
             self._condition.notify_all()
             event = dict(item)
+            observer = (self._observers.pop(identity, None) if status in TERMINAL
+                        else self._observers.get(identity))
             self._prune()
-        self._notify(event)
+        self._notify(event, observer)
 
     def get(self, identity):
         with self._condition:

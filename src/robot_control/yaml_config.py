@@ -200,7 +200,8 @@ def render_yaml_config(path, values, *, template=None):
     return output.encode('utf-8')
 
 
-def save_yaml_config(path, values):
+def save_yaml_config(path, values, *, guard=None):
+    from contextlib import nullcontext
     path = Path(path)
     data = render_yaml_config(path, values)
     if path.exists() and path.read_bytes() == data:
@@ -212,7 +213,8 @@ def save_yaml_config(path, values):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        with guard() if guard is not None else nullcontext():
+            os.replace(name, path)
     finally:
         if os.path.exists(name):
             os.unlink(name)

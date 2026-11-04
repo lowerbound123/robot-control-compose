@@ -15,21 +15,21 @@ class ReloadCandidate:
 
 
 class MemberReloadSupport:
-    def _start_member_reload(self, record, member, public_id, *, in_place=False):
+    def _start_member_reload(self, record, member, public_id, *, in_place=False, origin='tui'):
         self._operation_start('reload_member', old_worker=self._worker, record=record, member=member,
                               epoch=self._control_epoch, commit=True, public_id=public_id, in_place=in_place,
-                              source_generation=self.buffer.generation)
+                              source_generation=self.buffer.generation, origin=origin)
 
-    def _queue_reload_retry(self, identity, line, words):
+    def _queue_reload_retry(self, identity, line, words, *, origin='tui'):
         candidate = self._retry_candidate
         try:
             if len(words) != 2:
                 raise ValueError('用法：retry-reload <实例ID>')
-            if self.control_owner != 'policy' or self._return_requested:
-                raise PermissionError('MCP 接管期间不能重试 policy')
+            if not self._policy_control_current(origin, self._control_epoch):
+                raise PermissionError('policy control ownership changed; MCP retry requires take')
             if self._operation is not None or candidate is None or words[1] != candidate.member.instance_id:
                 raise ValueError(f'{words[1]}: 没有可重试的目标实例')
-            self._commands.put(ControlRequest(identity, line, 'tui', self._control_epoch,
+            self._commands.put(ControlRequest(identity, line, origin, self._control_epoch,
                                retry_candidate=candidate, retry_generation=self.buffer.generation))
             self._wake.set()
         except (ValueError, PermissionError) as exc:
@@ -39,11 +39,11 @@ class MemberReloadSupport:
     def _dispatch_reload_retry(self, request):
         candidate = request.retry_candidate
         if (self._retry_candidate is not candidate or request.epoch != self._control_epoch or
-                request.retry_generation != self.buffer.generation or self.control_owner != 'policy' or
+                request.retry_generation != self.buffer.generation or not self._policy_control_current(request.origin, request.epoch) or
                 self._return_requested or self._stop.is_set()):
             self.operations.update(request.operation_id, 'cancelled', error='reload target or control changed')
             return
-        self._start_member_reload(candidate.record, candidate.member, request.operation_id)
+        self._start_member_reload(candidate.record, candidate.member, request.operation_id, origin=request.origin)
 
     def _awaiting_member_retry(self):
         if self._retry_candidate is None:
@@ -53,7 +53,7 @@ class MemberReloadSupport:
     def _prepare_member_reload(self, job):
         member, record = job['member'], job['record']
         if (self._worker is not job['old_worker'] or job['epoch'] != self._control_epoch
-                or job['source_generation'] != self.buffer.generation or self.control_owner != 'policy'
+                or job['source_generation'] != self.buffer.generation or not self._policy_control_current(job['origin'], job['epoch'])
                 or self._return_requested or self.registry.get(record.config['id']).version != record.version - 1):
             raise RuntimeError('member reload cancelled: target or control changed')
         chain = job['old_worker'] if record.is_chain else None
@@ -65,7 +65,7 @@ class MemberReloadSupport:
     def _check_member_job(self, job):
         expected = None if job.get('retired_standalone') else job['old_worker']
         if (self._operation is not job or job['cancel'].is_set() or self._stop.is_set()
-                or job['epoch'] != self._control_epoch or self.control_owner != 'policy'
+                or not self._policy_control_current(job['origin'], job['epoch'])
                 or self._return_requested or self.buffer.generation != job['prepared_generation']
                 or self.registry.get(job['record'].config['id']).version != job['record'].version - 1
                 or self._worker is not expected):

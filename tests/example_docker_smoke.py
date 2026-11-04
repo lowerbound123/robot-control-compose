@@ -5,6 +5,7 @@ After preparing RC, anchor and example images:
 """
 from config_helpers import read_config
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,97 @@ def wait(predicate, timeout=45):
             return value
         time.sleep(.02)
     raise AssertionError("example acceptance condition timed out")
+
+
+def mcp_management_checks(controller, report):
+    import httpx2
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from robot_control.mcp_server import MCPService
+    from unittest.mock import patch
+
+    service = MCPService(controller, {'host': '127.0.0.1', 'port': 0}, allow_ephemeral=True)
+    service.start()
+    async def request(name, arguments):
+        async with httpx2.AsyncClient(trust_env=False) as http:
+            async with streamable_http_client(service.url, http_client=http) as streams:
+                async with ClientSession(streams[0], streams[1]) as session:
+                    await session.initialize()
+                    return await session.call_tool(name, arguments)
+    def call(name, *, fail=False, **arguments):
+        reply = asyncio.run(request(name, arguments))
+        assert reply.is_error == fail, reply
+        return reply.structured_content
+    def identities():
+        return {name: dict(container=w.endpoint.container_id, host=w.host.instance_id,
+                           process=w.runtime_id, pid=w.pid, version=w.config_version)
+                for name, w in controller._worker.member_workers().items()}
+    def context(instance):
+        return call('policy_command', instance_id=instance, command='example', wait=True)['result']
+    evidence = {}
+    try:
+        assert len(call('policy_commands', policy_id='example')['policies']) == 2
+        assert call('help', policy_id='example-1', command='reinitialize')['policies'][0]['commands'][0]['effect'] == 'reinitialize_policy'
+        call('take', wait=True)
+        old = identities()
+        call('policy_chain', policies=['example', 'example'], action='save', wait=True)
+        assert identities() == old
+        call('policy_chain', policies=['example', 'example'], wait=True)
+        initial = identities()
+        assert not {x['container'] for x in old.values()} & {x['container'] for x in initial.values()}
+        assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+        before_context = {i: context(i) for i in initial}
+        with patch.object(controller.runtime, 'runner', side_effect=AssertionError('in-place MCP command called Docker')):
+            call('policy_command', instance_id='example-1', command='reinitialize-chunk-size', args=[8], wait=True)
+        reinitialized = identities()
+        after_context = {i: context(i) for i in initial}
+        assert reinitialized['example-0'] == initial['example-0']
+        assert reinitialized['example-1'] == {**initial['example-1'], 'version': initial['example-1']['version'] + 1}
+        assert before_context['example-0']['context_id'] == after_context['example-0']['context_id']
+        assert before_context['example-1']['module_id'] == after_context['example-1']['module_id']
+        assert before_context['example-1']['context_id'] != after_context['example-1']['context_id']
+        call('command', line='policy example-1 set-chunk-size 9', wait=True)
+        reloaded = identities()
+        assert reloaded['example-0'] == reinitialized['example-0']
+        assert reloaded['example-1']['container'] != reinitialized['example-1']['container']
+        target = controller._worker.member_workers()['example-1']
+        receive = target._receive
+        def lost_ack(packet):
+            event = packet['event']
+            if event['type'] == 'ack' and 'monitor' in event and 'observe' in event:
+                packet = {**packet, 'event': {**event, 'type': 'error', 'error': 'MCP acceptance lost initialization ACK'}}
+            receive(packet)
+        with patch.object(target, '_receive', side_effect=lost_ack):
+            call('policy_command', instance_id='example-1', command='reinitialize', wait=True, fail=True)
+        assert controller.control_owner == 'mcp' and controller.status()['retry_reload_instance'] == 'example-1'
+        assert identities() == reloaded
+        call('retry_reload', instance_id='example-1', wait=True)
+        retried = identities()
+        assert retried['example-0'] == reloaded['example-0']
+        assert retried['example-1']['container'] != reloaded['example-1']['container']
+        call('policy_command', instance_id='example-1', command='set-chunk-size-all', args=[10], wait=True)
+        all_reloaded = identities()
+        assert all(all_reloaded[i]['container'] != retried[i]['container'] for i in retried)
+        assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+        episode = call('return_and_wait', timeout_s=0)['operation_id']
+        wait(lambda: controller.status()['state'] == 'running')
+        epoch = controller._control_epoch
+        started = call('record', action='on', wait=True)['result']
+        wait(lambda: controller.status()['recording']['samples_written'] >= 3)
+        stopped = call('command', line='record off', wait=True)['result']
+        assert started['session_id'] == stopped['session_id'] and stopped['state'] == 'idle'
+        assert controller._control_epoch == epoch and controller.control_owner == 'policy'
+        assert not call('get_policy_result', operation_id=episode)['finished']
+        completed = controller.submit('example-1-next-result completed mcp-management')
+        assert controller.wait_operation(completed, 5)['status'] == 'succeeded'
+        assert controller.wait_operation(episode, 10)['status'] == 'succeeded'
+        evidence.update(initial=initial, reinitialized=reinitialized, reloaded=reloaded, retried=retried,
+                        all_reloaded=all_reloaded, recording=stopped,
+                        outcome=call('get_policy_result', operation_id=episode)['result'])
+        report['mcp_management'] = evidence
+        report['checks'].append('HTTP MCP chain save/apply, discovery, scoped/all/in-place reload, retry, independent recording and episode handback')
+    finally:
+        service.close()
 
 
 def in_container():
@@ -222,6 +314,7 @@ def in_container():
         status = controller.status()
         assert status["state"] == "paused" and status["control_owner"] == "mcp" and status["queue_remaining"] == 0
         report["checks"].append("instance globals, member and group reload identities, source save, cell 2 finish and MCP handback")
+        mcp_management_checks(controller, report)
     except BaseException:
         print(json.dumps(controller.read_events(), ensure_ascii=False, default=str), flush=True)
         raise
@@ -300,7 +393,7 @@ def on_host(evidence):
             shutil.copyfile(output, evidence / "result.json")
         assert code == "0", logs[-6000:]
         report = read_config(output)
-        assert len(report["checks"]) == 6, report
+        assert len(report["checks"]) == 7, report
         print(json.dumps(report, ensure_ascii=False, indent=2))
     finally:
         # Fallback only touches this task's exact deployment label, never global prune.

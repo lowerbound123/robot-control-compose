@@ -1,0 +1,26 @@
+services:
+  webui:
+    image: robot-control-compose-webui:local
+    build:
+      context: ./webui
+      dockerfile: Dockerfile
+    user: "${RC_UID}:${RC_GID}"
+    depends_on:
+      robot-control: {condition: service_started}
+    environment:
+      ROBOT_CONTROL_MCP_TOKEN: ${ROBOT_CONTROL_MCP_TOKEN:-}
+    ports:
+      - "127.0.0.1:${RC_WEBUI_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ./webui/config.json
+        target: /usr/share/nginx/html/config.json
+        read_only: true
+        bind: {create_host_path: false}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 5s
+    restart: "no"

@@ -47,6 +47,7 @@ HELP = "\n".join([
     "reset/r；save <名称>；load <名称或路径>；pause；resume",
     "policies；switch <id> [--reset]；retry-reload <实例ID>；status；help；exit/quit",
     "take：MCP 接管并暂停推理；return：交还并恢复 policy（接管时 resume 同义）",
+    "MCP：policy_chain 提交链列表（apply/save）；policy_commands/help 定向查询；policy_command/retry_reload 指定实例；record 无需 take",
     '示例：set policy.params.delay_s 0.2；set policy.execution.mode "async"',
     'show global [key]；set global.<key> <JSON>；unset global.<key>：共享状态，退出自动保存',
     RECORD_HELP,
@@ -111,13 +112,14 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._return_requested = False
         self._return_operation = None
         self._dispatch_id = None
+        self._dispatch_origin = None
         self._exit_operations = []
         self._publish_fault = False
         self._published_targets = {}
         self.operations = Operations()
         self._init_policy_results()
         self.direct = DirectMotion(self.config.get("direct_control", {}), self.config["frequency_hz"],
-                                   self.operations, self._send_direct, self.robot)
+                                   self.operations, self._send_direct, self.robot, emit=self._emit)
         self._event_lock = threading.Lock()
         self._event_seq = 0
         self._event_history = deque(maxlen=10000)
@@ -142,6 +144,24 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
 
     def _emit_command(self, message, level="info", *, record_history=True):
         self._emit(message, level, source=LogSource.COMMAND, record_history=record_history)
+
+    def _mcp_operation_logger(self, tool, details=None):
+        """Follow the controller receipt, independently of an HTTP/local waiter."""
+        def log(event):
+            status = event['status']
+            if status not in ('queued', 'succeeded', 'failed', 'cancelled'):
+                return
+            payload = {'operation_id': event['operation_id']}
+            if status == 'queued':
+                payload.update(details or {})
+            else:
+                payload.update({key: event[key] for key in ('error', 'reason') if key in event})
+                if tool in ('send_command', 'move_eef', 'move_joints', 'return_and_wait',
+                            'policy_command', 'policy_chain', 'record') and 'result' in event:
+                    payload['result'] = event['result']
+            level = 'error' if status == 'failed' else 'warning' if status == 'cancelled' else 'info'
+            self._emit_command(f'MCP {tool} {status}: ' + json.dumps(payload, ensure_ascii=False), level)
+        return log
 
     def _emit(self, message, level="info", *, record_history=True, source=LogSource.DIAGNOSTIC):
         if (source is not LogSource.COMMAND
@@ -212,7 +232,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             words = shlex.split(line)
         except ValueError:
             return False
-        return RobotController._is_global_read(words) or words in (["status"], ["policies"], ["help"], ["show", "rc"], ["show", "policy"])
+        return (RobotController._is_global_read(words) or words in (["status"], ["policies"], ["record", "status"], ["show", "rc"], ["show", "policy"])
+                or bool(words and words[0] == 'help' and len(words) in (1, 2)))
 
     def query(self, line):
         with self._lock:
@@ -223,8 +244,10 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 return self.status()
             if words == ["policies"]:
                 return self.registry.list()
-            if words == ["help"]:
-                return HELP
+            if words and words[0] == 'help' and len(words) in (1, 2):
+                return HELP if len(words) == 1 else self.local_help(words[1])
+            if words == ['record', 'status']:
+                return self._recorder.status()
             if words == ["show", "rc"]:
                 return public_value(self.config)
             if words == ["show", "policy"] and self._identity is not None:
@@ -249,7 +272,18 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         if self.control_owner != "mcp" or self._return_requested:
             raise PermissionError("MCP is read-only; call take before changing state")
 
-    def submit(self, line: str, *, origin="tui"):
+    def _check_expected_control(self, expected):
+        if expected is None:
+            return
+        if (not isinstance(expected, dict) or set(expected) != {'run_id', 'control_epoch', 'generation'}
+                or not isinstance(expected['run_id'], str)
+                or type(expected['control_epoch']) is not int or type(expected['generation']) is not int):
+            raise ValueError('invalid expected_control')
+        if (expected['run_id'] != self.run_id or expected['control_epoch'] != self._control_epoch
+                or expected['generation'] != self.buffer.generation):
+            raise PermissionError('control state changed; discard the stale client plan')
+
+    def submit(self, line: str, *, origin="tui", policy_arguments=None, mcp_tool=None, expected_control=None):
         reject_secret_edit(line)
         if self.done.is_set():
             if origin == "tui" and line.strip() in ("exit", "quit"):
@@ -261,27 +295,33 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         if not command:
             return
         with self._lock:
+            self._check_expected_control(expected_control)
             try:
                 words = shlex.split(command)
             except ValueError:
                 words = []
-            if origin == "mcp" and words and words[0] in ("mcp", "camera", "monitor", "manage-policy", "snapshot", "policy", "record", "retry-reload"):
+            if origin == "mcp" and words and (words[0] in ("mcp", "camera", "monitor", "manage-policy", "snapshot") or words[0].startswith('monitor-')):
                 raise PermissionError(f"{words[0]} is a local-only terminal command")
-            if origin == "mcp" and words and words[0] not in BUILTIN_COMMANDS:
-                raise PermissionError("policy extension commands are local-only")
+            if origin == "mcp" and words and words[0] not in BUILTIN_COMMANDS and words[0] not in self._local_specs():
+                raise ValueError('unknown or ambiguous policy command; use policy <instance_id> <command>')
             local_help = origin == "tui" and words and words[0] == "help" and len(words) in (1, 2)
             readonly = self.is_read_command(command) or local_help
+            recording = bool(words and words[0] == 'record')
             if command == "return" and self._return_operation is not None:
                 return self._return_operation
-            if origin == "mcp" and not readonly and command not in ("take", "return"):
+            if origin == "mcp" and not readonly and not recording and command not in ("take", "return"):
                 self._require_mcp()
-            if origin == "mcp" and self._operation is not None and not readonly and command not in ("pause", "exit", "quit"):
+            if origin == "mcp" and self._operation is not None and not readonly and not recording and command not in ("pause", "exit", "quit"):
                 raise RuntimeError(f"busy: {self._operation['kind']}")
-            identity = self.operations.create(command)
+            observer = None
+            if origin == 'mcp' and not readonly:
+                tool = mcp_tool or (command if command in ('take', 'return') else 'record' if recording else 'command')
+                observer = self._mcp_operation_logger(tool, {'line': command})
+            identity = self.operations.create(command, observer=observer)
             if words and words[0] == 'retry-reload':
-                self._queue_reload_retry(identity, command, words)
+                self._queue_reload_retry(identity, command, words, origin=origin)
                 return identity
-            if origin == 'tui' and words and words[0] == 'record':
+            if recording and not readonly:
                 self._submit_recording(identity, words)
                 return identity
             if readonly:
@@ -293,9 +333,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     self.operations.update(identity, "failed", error=exc)
                     self._emit_command(f"命令失败：{exc}", "error")
                 return identity
-            if origin == "tui" and words:
+            if words:
                 try:
-                    custom = self._policy_request(identity, command, words[0])
+                    custom = self._policy_request(identity, command, words[0], origin=origin, arguments=policy_arguments)
                 except Exception as exc:
                     self.operations.update(identity, "failed", error=exc)
                     self._emit_command(f"policy command [{identity}] failed: {exc}", "error")
@@ -325,14 +365,15 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             if command == "return" or (command == "resume" and self.control_owner == "mcp"):
                 self._return_requested = True
                 self._return_operation = identity
-            request = ControlRequest(identity, command, origin, self._control_epoch)
+            request = ControlRequest(identity, command, origin, self._control_epoch,
+                                     expected_control=copy.deepcopy(expected_control))
             urgent = command in {"exit", "quit", "pause", "take", "return"} or (command == "resume" and self.control_owner == "mcp")
             target = self._urgent if urgent else self._commands
             target.put(request)
             self._wake.set()
             return identity
 
-    def submit_direct(self, steps, *, clear_queue=False):
+    def submit_direct(self, steps, *, clear_queue=False, tool_name='send_command'):
         with self._lock:
             self._require_mcp()
             if not self._connected or self._operation is not None or self._motion is not None or self._stop.is_set():
@@ -341,7 +382,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 raise RuntimeError("command publication fault; repair the connection and reset or return before moving")
             if type(clear_queue) is not bool:
                 raise ValueError("clear_queue must be a boolean")
-            identity = self.operations.create("direct motion")
+            details = {'steps': len(steps), 'arms': sorted({arm for step in steps for arm in step.arms}),
+                       'clear_queue': clear_queue, 'first_step': steps[0].text if steps else None}
+            identity = self.operations.create("direct motion", observer=self._mcp_operation_logger(tool_name, details))
             self._commands.put(ControlRequest(identity, "direct", "mcp", self._control_epoch, tuple(steps), clear_queue))
             self._wake.set()
             return identity
@@ -365,14 +408,16 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
 
     def _dispatch(self, request):
         identity = request.operation_id
-        policy_wait = request.origin == 'mcp' and request.line == 'return_and_wait'
+        policy_wait = request.origin == 'mcp' and request.policy_name is None and request.line == 'return_and_wait'
         try:
+            self._check_expected_control(request.expected_control)
             if policy_wait and (
                     self._policy_wait is None or self._policy_wait['handoff_operation_id'] != identity):
                 return  # An earlier urgent intervention cancelled the reservation.
-            if request.origin == "mcp" and request.line not in ("take", "return", "return_and_wait"):
-                if request.epoch != self._control_epoch:
-                    self.operations.update(identity, "cancelled", error="control ownership changed")
+            if request.origin == "mcp" and (request.policy_name is not None or request.line not in ("take", "return", "return_and_wait")):
+                if (request.epoch != self._control_epoch
+                        or request.generation is not None and request.generation != self.buffer.generation):
+                    self.operations.update(identity, "cancelled", error="control ownership or generation changed")
                     return
                 if request.line != "resume":
                     self._require_mcp()
@@ -381,6 +426,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 return
             self.operations.update(identity, "running")
             self._dispatch_id = identity
+            self._dispatch_origin = request.origin
             if request.retry_candidate is not None:
                 self._dispatch_reload_retry(request)
                 return
@@ -423,6 +469,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 self._return_requested = False
         finally:
             self._dispatch_id = None
+            self._dispatch_origin = None
 
     def status(self):
         with self._lock:
@@ -430,6 +477,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             retry = self._retry_candidate.member.instance_id if self._retry_candidate and self._operation is None else None
             last_request = self._last_action_request
             return {
+                "run_id": self.run_id,
                 "state": self._state, "policy": self._identity,
                 "runtime": self.runtime.snapshot() if self.runtime else None,
                 "queue_remaining": len(self.buffer.remaining()),
@@ -511,7 +559,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._job_serial += 1
         self.policy_monitors.invalidate(payload['member'].instance_id if kind == 'reload_member' else None)
         job = {"id": self._job_serial, "kind": kind, "cancel": threading.Event(),
-               "public_id": self._dispatch_id, **payload}
+               "public_id": self._dispatch_id, 'origin': self._dispatch_origin or 'tui',
+               'epoch': self._control_epoch, 'source_generation': self.buffer.generation, **payload}
         if self._stop.is_set() and kind != "shutdown":
             job["cancel"].set()
         job["launched"] = not (wait_inflight and self._inflight is not None)
@@ -722,6 +771,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 raise
         if kind != "switch":
             raise ValueError(f"未知生命周期操作：{kind}")
+        with self._lock:
+            self._check_mcp_job(job)
         self._finish_reload_cleanup()
         if not self._connected:
             raise RuntimeError('robot/recovery is not ready; restart after successful cleanup')
@@ -787,6 +838,14 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             worker.start(cancel_event=cancel)
             if cancel.is_set():
                 raise RuntimeError('policy initialization cancelled')
+            if job.get('origin') == 'mcp':
+                # Commit under the same lock as ownership/generation changes.
+                # The control-thread acknowledgement must not install a late worker.
+                with self._lock:
+                    self._check_mcp_job(job, after_retire=True)
+                    self._worker, self._identity = worker, record.config['id']
+                    self.registry.install(record)
+                    job['committed'] = True
         except Exception:
             cleanup_deadline = self._cleanup_deadline()
             cleanup_error = None
@@ -850,7 +909,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 continue
             emit = self._emit_command if job.get('public_id') else self._emit
             if result['type'] == 'switch_empty':
-                self._worker = self._identity = None
+                if not job.get('committed'):
+                    self._worker = self._identity = None
                 self._clear_finished_lease()
                 continue
             if result["type"] == "switch_initializing":
@@ -861,6 +921,13 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 invalid = result.get('invalid_infrastructure', False)
                 if (self._stop.is_set() or job["cancel"].is_set()) and not invalid:
                     continue
+                if job['kind'] == 'switch' and not invalid:
+                    try:
+                        self._check_mcp_job(job)
+                    except RuntimeError as exc:
+                        job['prepare_error'] = str(exc)
+                        result['complete'].set()
+                        continue
                 if job['kind'] == 'reload_member' and not invalid:
                     try:
                         self._prepare_member_reload(job)
@@ -871,6 +938,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 else:
                     self._retry_candidate = None
                     self._reload_owner = None
+                if job.get('origin') == 'mcp':
+                    self._cancel_direct('cancelled by policy lifecycle change')
                 self._pause("reloading" if job.get("commit") else "switching")
                 job['prepared_generation'] = self.buffer.generation
                 job['prepared'] = True
@@ -950,7 +1019,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     self._state = "initializing"
                     self._operation_start("switch", record=None, target_id=identity, reset=False, old_worker=None)
             elif job["kind"] in ("switch", "reload_member"):
-                if job['kind'] == 'switch':
+                if job['kind'] == 'switch' and not job.get('committed'):
                     self._worker = result["worker"]
                     self._identity = result["identity"]
                     self.registry.install(result['record'])

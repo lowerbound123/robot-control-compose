@@ -238,14 +238,23 @@ async def test_mcp_http_reads_images_and_direct_motion(example_rc, example_mcp):
         assert [im["camera"] for im in state["images"]] == ["head"]
         assert (await call("command", line="status", wait=True))["result"]["policy"] == "example"
         assert (await call("events"))["events"]
-        assert (await call("take", wait=True))["controller"]["control_owner"] == "mcp"
+        taken = await call("take", wait=True)
+        assert taken["controller"]["control_owner"] == "mcp"
+        sent = await call("send_command", commands="both:close", wait=True)
         joints = await call("move_joints", targets={"left": {"joint_pos": [.035] * 6}}, wait=True)
         assert (await call("get_operation", operation_id=joints["operation_id"]))["status"] == "succeeded"
         assert example_rc.robot.read_state()["qpos"][:6] == pytest.approx([.035] * 6)
         target = [.04, .02, .02, .02, .02, .02]
-        await call("move_eef", targets={"right": {"end_pos": target}}, wait=True)
+        eef = await call("move_eef", targets={"right": {"end_pos": target}}, wait=True)
         assert example_rc.robot.read_state()["eef"][7:13] == pytest.approx(target)
-        assert (await call("return", wait=True))["controller"]["control_owner"] == "policy"
+        returned = await call("return", wait=True)
+        assert returned["controller"]["control_owner"] == "policy"
+        with example_rc._lock:
+            messages = [row['message'] for row in example_rc.read_events(limit=1000)['events']]
+        for tool, receipt in [('take', taken), ('send_command', sent), ('move_joints', joints),
+                              ('move_eef', eef), ('return', returned)]:
+            assert any(message.startswith(f'MCP {tool} succeeded:') and receipt['operation_id'] in message
+                       for message in messages)
 
 
 def test_mcp_take_direct_control_and_result_handback(example_rc, example_mcp):
@@ -263,6 +272,8 @@ def test_mcp_take_direct_control_and_result_handback(example_rc, example_mcp):
         receipt = rc.wait_operation(episode, 6)
         queried = tool("get_policy_result", operation_id=episode).structured_content
         assert queried["finished"] and queried["status"] == receipt["status"]
+        until(lambda: any(row['message'].startswith(f'MCP return_and_wait {receipt["status"]}:')
+                          and episode in row['message'] for row in rc.read_events(limit=1000)['events']))
         if outcome in ("completed", "terminated"):
             assert receipt["result"] == {"outcome": outcome, "message": "demo",
                                          "source": {"policy_id": "example"}}

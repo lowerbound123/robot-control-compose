@@ -39,6 +39,16 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 检查 `cleanup_exit` 可核对最后的 RC 退出码。故障注入可能在新容器安装信号处理前将其停止，脚本要求强制退出记录准确对应这一次创建尝试，其余成员正常释放。退出后还会核对图像池、容器和共享卷。
 
+## MCP 策略管理验收
+
+`tests/test_mcp_management.py` 使用正式 example 和真实 host/worker 验证只读能力发现、HTTP/本地命令、严格 JSON 参数、重复实例寻址、链 apply/save 分离、三种 effect、失败实例冷重试、独立录制与等待任务、代次取消及 YAML 原子提交。另覆盖合法的同名 `record` 来源和 `return_and_wait` 策略命令，避免帮助或内部请求路由混淆。完整接口回归运行 `python3 scripts/test_scope.py --interface`。
+
+`tests/example_docker_smoke.py` 增加真实 HTTP MCP 验收。`result.json.mcp_management` 记录链应用、同 PID 重初始化、目标重载、失败后冷重试和整组重建的容器/host/runtime/PID/版本；`recording` 与 `outcome` 核对 policy 运行时独立录制及原等待任务完成。脚本仍只使用 example，最终 `cleanup.json` 验证本次容器和卷为空；既有 lost-create 注入导致的强制退出码单独记录，不伪装成正常清理。
+
+2026-11-03 最终验证：宿主 Python 3.11 完整 `--interface` 为 **1362 passed / 18 skipped / 13 个既有 Pillow 弃用告警**；Humble/Python 3.10 的新管理用例与真实 ROS 模拟器为 **17 passed**；真实 Docker 的 **7 组检查通过**，RC 使用 Python 3.10.12，example 使用 Python 3.14.9。源代码通过 Python 3.10 语法检查。未调用真实模型供应商、GPU 模型或机器人硬件，跳过不计通过。
+
+证据：`/private/tmp/rc-mcp-management-interface-final.log`、`/private/tmp/rc-mcp-management-linux-final.log`、`/private/tmp/rc-mcp-management-docker-final/{result.json,cleanup.json}`。最终资源复核另存 `/private/tmp/rc-mcp-management-cleanup-final.json`。
+
 ## 历史验收
 
 本文保留 2026-10-27 的历史验收记录；源码外置后的复现命令已更新，最新验收见下方“源码挂载验收”。
@@ -193,6 +203,32 @@ Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 poli
 首次 Linux 全套触发既有 MCP 测试的启动竞态：HTTP 服务已监听，但 policy 仍在 switch，提前 take 正常返回 `busy: switch`。通过延迟测试 worker 启动 0.2 秒稳定复现，仅修正测试为等待初始化完成；生产控制逻辑不变。相同延迟实验转绿，MCP 模块 7 项通过，随后完整 Linux 套件通过。
 
 证据目录：`/private/tmp/rc-failure-decisions-20261030/`，包括 `host-full.log`、`linux-verified.log`、`policy-linux-verified.log`、`incremental-sdk337.txt` 和 `mcp-delayed-start-red.txt` / `mcp-delayed-start-green.txt`。未调用真实收费 API，也未进行真机准确率验收。
+
+## Vue 三路 WebUI 首版（2026-11-04）
+
+采用 Vue 静态前端、独立 Nginx 容器和现有 RC HTTP/MCP。三路监控独立读取相机缓存，不使用 policy 共享图像租约。运行与配置说明见 [WebUI](webui.md)。
+
+- 最终 RC 相关回归：58 passed，41.63 秒，覆盖预览、相机缓存、MCP、控制代次、CLI 和统一清理期限。
+- 项目默认 `scripts/test_scope.py`：51 passed、1 skipped，30.54 秒；宿主缺少 ROS 的跳过不计通过。另在 Humble 容器运行 example ROS 仿真：1 passed，2.71 秒。
+- Humble / Python 3.10 的最终预览与控制代次专项：10 passed，4.88 秒。
+- 前端单测：12 passed；类型检查、Vite 生产构建通过。最终 Nginx 镜像的 Chromium 浏览器流程：7 passed，23.3 秒，覆盖路由刷新、窄屏底部输入框、复位、整份翻译校验、CORS/超时、录制例外、人工干预、策略自链切换与继续、过期状态及关闭后的订阅释放。
+- 隔离 Docker 使用生产 Compose overlay、真实动态 example/self-chain 容器和本地兼容 API 替身。检查只读运行、无 Node 运行时、无共享内存/RPC/Docker socket 挂载、同源代理和 token 转发；非本地 Host 被代理拒绝。
+
+本机 macOS / OrbStack Linux 容器，Chromium 156.0.8078.4 headless 活动页面，1440×900；三路带像素序号的 mock 源均为 640×480、30 Hz。example 自链保持 running，连续测量 600.009 秒。浏览器按 JPEG 中的源序号统计真正更新的图像，不把 RAF 或重复旧帧计为新帧。
+
+| 相机 | 源帧率 | 编码帧率 | 输出帧率 | 浏览器实际新帧率 | 延迟 P50 / P95 / 最大值 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 左腕 | 30.00 | 29.93 | 29.92 | 29.89 fps | 50.8 / 58.8 / 473.8 ms |
+| 头部 | 30.00 | 29.93 | 29.92 | 29.87 fps | 51.8 / 73.8 / 318.5 ms |
+| 右腕 | 30.00 | 29.92 | 29.91 | 29.88 fps | 52.2 / 57.2 / 510.8 ms |
+
+三路 10 分钟均值均超过 29.5 fps 门槛，浏览器脚本错误为 0。存在短时抖动：最低 10 秒窗口约 28.65 fps；末尾完整窗口恢复约 30.05 fps，未出现旧帧持续积压。延迟由 mock 源帧时间与浏览器取样时间计算，经一次跨进程时钟偏移校正，包含显示采样误差。
+
+59 次资源采样中，RC Docker CPU 均值 30.26%，Nginx 1.52%（Docker stats 口径）；RC 内存范围 259.1–272.1 MiB、首尾 263.3→267.7 MiB，Nginx 8.47–9.64 MiB、首尾 8.93→9.07 MiB。浏览器渲染进程 CPU 均值约 35.7%，JS heap 4.15–5.69 MiB，后者包含测量脚本保存的延迟样本，不代表完整浏览器 RSS。资源有正常波动，未观察到随帧数持续积累的发送队列。慢读者、无订阅时停止编码、迟到编码结果和期限耗尽另有专项回归。
+
+证据：`/private/tmp/rc-webui-benchmark-600/result.json`、`/private/tmp/rc-webui-docker-verified/`；最终页面截图在 `/private/tmp/rc-webui-delivery/`。最终日志为 `/private/tmp/rc-webui-rc-final.log`、`/private/tmp/rc-webui-scope-final.log`、`/private/tmp/rc-webui-humble-final.log`、`/private/tmp/rc-webui-example-ros.log`、`/private/tmp/rc-webui-unit-final.log`、`/private/tmp/rc-webui-docker-e2e-delivery.log`。
+
+10 分钟测量后只修正窄窗口固定输入框和预览退出期限，编码/发送路径保持相同；最终镜像重新通过上述浏览器流程。真实相机、机器人硬件、目标真机负载及真实 OpenAI 兼容供应商尚未验收；本地 mock 与 ROS 仿真不替代这些验收。
 
 ## LLM 供应商文件与实例切换（2026-11-02）
 

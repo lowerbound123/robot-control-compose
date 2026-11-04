@@ -60,6 +60,8 @@ class RecordingControl:
 
     def _submit_recording(self, identity, words):
         try:
+            if self._stop.is_set():
+                raise RuntimeError('controller is shutting down')
             if len(words) > 2:
                 raise ValueError(RECORD_HELP)
             action = words[1] if len(words) == 2 else 'toggle'

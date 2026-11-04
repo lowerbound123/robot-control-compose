@@ -15,6 +15,14 @@ logging:
 
 每次常规动作结果的 `请求 N：裁剪 X，缓存 Y` 摘要改为 `TRACE`，默认不再刷屏。最近一次结果始终更新 `status.last_action_request`：`request_id`、`generation`、`trim`、`cached`；TUI 既有状态栏同步显示相同摘要。`cached` 是结果处理时的缓存条数，消费动作后不会随实时 `queue_remaining` 改变；全部被裁剪的结果也会更新该快照。暂停、切换等使缓存代次失效后，旧快照不再显示，状态返回 `null`。状态栏只读取控制器快照。
 
+## MCP 控制日志
+
+HTTP MCP 与本地 MCP 工具的写操作共用控制器回执日志，覆盖 `take`、`return`、`send_command`、`move_eef`、`move_joints`、`return_and_wait`、`policy_chain`、`policy_command`、`retry_reload`、录制开关和 `command` 中的写命令。每个已受理请求输出一条 `MCP <工具> queued: {...}`，结束时输出一次 `succeeded`、`cancelled` 或 `failed`，均带同一个 `operation_id`。动作请求摘要包含步数、涉及的手臂、第一步描述及 `clear_queue`；结果包含完成、取消和失败步数。`queued` 只表示已受理，运动 `succeeded` 仍以执行器确认新反馈到达目标为准。
+
+这些是显式命令回执，默认 INFO 可见，且与其他命令回执一样不受普通日志阈值过滤。取消使用 WARNING，失败与进入工具处理后被拒绝的请求使用 ERROR，并保留原因。日志同时进入 TUI/headless、`events` 查询和普通 RC JSONL；客户端不等待、等待超时或断连都不会取消后续结果日志。`return_and_wait` 的成功日志保留 `result.outcome`，应区分 `completed` 和 `terminated`。
+
+每个实际开始的动作步骤另有一条 `MCP motion step: {...}` TRACE 日志，包含步序、动作文字、解析后的绝对目标和速度档位；不会逐控制周期输出。需要这些细节时，将 RC YAML 的 `logging.level` 改为 `TRACE` 后重启。`status`、`state`、`events`、`get_operation` 等只读工具不会因本功能新增回执日志，查询结果也不会重复输出原命令的终态日志。本地 `mcp ...` 原有的返回值展示继续保留。
+
 ## 时间与颜色
 
 TUI 和 headless 日志按固定 UTC+8 显示完整日期、时间和毫秒，例如 `2026-10-26T14:30:00.125`，界面省略 `+08:00` 后缀，不依赖宿主或容器时区。控制器日志队列、历史查询和 JSONL 文件中的 `time` 字段仍保留 ISO 8601 的 `+08:00` 偏移；消费日志文件/API 的程序若原来把 `time` 当成浮点秒数，应按 ISO 8601 解析。显示端兼容旧数值时间。相机帧时间和控制期限不变。

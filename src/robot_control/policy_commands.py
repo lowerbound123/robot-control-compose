@@ -1,13 +1,15 @@
 """Local policy command routing; called under the controller lock."""
 import copy
 import json
+import shlex
 
-from rc_policy_sdk.commands import RELOAD_EFFECTS, command_usage, parse_command
+from rc_policy_sdk.commands import RELOAD_EFFECTS, parse_command, validate_arguments
 from .operations import ControlRequest, PolicySaveTarget
 from .config import PolicyRecord, changed_config, dotted_get
+from .policy_capabilities import PolicyCapabilities
 
 
-class PolicyCommandSupport:
+class PolicyCommandSupport(PolicyCapabilities):
     def _init_policy_commands(self):
         self._policy_calls = {}
         self._policy_reloads = {}
@@ -46,36 +48,34 @@ class PolicyCommandSupport:
 
     def local_help(self, name=None):
         from .controller import HELP
-        if name == 'record':
-            from .recording_control import RECORD_HELP
-            return RECORD_HELP
         with self._lock:
             specs = self._local_specs()
-            if name in specs:
-                value = specs[name]
-                return f"{command_usage(name, value)} — {value['help']} (timeout_s={value['timeout_s']})"
-            catalog = self.declared_commands()
-            if name is not None and name not in catalog:
-                record = getattr(self._worker, 'record', None)
-                if record is not None and record.is_chain:
-                    self.registry.resolve_member(record, name)
-                raise ValueError(f'unknown policy or active command: {name}')
-            worker = self._worker
-            active = (set(worker.monitor_members()) if hasattr(worker, 'monitor_members') else
-                      {self._identity} if worker is not None else set())
-            rows = []
-            for identity, commands in catalog.items():
-                if name is not None and name != identity:
-                    continue
-                state = 'running' if identity in active else 'not_running'
-                for key,value in commands.items():
-                    rows.append(f"policy {identity} {command_usage(key, value)} — {value['help']} [{state}] (timeout_s={value['timeout_s']})")
-            return '\n'.join(([HELP, 'Policy TUI commands:'] if name is None else []) + rows)
+            try:
+                capabilities = self.policy_capabilities(name)
+            except ValueError:
+                if name == 'record':
+                    from .recording_control import RECORD_HELP
+                    return RECORD_HELP
+                if name not in specs:
+                    raise
+                capabilities = self.policy_capabilities(command=name)
+            text = self._format_capabilities(capabilities)
+            return '\n'.join(([HELP, 'Policy TUI commands:'] if name is None else []) + [text])
 
-    def _policy_request(self, identity, line, word):
+    def submit_policy_command(self, instance_id, command, args=None):
+        arguments = [] if args is None else args
+        if not isinstance(instance_id, str) or not isinstance(command, str) or not isinstance(arguments, list):
+            raise ValueError('policy_command requires instance_id, command and an argument list')
+        line = shlex.join(['policy', instance_id, command, *(str(arg) for arg in arguments)])
+        return self.submit(line, origin='mcp', policy_arguments=arguments, mcp_tool='policy_command')
+
+    def _policy_control_current(self, origin, epoch):
+        return (self.control_owner == ('mcp' if origin == 'mcp' else 'policy')
+                and epoch == self._control_epoch and not self._return_requested and not self._stop.is_set())
+
+    def _policy_request(self, identity, line, word, *, origin='tui', arguments=None):
         specs = getattr(self._worker, "command_specs", {})
         if word == 'policy':
-            import shlex
             words = shlex.split(line)
             if len(words) < 3:
                 raise ValueError('用法：policy <id> <command> [args...]')
@@ -102,14 +102,16 @@ class PolicyCommandSupport:
             return None
         if not self._local_specs():
             raise RuntimeError("busy: no active policy accepting commands")
-        name, args = parse_command(line, specs)
+        name, args = (parse_command(line, specs) if arguments is None
+                      else (word, validate_arguments(arguments, specs[word])))
         reload_effect = specs[name].get("effect") in RELOAD_EFFECTS
-        if reload_effect and (self.control_owner == "mcp" or self._return_requested):
-            raise PermissionError("reload_policy commands are unavailable during MCP takeover")
+        if reload_effect and not self._policy_control_current(origin, self._control_epoch):
+            raise PermissionError('policy control ownership changed; MCP lifecycle commands require take')
         self._emit_command(f"policy command [{identity}] queued: {line}")
-        request = ControlRequest(identity, line, "tui", self._control_epoch,
+        request = ControlRequest(identity, line, origin, self._control_epoch,
                               policy_worker=self._worker, policy_version=self._worker.config_version,
-                              policy_name=name, policy_args=tuple(args))
+                              policy_name=name, policy_args=tuple(args),
+                              generation=self.buffer.generation if origin == 'mcp' else None)
         if reload_effect:
             self._policy_reloads[identity] = (request, self.buffer.generation)
         return request
@@ -119,7 +121,7 @@ class PolicyCommandSupport:
         return (worker is self._worker and getattr(worker, "runnable", worker.alive) and worker not in self._command_faults
                 and worker.config_version == request.policy_version
                 and request.epoch == self._control_epoch and generation == self.buffer.generation
-                and self.control_owner == "policy" and not self._return_requested
+                and self._policy_control_current(request.origin, request.epoch)
                 and self._operation is None and not self._stop.is_set())
 
     def _reload_policy_result(self, identity, snapshot, patch):
@@ -157,9 +159,11 @@ class PolicyCommandSupport:
             self._invalidate_policy_editor()
             if effect == 'reload_all_policy':
                 self._operation_start("switch", record=proposed, old_worker=request.policy_worker,
-                                      reset=False, commit=True, version=proposed.version, public_id=identity)
+                                      reset=False, commit=True, version=proposed.version, public_id=identity,
+                                      origin=request.origin)
             else:
-                self._start_member_reload(proposed, member, identity, in_place=effect == 'reinitialize_policy')
+                self._start_member_reload(proposed, member, identity, in_place=effect == 'reinitialize_policy',
+                                          origin=request.origin)
             self.operations.update(identity, "running")
         except Exception as exc:
             self.operations.update(identity, "failed", error=exc)
@@ -211,8 +215,8 @@ class PolicyCommandSupport:
             self.operations.update(request.operation_id, "cancelled", error="policy instance/configuration changed")
             self._emit_command(f"policy command [{request.operation_id}] cancelled: policy changed")
             return
-        if request.origin != "tui":
-            raise PermissionError("policy commands are local-only")
+        if request.origin == 'mcp' and not self._policy_control_current(request.origin, request.epoch):
+            raise PermissionError('policy control ownership changed')
         try:
             worker.submit_command(request.operation_id, request.policy_name, list(request.policy_args))
         except Exception:

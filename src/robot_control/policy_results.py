@@ -28,7 +28,7 @@ class PolicyResultSupport:
             if (self._retry_candidate is not None or worker is None or worker in self._command_faults
                     or not getattr(worker, 'runnable', worker.alive)):
                 raise RuntimeError('no runnable policy; switch a policy first')
-            identity = self.operations.create('return_and_wait')
+            identity = self.operations.create('return_and_wait', observer=self._mcp_operation_logger('return_and_wait'))
             # Existing return callers must still receive a handoff receipt,
             # which completes at resume, independently of the business result.
             handoff = self.operations.create('return')

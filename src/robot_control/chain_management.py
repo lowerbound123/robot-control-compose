@@ -1,6 +1,7 @@
 """Local editor transactions; model and file work runs on the lifecycle manager."""
 import copy
 from collections import Counter
+from contextlib import contextmanager
 
 from .config import validate_policy
 from .config_paths import policy_config_path
@@ -9,6 +10,36 @@ from .operations import ControlRequest
 
 
 class ChainManagement:
+    def submit_policy_chain(self, policies, action='apply'):
+        if (action not in ('apply', 'save') or not isinstance(policies, list) or not policies
+                or any(not isinstance(name, str) for name in policies)):
+            raise ValueError('policy_chain requires a nonempty policy list and apply/save action')
+        with self._lock:
+            self._require_mcp()
+            if self.done.is_set() or self._stop.is_set() or self._operation is not None:
+                raise RuntimeError('busy: controller lifecycle or shutdown')
+            identity = self.operations.create(f'policy_chain {action}', observer=self._mcp_operation_logger(
+                'policy_chain', {'action': action, 'policies': list(policies)}))
+            self._commands.put(ControlRequest(identity, f'policy_chain {action}', 'mcp', self._control_epoch,
+                chain_action=action, chain_policies=tuple(policies), generation=self.buffer.generation))
+            self._wake.set()
+            return identity
+
+    def _check_mcp_job(self, job, *, after_retire=False):
+        if job.get('origin') != 'mcp':
+            return
+        expected = None if after_retire else job['old_worker']
+        generation = job.get('prepared_generation', job['source_generation'])
+        current = self._worker is expected
+        if after_retire and self._worker is job['old_worker']:
+            # The lifecycle thread can finish before the control thread consumes
+            # switch_empty; the already-confirmed old group is equally retired.
+            current = self._worker is None or self._worker in self._confirmed_closed
+        if (self._operation is not job or job['cancel'].is_set()
+                or not self._policy_control_current('mcp', job['epoch'])
+                or self.buffer.generation != generation or not current):
+            raise RuntimeError('MCP lifecycle cancelled: control, generation or policy changed')
+
     def _init_chain_editor(self):
         self._edit_serial = 0
         self._edit_active = False
@@ -47,6 +78,17 @@ class ChainManagement:
             return identity
 
     def _dispatch_chain_editor(self, request):
+        if request.origin == 'mcp':
+            self._require_mcp()
+            if request.epoch != self._control_epoch or request.generation != self.buffer.generation:
+                raise RuntimeError('MCP chain request is stale')
+            self._invalidate_policy_editor()
+            if request.chain_action == 'apply':
+                self._operation_start('switch', record=None, chain_ids=list(request.chain_policies),
+                                      old_worker=self._worker, reset=False)
+            else:
+                self._operation_start('chain_save', policies=list(request.chain_policies), old_worker=self._worker)
+            return
         if request.edit_token != self._edit_serial or not self._edit_active:
             raise RuntimeError('stale policy editor; reopen manage-policy')
         if self.control_owner != 'policy' or request.epoch != self._control_epoch:
@@ -64,6 +106,16 @@ class ChainManagement:
                                   edit_token=request.edit_token)
 
     def _run_chain_editor_job(self, job):
+        if job.get('origin') == 'mcp':
+            @contextmanager
+            def guard():
+                with self._lock:
+                    self._check_mcp_job(job)
+                    yield
+            with guard():
+                pass
+            path = self.registry.save_chain(job['policies'], guard=guard)
+            return {'editor': {'saved': job['policies'], 'path': str(path)}}
         if job['cancel'].is_set() or job['edit_token'] != self._edit_serial:
             raise RuntimeError('policy editor operation cancelled')
         if job['kind'] == 'chain_save':

@@ -118,7 +118,7 @@ def test_pause_and_take_do_not_cancel_active_command(command_controller):
     assert controller.status()["control_owner"] == "mcp"
 
 
-def test_mcp_cannot_invoke_custom_commands_before_or_after_take(command_controller):
+def test_mcp_custom_commands_require_take_and_support_targeted_help(command_controller):
     from robot_control.mcp_server import MCPService
     from test_mcp import client
     controller, root = command_controller
@@ -131,11 +131,13 @@ def test_mcp_cannot_invoke_custom_commands_before_or_after_take(command_controll
                     if takeover:
                         await session.call_tool("take", {})
                     result = await session.call_tool("command", {"line": "unlimited forbidden .01", "wait": True})
-                    assert result.is_error
+                    assert result.is_error is not takeover
                     help_result = await session.call_tool("help", {})
                     assert "unlimited" not in str(help_result)
-                assert not (root / "policy" / "first" / "forbidden.start").exists()
+                    targeted = await session.call_tool('help', {'policy_id': 'first', 'command': 'unlimited'})
+                    assert not targeted.is_error and 'unlimited' in str(targeted.structured_content)
         asyncio.run(scenario())
+        assert (root / "policy" / "first" / "forbidden.start").exists()
     finally:
         service.close()
 

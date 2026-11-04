@@ -1,6 +1,7 @@
 """Tick-driven manual motion. Called exclusively by the RC control thread."""
 from collections import deque
 import copy
+import json
 import math
 import time
 
@@ -13,13 +14,14 @@ from .safety import ARMS, interpolate_pose, rotation_gap
 from .direct_config import DEFAULTS, control_settings
 
 class DirectMotion:
-    def __init__(self, config, frequency_hz, operations, send, robot):
+    def __init__(self, config, frequency_hz, operations, send, robot, *, emit=None):
         self.config = control_settings(config)
         self.hz, self.operations, self.send, self.robot = frequency_hz, operations, send, robot
         self.pending = deque()
         self.active = None
         self.batches = {}
         self.targets = {}
+        self.emit = emit
 
     def enqueue(self, identity, steps, clear_queue=False):
         if not steps or any(not isinstance(step, Step) or not step.arms for step in steps):
@@ -117,6 +119,12 @@ class DirectMotion:
                        "deadline": time.monotonic() + self.config["step_timeout_s"], "phase": "interpolating",
                        "boundary": {}, "settled": {arm: 0 for arm in goals}}
         self.operations.update(identity, "running")
+        if self.emit is not None:
+            batch = self.batches[identity]
+            self.emit('MCP motion step: ' + json.dumps({
+                'operation_id': identity, 'step': batch['completed_steps'] + 1, 'steps': batch['steps'],
+                'command': step.text, 'targets': goals, 'speeds': speeds,
+            }, ensure_ascii=False), 'trace')
 
     def _error(self, target, sample):
         goal, measured = np.asarray(target["values"]), np.asarray(sample[target["mode"]])

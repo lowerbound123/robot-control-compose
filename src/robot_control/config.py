@@ -255,10 +255,10 @@ class PolicyRegistry:
         sources = {source: self.snapshot(source) for source in dict.fromkeys(record.config["policies"])}
         return self.resolve_chain(record, overrides, sources=sources)
 
-    def save_chain(self, identities):
+    def save_chain(self, identities, *, guard=None):
         record = self.propose_chain(identities)
         path = policy_config_path(record.directory)
-        save_yaml_config(path, record.config)
+        save_yaml_config(path, record.config, guard=guard)
         return path
 
     def commit(self, identity: str, config: dict) -> PolicyRecord:

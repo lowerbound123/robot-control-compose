@@ -10,7 +10,9 @@ record status
 record off
 ```
 
-录制以独立的 30 Hz 时钟读取机器人缓存，和控制循环频率、policy 推理频率、终端相机预览刷新频率分开。暂停、MCP 接管、没有活动 policy 时仍可采样。录制命令本身不会恢复运动、复位机器人、切换策略或改变控制归属。录制开关只接受本地命令；MCP 即使已经接管控制权，也不能执行 `record on/off`，只能从已有 `status` 的 `recording` 字段读取状态。
+录制以独立的 30 Hz 时钟读取机器人缓存，和控制循环频率、policy 推理频率、终端相机预览刷新频率分开。暂停、MCP 接管、没有活动 policy 时仍可采样。录制命令本身不会恢复运动、复位机器人、切换策略或改变控制归属。MCP 可调用 `record(action="on"|"off"|"toggle"|"status")`，也可通过 `command("record on/off/status")` 或裸 `command("record")` 操作；录制是默认只读规则的明确例外，无需先 take，在策略生命周期忙碌时仍可使用，不取消 `return_and_wait` 任务。
+
+`record` 工具默认查询状态，不新增操作回执。写操作默认 `wait=false`、`timeout_s=30`，通过 `operation_id` 查询结果；`off` 的 `succeeded` 表示已接收数据完成落盘。等待超时和客户端断连只结束等待，不取消开始/停止操作。重复 `on/off` 沿用现有幂等行为，`toggle` 按录制服务队列顺序执行，不自动重试。
 
 路径位于配置的 `outputs_directory/logs/`，通常是项目的 `outputs/logs/`。每次开始录制都创建一个新的 `record_日期_时间_唯一标识/`，不会覆盖前一段。日期按 UTC+8 命名，JSONL 和 CSV 保留墙钟及单调时钟的数值时间。完整路径以 `record status` 的 `path` 为准。
 

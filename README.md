@@ -75,6 +75,8 @@ RC 持有 Docker daemon 管理权限，用于管理同一 daemon 下的兄弟容
 
 ## MCP 等待 policy 结果
 
+MCP 的链列表应用/保存、录制、策略命令与定向帮助见 [MCP 管理与控制](docs/mcp.md)。录制开关无需接管；其余新增写操作先 `take`，完成后保留 MCP 控制权并暂停 policy。
+
 当前 policy 或链成员使用 SDK 0.10 的 `runtime.finish()` 后，MCP 可以等待任务结果：
 
 ```text
@@ -91,6 +93,8 @@ mcp get_policy_result <operation_id>
 原有 `return(wait=true)` 仍只等待交接完成。新增能力使用前同步升级 RC 和使用回调的 policy 镜像；本轮没有为 `llm_direction` 或其他业务策略自动加入完成判断。回调规则见 [策略作者规范](docs/policy-authoring.md#任务完成与终止)。
 
 ## 文档与验证
+
+可选的 [Vue WebUI 三路监控](docs/webui.md) 通过独立 Nginx 容器接入现有 RC：支持三路 640×480 MJPEG、复位和浏览器直连兼容 API 的自然语言常用控制。使用 `compose.webui.yaml` 启用，运行时配置不进入镜像。
 
 日常 RC 回归只需 `python3 scripts/test_scope.py`：用 mock 双臂、真实 worker 及两个独立的 example 链成员覆盖公共能力，不需要业务模型。改某个策略时加 `--policy <来源名>`；改了 RC 与策略之间的公共接口时用 `--interface` 运行完整套件。操作示例见 [example 使用说明](policy/example/README.md)，范围判定见 [验证文档](docs/verification.md#按改动选择测试)。
 

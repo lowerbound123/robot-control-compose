@@ -47,3 +47,9 @@ ros_ws/log/
 /policy/llm_failure/**/*.yml
 !/policy/llm_direction/compose.yaml
 !/policy/llm_failure/compose.yaml
+
+# WebUI local credentials and build/test outputs
+/webui/config.json
+**/node_modules/
+/webui/test-results/
+/webui/playwright-report/
