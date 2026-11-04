@@ -8,7 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 QWEN = {"qwen35_single", "qwen35_twostage"}
 LLM = {"llm_direction", "llm_failure"}
-POLICIES = {"example", "hold", "pi05"} | QWEN | LLM
+POLICIES = {"example", "hold", "pi05", "internvla_maas"} | QWEN | LLM
 
 
 def suite(policies, interface):
@@ -26,6 +26,8 @@ def suite(policies, interface):
         paths.add("tests/test_end_to_end.py::test_real_hold_example_consumes_absolute_targets")
     if "pi05" in policies:
         add("test_pi05_*.py")
+    if "internvla_maas" in policies:
+        add("test_internvla_maas_*.py")
     if QWEN <= policies:
         add("test_qwen35_*.py")
     elif policies & QWEN:
@@ -68,6 +70,8 @@ def main():
             packages.add("qwen35-policy")
         if "pi05" in policies:
             packages.add("pi05-policy")
+        if "internvla_maas" in policies:
+            packages.add("internvla-maas-policy")
         if policies & LLM:
             packages.add("llm-provider-config")
             packages.update(p.replace("_", "-") + "-policy" for p in policies & LLM)

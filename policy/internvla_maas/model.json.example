@@ -1,0 +1,26 @@
+{
+  "service": {
+    "address": "",
+    "model": "internvla_a15",
+    "robot_id": "",
+    "api_key": "",
+    "embodiment": "",
+    "connect_timeout_s": 30,
+    "close_timeout_s": 2
+  },
+  "runtime": {
+    "instruction": "Move the object into the tray."
+  },
+  "observations": {
+    "state_offsets": {}
+  },
+  "execution": {
+    "chunk_size": 50,
+    "request_when_remaining": 30,
+    "inference_timeout_s": 60,
+    "expected_control_hz": 30
+  },
+  "actions": {
+    "gripper_compensation": true
+  }
+}

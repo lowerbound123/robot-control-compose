@@ -7,7 +7,7 @@
 | 改动 | 命令 | 验证范围 |
 | --- | --- | --- |
 | RC 内部、TUI、录制等改动，策略看到的契约不变；或只改 example | `python3 scripts/test_scope.py` | 运行完整 example 基线；具体模块改动另补对应 RC 单测。链只启动两个 example，其他业务策略不参与。 |
-| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage；可同时列多个来源。 |
+| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage、internvla_maas；可同时列多个来源。 |
 | 两个策略共用的实现或依赖变化 | 例如 `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage` | 单选 Qwen 测该入口、部署和 worker；两个都选时再加共享配置、调度、后端和 CUDA 用例。变更 llm-provider-config 时选 llm_direction 和 llm_failure。 |
 | RC↔policy/SDK 公共契约改变 | `python3 scripts/test_scope.py --interface` | 整个 pytest 套件，含 RC、SDK、example、业务策略和跨策略对照；按所需环境追加 Docker/模型兼容性验证。 |
 
@@ -48,6 +48,18 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 2026-11-03 最终验证：宿主 Python 3.11 完整 `--interface` 为 **1362 passed / 18 skipped / 13 个既有 Pillow 弃用告警**；Humble/Python 3.10 的新管理用例与真实 ROS 模拟器为 **17 passed**；真实 Docker 的 **7 组检查通过**，RC 使用 Python 3.10.12，example 使用 Python 3.14.9。源代码通过 Python 3.10 语法检查。未调用真实模型供应商、GPU 模型或机器人硬件，跳过不计通过。
 
 证据：`/private/tmp/rc-mcp-management-interface-final.log`、`/private/tmp/rc-mcp-management-linux-final.log`、`/private/tmp/rc-mcp-management-docker-final/{result.json,cleanup.json}`。最终资源复核另存 `/private/tmp/rc-mcp-management-cleanup-final.json`。
+
+## InternVLA MaaS 网络策略（2026-11-04）
+
+实现与配置见 [网络策略说明](internvla-maas-policy.md)。本轮没有修改 RC↔SDK 公共契约，也没有修改 Qwen 实现；服务地址、身份和凭据由用户提供。
+
+- 最终 `python3 scripts/test_scope.py --policy internvla_maas`：**127 passed、1 skipped**，33.01 秒。覆盖 example 基线及配置、msgpack-numpy 安全解码、真实 WebSocket、异步补块、夹爪开关、取消/故障、部署发现与真实 host/worker 冷切换。宿主缺少 ROS 的跳过不计通过。
+- Python 3.11.17 / Linux 策略测试镜像：**71 passed**，0.70 秒；单独 Humble / Python 3.10 example ROS 仿真：**1 passed**，2.80 秒。
+- 新策略隔离 Docker：**4 组检查通过**，RC Python 3.10 → policy Python 3.11，实际动态容器、共享图像、MaaS 二进制请求、冷切换、stop 故障与手动恢复，RC 退出码 0。临时容器、卷和网络已清空。
+- example / example 自链隔离 Docker：**7 组检查通过**，包含实例隔离、重初始化/重载/重试、HTTP MCP 和录制；既有 lost-create 故障注入产生的强制清理被正确记录为 RC 退出码 1，验收脚本退出 0，清理检查通过。
+- 依赖、构建工具和测试依赖均有固定版本及哈希锁。标准镜像 `robot-control-compose-internvla-maas:local` 构建成功；源码语法与 `git diff --check` 通过。自审补齐空 userinfo 地址拒绝、float32 溢出和缺失可选依赖时的测试收集。
+
+证据：`/private/tmp/rc-internvla-maas-scope-final.log`、`/private/tmp/rc-internvla-maas-linux-final.log`、`/private/tmp/rc-internvla-maas-ros.log`，以及 `/private/tmp/rc-internvla-maas-docker/` 和 `/private/tmp/rc-internvla-maas-example-docker/` 内的结果与清理 JSON。本轮为单智能体实施与自审；Docker 环境是本机 OrbStack Linux/arm64。真实 MaaS 服务、目标部署平台和机器人硬件尚未验收，未调用附件中的地址或凭据。
 
 ## 历史验收
 

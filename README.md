@@ -103,6 +103,7 @@ mcp get_policy_result <operation_id>
 - [策略作者规范](docs/policy-authoring.md)
 - [Python 3.14 本地范例策略](policy/example/README.md)
 - [Qwen 策略](docs/qwen35-policy.md)
+- [InternVLA MaaS 网络策略](docs/internvla-maas-policy.md)：独立 Python 3.11 轻量容器，复用 Qwen 单阶段动作处理，通过 WebSocket 获取 action chunk。
 - [LLM 离散动作策略](docs/llm-direction-policy.md)
 - [LLM 异步失败检测策略](docs/llm-failure-policy.md)：原样透传动作，每 60 个实际执行步用当前与历史图像检查失败，通过 MCP 等待回执返回。
 - [策略监控](docs/policy-monitor.md)
