@@ -192,6 +192,13 @@ def set_chunk_size(context, size):
     return {"params.chunk_size": _chunk_size(size)}
 
 
+def set_message(context, message):
+    """返回热补丁；由 RC/SDK 确认后更新原配置引用。"""
+    if not isinstance(message, str):
+        raise ValueError('message must be a string')
+    return {'params.message': message}
+
+
 def reinitialize(context):
     """保留当前配置，在本进程创建新 context。"""
     return {}

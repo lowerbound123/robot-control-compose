@@ -77,3 +77,64 @@ def test_qwen_entry_runs_and_reloads_with_real_worker(qwen_controller):
     assert controller.registry.get(directory.name).config['params']['model_config_path'] == str(model)
     assert completed(controller, 'save-config policy')['status'] == 'succeeded'
     assert read_config(directory / 'policy.yaml')['params']['model_config_path'] == str(model)
+
+
+@pytest.mark.parametrize('task_command', ['set policy.params.task', 'switch-task'])
+def test_task_hot_update_keeps_worker_and_model_and_persists_override(qwen_controller, task_command):
+    controller, directory = qwen_controller
+    worker = controller._worker
+    runtime_id = worker.runtime_id
+    version = worker.config_version
+    model_config = (directory / 'model.json').read_text()
+    assert completed(controller, 'resume')['status'] == 'succeeded'
+    wait(lambda: controller.status()['consumed'] >= 23)
+    assert events(directory, 'predicted')[-1]['instruction'] == 'test only'
+
+    set_controls(directory, value=44)
+    assert completed(controller, f'{task_command} "把杯子放到托盘里"')['status'] == 'succeeded'
+    wait(lambda: any(row['instruction'] == '把杯子放到托盘里' for row in events(directory, 'predicted')))
+    wait(lambda: controller.robot.commands[-1][0] == 44)
+    assert controller.status()['state'] == 'running'
+    assert controller._worker is worker and worker.runtime_id == runtime_id
+    assert worker.config_version == version + 1
+    assert controller.registry.get(directory.name).version == version + 1
+    assert worker.config['params']['task'] == '把杯子放到托盘里'
+    assert completed(controller, 'save-config policy')['status'] == 'succeeded'
+    assert read_config(directory / 'policy.yaml')['params']['task'] == '把杯子放到托盘里'
+    assert (directory / 'model.json').read_text() == model_config
+
+    assert completed(controller, 'pause')['status'] == 'succeeded'
+    assert completed(controller, 'set policy.params.task null')['status'] == 'succeeded'
+    before = len(events(directory, 'predicted'))
+    assert completed(controller, 'resume')['status'] == 'succeeded'
+    wait(lambda: len(events(directory, 'predicted')) > before)
+    assert events(directory, 'predicted')[-1]['instruction'] == 'test only'
+    assert controller._worker is worker and worker.config_version == version + 2
+    rows = events(directory)
+    assert len({row['pid'] for row in rows}) == 1
+    assert len(events(directory, 'load')) == len(events(directory, 'warmup')) == 1
+    assert not events(directory, 'close')
+
+
+def test_switch_task_targets_only_the_selected_repeated_qwen_instance(qwen_controller):
+    controller, directory = qwen_controller
+    source = directory.name
+    chain_path = directory.parent / 'qwen_test_chain/policy.yaml'
+    manifest = read_config(chain_path)
+    manifest['policies'] = [source, source]
+    chain_path.write_text(json.dumps(manifest))
+    assert completed(controller, 'switch qwen_test_chain')['status'] == 'succeeded'
+    group = controller._worker
+    workers = group.member_workers()
+    first, target = workers[source + '-0'], workers[source + '-1']
+    versions = (group.config_version, first.config_version, target.config_version)
+    assert completed(controller, 'switch-task ambiguous')['status'] == 'failed'
+    assert completed(controller, f'policy {source}-1 switch-task "selected task"')['status'] == 'succeeded'
+    assert controller._worker is group and group.member_workers() == workers
+    assert first.config['params']['task'] is None
+    assert target.config['params']['task'] == 'selected task'
+    assert (group.config_version, first.config_version, target.config_version) == (
+        versions[0] + 1, versions[1], versions[2] + 1)
+    assert completed(controller, f'policy {source}-1 switch-task " "')['status'] == 'failed'
+    assert target.runnable and target.config['params']['task'] == 'selected task'
+    assert controller.status()['state'] == 'paused'

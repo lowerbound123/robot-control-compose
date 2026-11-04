@@ -10,6 +10,7 @@ BUILTIN_COMMANDS = (
     "camera", "monitor", "manage-policy", "snapshot", "policy", "record", "retry-reload",
 )
 RELOAD_EFFECTS = ("reload_policy", "reload_all_policy", "reinitialize_policy")
+COMMAND_EFFECTS = (*RELOAD_EFFECTS, "update_config")
 _TYPES = {"str": "", "int": 0, "float": 0., "bool": False}
 
 
@@ -45,8 +46,8 @@ def command_specs(config):
         help_text = entry.get("help", "")
         if not isinstance(help_text, str):
             raise ValueError(f"{name}: help must be a string")
-        if "effect" in entry and entry["effect"] not in RELOAD_EFFECTS:
-            raise ValueError(f"{name}: expected one of {RELOAD_EFFECTS} for effect")
+        if "effect" in entry and entry["effect"] not in COMMAND_EFFECTS:
+            raise ValueError(f"{name}: expected one of {COMMAND_EFFECTS} for effect")
         result[name] = {"handler": handler, "args": list(args), "help": help_text, "timeout_s": timeout}
         if "effect" in entry:
             result[name]["effect"] = entry["effect"]

@@ -4,6 +4,20 @@ WebUI 使用的 `status` 额外返回本次 RC 的 `run_id`。`take`、`return`�
 
 服务默认提供 Streamable HTTP `/mcp`。本地 TUI/headless 的 `mcp <工具> <JSON>` 使用同一组注册工具。`help mcp` 查看完整参数；MCP `help()` 查看 RC 帮助。
 
+## 人工文本批次
+
+`tui_command(text, wait=false, timeout_s=30, expected_control=None)` 是供人工 WebUI 使用的入口，按本地 TUI 的 RC/policy 命令语义执行，默认无需 `take`。**建议 Agent 不要使用此入口，应使用原有结构化工具及 take 流程。** 工具不会自动 take/return，也不会改变控制归属；TUI 自身的控制权冲突与生命周期检查仍适用。其他 MCP 工具的权限和调度不变。
+
+`text` 每个非空行是一条命令，LF/CRLF 均可，保留引号和 JSON 参数；不执行 shell，不按分号拆分，不支持跨行 JSON。单批最多 4000 字符、64 条命令，最多 32 个未结束批次。整批预检拒绝递归 `mcp ...`、本地面板及 `snapshot`、非法引号和敏感配置写入。`exit/quit` 只允许末行。策略与实例在每行执行时解析，所以可以先 switch 再调用新实例的命令。
+
+```json
+{"text":"set example.params.message \"人工输入\"\npolicy example example","wait":false}
+```
+
+文本批次按 FIFO 执行，逐行等待成功回执；失败或取消停止本批剩余行，不回滚完成的操作，之后继续下一批。真实本地 TUI/headless 的每次非空提交（含查询及本地面板输入）清除当前批次未开始的行和所有等待批次；已开始的行按原生命周期收尾。批次内部使用 TUI 语义不会触发此打断规则。
+
+父 `operation_id` 可通过 `get_operation` 查询；`result.kind="tui_batch"`，`steps` 包含原行号、命令、子操作 ID、状态及结果，`completed/total` 表示进度。`cancel_tui_command(operation_id)` 幂等停止指定批次后续行，不影响其他批次。活动批次等待当前已执行行收尾后才进入终态。超时或断连只停止等待，不取消、不重发；`expected_control` 只在整批受理时核对，后续行遵守执行时的 RC 状态。末行退出的结果以实际统一清理结果为准。
+
 ## 策略发现与命令
 
 `policy_commands(policy_id=None)` 返回 `policies` 列表及无效目录的 `errors`；每项包含 `source_id`、`instance_id`、`loaded`、`runnable` 和 `commands`。命令列出名称、可用实例别名、参数类型、说明、执行时限、effect 及 `requires_take`。已加载实例使用当前配置快照；未加载来源从 manifest 查询，不导入模型。查询重复来源返回各实例，执行时必须明确一个实例。`help(policy_id="example", command="reinitialize")` 可进一步筛选命令。

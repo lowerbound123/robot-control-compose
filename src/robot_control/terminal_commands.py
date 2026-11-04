@@ -102,6 +102,8 @@ class TerminalCommandRouter:
         return "\n".join(rows)
 
     def submit(self, line: str):
+        if line.strip() and hasattr(self.controller, 'interrupt_tui_batches'):
+            self.controller.interrupt_tui_batches()
         reject_secret_edit(line)
         words = line.split()
         if words and words[0] == "snapshot":

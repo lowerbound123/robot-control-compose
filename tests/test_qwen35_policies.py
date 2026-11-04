@@ -50,6 +50,44 @@ def test_independent_entries_bind_workflow_and_use_registered_reload(identity, w
     assert [name for name, _ in backend.events].count('close') == 1
 
 
+@pytest.mark.parametrize('identity,workflow', [('qwen35_single', 'single'), ('qwen35_twostage', 'two_stage')])
+def test_entry_uses_task_override_from_original_manifest(identity, workflow, model_config, monkeypatch):
+    directory = ROOT / 'policy' / identity
+    spec = importlib.util.spec_from_file_location(identity, directory / 'main.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = read_config(template_path(directory / 'policy.yaml'))
+    config['params']['task'] = 'initial task'
+    path, value = model_config
+    value['model']['workflow'] = workflow
+    path.write_text(json.dumps(value))
+    config['params']['model_config_path'] = str(path)
+    from rc_qwen35_policy.runtime import AsyncQwenPolicy
+    backend = Model()
+    monkeypatch.setattr(module, 'AsyncQwenPolicy', lambda value, **kwargs: AsyncQwenPolicy(value, backend=backend, **kwargs))
+    context = module.initialize(config, runtime=metadata(0))
+    try:
+        chunk = module.policy(context, {'qpos': [0] * 14}, [], images(), config, runtime=metadata(0))
+        assert backend.calls[-1][2] == 'initial task'
+        from rc_policy_sdk.configuration import apply_patch
+        from rc_policy_sdk.commands import command_specs, resolve_handlers
+        specs = command_specs(config)
+        assert specs['switch-task']['effect'] == 'update_config'
+        handler = resolve_handlers(module, specs)['switch-task']
+        patch = handler(context, 'updated task')
+        assert patch == {'params.task': 'updated task'}
+        assert config['params']['task'] == 'initial task'  # Only the RC/SDK transaction commits.
+        for invalid in ('', ' \n\t'):
+            with pytest.raises(ValueError, match='task'):
+                handler(context, invalid)
+        apply_patch(config, patch)
+        module.policy(context, {'qpos': [0] * 14}, chunk[1:], images(), config, runtime=metadata(1))
+        assert backend.calls[-1][2] == 'updated task'
+        assert [name for name, _ in backend.events].count('load') == 1
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize('identity', ['qwen35_single', 'qwen35_twostage'])
 def test_entry_discovery_does_not_import_model_framework(tmp_path, identity):
     from robot_control.config import PolicyRegistry

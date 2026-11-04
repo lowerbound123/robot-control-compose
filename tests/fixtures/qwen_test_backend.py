@@ -26,8 +26,8 @@ class Backend:
         with (self.root / 'events.jsonl').open('a') as stream:
             stream.write(json.dumps(row) + '\n')
 
-    def gate(self, phase):
-        self.record(phase)
+    def gate(self, phase, **details):
+        self.record(phase, **details)
         while self.controls().get('block_' + phase):
             time.sleep(.01)
 
@@ -40,7 +40,7 @@ class Backend:
     def predict(self, qpos, images, instruction):
         controls = self.controls()
         self.calls += 1
-        self.gate('infer')
+        self.gate('infer', instruction=instruction)
         if controls.get('crash_infer'):
             os._exit(71)
         assert qpos.shape == (14,) and qpos.flags.owndata
@@ -51,7 +51,7 @@ class Backend:
             assert frame.flags.owndata and frame.flags.writeable
             assert frame.dtype == np.uint8 and frame.ndim == 3
             assert np.all(frame == index), (name, frame[0, 0].tolist())
-        self.record('predicted', pixels={k: int(v.sum()) for k, v in images.items()})
+        self.record('predicted', instruction=instruction, pixels={k: int(v.sum()) for k, v in images.items()})
         actions = np.full((50, 14), controls['value'], np.float32)
         actions[:, [6, 13]] = -3
         return actions

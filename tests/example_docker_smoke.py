@@ -202,6 +202,20 @@ def in_container():
             assert snapshot["calls"] > 0 and snapshot["instance"] == instance
             assert command(f"{instance}-example")["image_count"] == 3
         assert all(abs(value - .125) < 1e-6 for value in controller.robot.read_state()["qpos"])
+        hot_before = member_ids()
+        hot_contexts = {i: command(f'{i}-example')['context_id'] for i in hot_before}
+        with patch.object(controller.runtime, 'runner', side_effect=AssertionError('hot command called Docker')):
+            command('policy example-1 set-message "registered hot command"')
+        hot_after = member_ids()
+        assert hot_after['example-0'] == hot_before['example-0']
+        assert hot_after['example-1'] == {**hot_before['example-1'],
+            'version': hot_before['example-1']['version'] + 1}
+        for instance in hot_before:
+            snapshot = command(f'{instance}-example')
+            assert snapshot['context_id'] == hot_contexts[instance]
+            assert snapshot['message'] == ('registered hot command' if instance == 'example-1' else 'example')
+        assert controller.status()['state'] == 'running'
+        report['hot_command'] = {'before': hot_before, 'after': hot_after, 'contexts': hot_contexts}
         report["checks"].append("two occurrences of example use distinct containers and keep upstream targets")
 
         command("pause")

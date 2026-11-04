@@ -7,6 +7,7 @@ services:
     user: "${RC_UID}:${RC_GID}"
     depends_on:
       robot-control: {condition: service_started}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     environment:
       ROBOT_CONTROL_MCP_TOKEN: ${ROBOT_CONTROL_MCP_TOKEN:-}
     ports:
@@ -14,7 +15,7 @@ services:
     volumes:
       - type: bind
         source: ./webui/config.json
-        target: /usr/share/nginx/html/config.json
+        target: /run/robot-control-webui/config.json
         read_only: true
         bind: {create_host_path: false}
     read_only: true

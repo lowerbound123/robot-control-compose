@@ -98,6 +98,8 @@ def main():
             from host_helpers import LocalPolicyProcess
             controller = RobotController(path, robot=robot, process_factory=LocalPolicyProcess)
         service = MCPService(controller, {'host': args.host, 'port': args.port})
+        batch_gate, batch_held = threading.Event(), threading.Event()
+        batch_gate.set()
 
         def command(line):
             result = controller.wait_operation(controller.submit(line), 15)
@@ -116,8 +118,9 @@ def main():
                 try: self.wfile.write(raw)
                 except (BrokenPipeError, ConnectionResetError): pass
             def do_OPTIONS(self):
-                self.send_response(403 if self.path == '/no-cors' else 204)
-                if self.path != '/no-cors':
+                model_path = self.path in ('/no-cors', '/v1/chat/completions')
+                self.send_response(403 if model_path else 204)
+                if not model_path:
                     self.send_header('Access-Control-Allow-Origin', '*')
                     self.send_header('Access-Control-Allow-Headers', 'content-type, authorization')
                     self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
@@ -126,6 +129,8 @@ def main():
                 if self.path == '/health': self.reply({'ready': True})
                 elif self.path == '/test/requests': self.reply(requests)
                 elif self.path == '/test/clock': self.reply({'camera_wall_epoch': robot._camera_wall_epoch, 'now': time.time()})
+                elif self.path == '/test/batch-state':
+                    self.reply({'held': batch_held.is_set(), 'config': controller.query('show policy')})
                 else: self.reply({'error': 'not found'}, 404)
             def do_POST(self):
                 length = int(self.headers.get('Content-Length', 0))
@@ -133,18 +138,53 @@ def main():
                 if self.path == '/test/pause':
                     self.reply(command('pause'))
                     return
+                if self.path == '/test/batch-hold':
+                    batch_gate.clear()
+                    batch_held.clear()
+                    worker = controller._worker
+                    update = worker.update_config
+                    def delayed(*args, **kwargs):
+                        batch_held.set()
+                        try:
+                            if not batch_gate.wait(10):
+                                raise RuntimeError('test batch gate timed out')
+                            return update(*args, **kwargs)
+                        finally:
+                            worker.update_config = update
+                    worker.update_config = delayed
+                    self.reply({'ready': True})
+                    return
+                if self.path == '/test/batch-release':
+                    batch_gate.set()
+                    self.reply({'ready': True})
+                    return
                 if self.path == '/test/reset':
+                    batch_gate.set()
                     for line in ('record off', 'pause', 'switch example', 'return', 'pause'):
                         command(line)
                     requests.clear()
                     self.reply(controller.status())
                     return
                 text = body.get('messages', [{}])[-1].get('content', '')
-                requests.append({'text': text, 'model': body.get('model')})
+                auth_valid = self.headers.get('Authorization') == 'Bearer local-test-only'
+                requests.append({'text': text, 'model': body.get('model'), 'auth_valid': auth_valid,
+                                 'origin': self.headers.get('Origin'), 'cookie': self.headers.get('Cookie'),
+                                 'host': self.headers.get('Host'), 'path': self.path})
+                if not auth_valid or '认证错误' in text:
+                    self.reply({'error': 'local-test-only private-upstream'}, 401, cors=False)
+                    return
+                if '其他错误' in text:
+                    self.reply({'error': 'local-test-only private-upstream'}, 418, cors=False)
+                    return
+                if '重定向' in text:
+                    self.send_response(302)
+                    self.send_header('Location', 'https://private-upstream.invalid/local-test-only')
+                    self.end_headers()
+                    return
                 if '慢' in text: time.sleep(.5)
                 if '超时' in text: time.sleep(2)
                 if 'HTTP错误' in text:
-                    self.reply({'error': 'fixture'}, 500)
+                    self.reply({'error': 'local-test-only private-upstream'}, 500, cors=False)
                     return
                 if '非法' in text: steps = [{'action': 'reset'}, {'action': 'quit'}]
                 elif '未知策略' in text: steps = [{'action': 'switch', 'policy': 'not-installed'}]
@@ -155,7 +195,7 @@ def main():
                 elif '继续' in text: steps = [{'action': 'resume'}]
                 else: steps = [{'action': 'status'}]
                 content = 'bad json' if '坏JSON' in text else json.dumps({'message': text, 'steps': steps}, ensure_ascii=False)
-                self.reply({'choices': [{'message': {'content': content}}]}, cors=self.path != '/no-cors')
+                self.reply({'choices': [{'message': {'content': content}}]}, cors=False)
 
         api = ThreadingHTTPServer((args.host, args.api_port), Handler)
         api.daemon_threads = True

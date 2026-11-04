@@ -94,7 +94,7 @@ mcp get_policy_result <operation_id>
 
 ## 文档与验证
 
-可选的 [Vue WebUI 三路监控](docs/webui.md) 通过独立 Nginx 容器接入现有 RC：支持三路 640×480 MJPEG、复位和浏览器直连兼容 API 的自然语言常用控制。使用 `compose.webui.yaml` 启用，运行时配置不进入镜像。
+可选的 [Vue WebUI 三路监控](docs/webui.md) 通过独立 Nginx 容器接入现有 RC：支持三路 640×480 MJPEG、复位和同源 AI 代理的自然语言常用控制。设置 `llm: false` 可按行提交 TUI 命令批次，无需 AI 配置。API 地址与 Key 保存在服务端私有配置，兼容不支持 CORS 的接口。使用 `compose.webui.yaml` 启用，运行时配置不进入镜像。
 
 日常 RC 回归只需 `python3 scripts/test_scope.py`：用 mock 双臂、真实 worker 及两个独立的 example 链成员覆盖公共能力，不需要业务模型。改某个策略时加 `--policy <来源名>`；改了 RC 与策略之间的公共接口时用 `--interface` 运行完整套件。操作示例见 [example 使用说明](policy/example/README.md)，范围判定见 [验证文档](docs/verification.md#按改动选择测试)。
 

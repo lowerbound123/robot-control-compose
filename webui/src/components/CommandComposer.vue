@@ -33,18 +33,19 @@ function keydown(event: KeyboardEvent) {
         <Button v-if="control.uncertain" variant="outline" size="sm" :disabled="control.busy" @click="control.acknowledgeUnknown">已在 RC 核对，解除锁定</Button>
       </div>
       <form class="composer" @submit.prevent="submit">
-        <Textarea v-model="input" aria-label="自然语言指令" placeholder="输入指令，例如「开始录制」或「复位」"
+        <Textarea v-model="input" :aria-label="control.directMode ? '命令输入' : '自然语言指令'"
+          :placeholder="control.directMode ? '每行一条 TUI 命令，例如 status 或 pause' : '输入指令，例如「开始录制」或「复位」'"
           :maxlength="4000" rows="1" class="command-input" @keydown="keydown" />
         <Button v-if="control.busy" type="button" size="icon" class="send-button" aria-label="停止后续步骤" title="停止等待与后续步骤，已受理操作以 RC 回执为准" @click="control.cancel">
           <FontAwesomeIcon :icon="faStop" />
         </Button>
-        <Button v-else type="submit" size="icon" class="send-button" aria-label="发送指令" :disabled="!input.trim() || !control.connected || !control.apiReady">
+        <Button v-else type="submit" size="icon" class="send-button" aria-label="发送指令" :disabled="!input.trim() || !control.connected || !control.inputReady">
           <FontAwesomeIcon :icon="faArrowUp" />
         </Button>
       </form>
       <div class="composer-hint">
         <span>Enter 发送 <span class="hint-divider">·</span> Shift + Enter 换行</span>
-        <span :title="control.configError">{{ control.apiReady ? '自然语言控制' : 'AI 未配置' }}</span>
+        <span :title="control.configError">{{ control.directMode ? '命令输入 · 每行一条 TUI 命令' : control.apiReady ? '自然语言控制' : 'AI 未配置' }}</span>
       </div>
       <p v-if="control.configError" class="config-note">{{ control.configError }}</p>
     </div>

@@ -17,6 +17,7 @@ import threading
 import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.parse import urlsplit, parse_qs
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'scripts'), str(ROOT / 'tests'), str(ROOT / 'src'), str(ROOT / 'packages/policy-sdk/src')]
@@ -69,7 +70,10 @@ def main():
         with (root / '.env').open('a') as stream:
             stream.write('\nRC_MCP_PORT=0\nRC_WEBUI_PORT=0\nROBOT_CONTROL_MCP_TOKEN=webui-smoke-token\n')
         web_config = root / 'webui/config.json'
-        web_config.write_text(json.dumps({'endpoint': '', 'model': '', 'api_key': '', 'timeout_s': 3}))
+        # This file is mounted outside the web root and read only at startup.
+        web_config.write_text(json.dumps({'endpoint': 'http://robot-control:18766/no-cors?literal=$host', 'model': 'local-fixture',
+                                         'api_key': 'local-test-only', 'timeout_s': 3}))
+        web_config.chmod(0o600)
         override = {'services': {
             'robot-control': {
                 'image': os.environ.get('RC_TEST_RC_IMAGE', 'robot-control-compose-rc:local'),
@@ -93,8 +97,6 @@ def main():
             return value['NetworkSettings']['Ports'][f'{inner}/tcp'][0]['HostPort']
         url = 'http://127.0.0.1:' + port(web_id, 8080)
         api = 'http://127.0.0.1:' + port(rc_id, 18766)
-        web_config.write_text(json.dumps({'endpoint': api + '/v1/chat/completions', 'model': 'local-fixture',
-                                         'api_key': 'local-test-only', 'timeout_s': 3}))
         deadline = time.monotonic() + 45
         while True:
             try:
@@ -106,6 +108,38 @@ def main():
             time.sleep(.1)
         for path in ('/monitor', '/config.json', '/preview/status'):
             with urlopen(url + path, timeout=3) as response: assert response.status == 200
+        with urlopen(url + '/config.json', timeout=3) as response:
+            assert json.load(response) == {'llm': True, 'enabled': True, 'model': 'local-fixture', 'timeout_s': 3}
+        with urlopen(Request(url + '/ai/chat/completions?endpoint=http://ignored.invalid',
+                data=json.dumps({'model': 'local-fixture', 'messages': [{'role': 'user', 'content': '查询状态'}]}).encode(),
+                headers={'Content-Type': 'application/json', 'Authorization': 'Bearer browser-untrusted', 'Origin': url}), timeout=5) as response:
+            assert 'choices' in json.load(response)
+        with urlopen(api + '/test/requests', timeout=3) as response:
+            observed = json.load(response)[-1]
+        assert observed['auth_valid'] and observed['origin'] is None and observed['cookie'] is None
+        assert urlsplit(observed['path']).path == '/no-cors'
+        assert parse_qs(urlsplit(observed['path']).query) == {'literal': ['$host']}
+        for method, headers, status in (
+            ('GET', {}, 405),
+            ('POST', {'Content-Type': 'text/plain'}, 415),
+            ('POST', {'Content-Type': 'application/json', 'Origin': 'https://untrusted.invalid'}, 403),
+        ):
+            try:
+                urlopen(Request(url + '/ai/chat/completions', data=b'{}' if method == 'POST' else None,
+                                method=method, headers=headers), timeout=3)
+                raise AssertionError('AI proxy accepted an invalid request')
+            except HTTPError as exc:
+                assert exc.code == status
+                assert 'local-test-only' not in exc.read().decode()
+        for message, status in [('认证错误', 401), ('其他错误', 418)]:
+            try:
+                urlopen(Request(url + '/ai/chat/completions',
+                    data=json.dumps({'messages': [{'content': message}]}).encode(),
+                    headers={'Content-Type': 'application/json'}), timeout=3)
+                raise AssertionError('AI proxy accepted provider failure')
+            except HTTPError as exc:
+                assert exc.code == status
+                assert 'local-test-only' not in exc.read().decode()
         try:
             urlopen(Request(url + '/health', headers={'Host': 'untrusted.invalid'}), timeout=3)
             raise AssertionError('WebUI proxy accepted an untrusted Host')
@@ -114,12 +148,15 @@ def main():
         inspected = json.loads(subprocess.check_output(['docker', 'inspect', web_id], text=True))[0]
         assert inspected['HostConfig']['ReadonlyRootfs']
         assert inspected['HostConfig']['IpcMode'] != 'host'
-        assert all('docker.sock' not in x['Destination'] and '/run/robot-control' not in x['Destination'] for x in inspected['Mounts'])
+        assert all('docker.sock' not in x['Destination'] and x['Destination'] != '/run/robot-control'
+                   and not x['Destination'].startswith('/run/robot-control/') for x in inspected['Mounts'])
+        assert any(x['Destination'] == '/run/robot-control-webui/config.json' and not x['RW'] for x in inspected['Mounts'])
         subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'sh', args.image,
                         '-c', 'test ! -e /usr/share/nginx/html/config.json && ! command -v node'], check=True, timeout=30)
         state = {'pid': os.getpid(), 'project': context['base_project'], 'deployment_id': context['deployment_id'],
                  'root': str(root), 'url': url, 'api': api, 'rc_container': rc_id, 'web_container': web_id,
-                 'checks': ['production overlay', 'non-root read-only Nginx', 'runtime config', 'MCP token proxy', 'SPA route', 'no Node/key in runtime image']}
+                 'checks': ['production overlay', 'non-root read-only Nginx', 'sanitized public config', 'private config outside webroot',
+                            'no-CORS AI proxy with server-owned Authorization', 'MCP token proxy', 'SPA route', 'no Node/key in runtime image']}
         (evidence / 'state.json').write_text(json.dumps(state, indent=2))
         ready = True
         print(json.dumps(state), flush=True)

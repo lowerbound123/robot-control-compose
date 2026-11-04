@@ -11,7 +11,7 @@ def initialize(config, *, runtime):
     validate_config(config)
     model_config = load_model_config(config['params']['model_config_path'],
                                      workflow='single', project_root=POLICY_ROOT)
-    return AsyncQwenPolicy(model_config, project_root=POLICY_ROOT)
+    return AsyncQwenPolicy(model_config, policy_config=config, project_root=POLICY_ROOT)
 
 
 def policy(context, state, action_chunk, images, config, *, runtime):
@@ -20,6 +20,10 @@ def policy(context, state, action_chunk, images, config, *, runtime):
 
 def switch_model(context, config_path):
     return context.switch_model(config_path)
+
+
+def switch_task(context, task):
+    return context.switch_task(task)
 
 
 def validate_config(config):

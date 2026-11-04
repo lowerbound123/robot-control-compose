@@ -235,6 +235,16 @@ class ChainProcess:
             self.reloading_member = None
             self._condition.notify_all()
 
+    def commit_hot_config(self, record, member, worker):
+        """Install an acknowledged member patch without replacing any context."""
+        with self._condition:
+            self._check_ready()
+            if (self._request is not None or self._workers.get(member.instance_id) is not worker
+                    or record.version != self.config_version + 1 or worker.config_version != member.version):
+                raise RuntimeError('stale member hot configuration')
+            self.record, self.config_version = record, record.version
+            self._condition.notify_all()
+
     @staticmethod
     def _identity(request):
         return {key: request[key] for key in ('request_id', 'generation', 'config_version')}

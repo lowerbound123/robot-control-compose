@@ -1,14 +1,15 @@
 # WebUI 三路监控
 
-可选 Vue 静态前端，由独立 Nginx 容器提供。RC 负责三路 MJPEG 和现有 MCP；浏览器直接访问配置的 OpenAI 兼容 Chat Completions API。没有新增 Python/Node 业务后端，不读取 policy 共享内存，也不挂载 Docker socket。
+可选 Vue 静态前端，由独立 Nginx 容器提供。RC 负责三路 MJPEG 和现有 MCP；`llm=true` 时浏览器请求同源 `/ai/chat/completions`，Nginx 使用服务端配置访问 OpenAI 兼容 Chat Completions API；`llm=false` 时按行提交 TUI 文本命令批次。上游不需要支持 CORS。生产环境没有新增 Python/Node 业务后端，不读取 policy 共享内存，也不挂载 Docker socket。
 
 ## 准备与启动
 
-先按项目流程准备 RC、anchor 和所需策略镜像。若 RC 已运行，更新源码后先用项目 down 入口完成动态策略收尾，再启动新版 RC，使预览与控制代次校验生效。
+先按项目流程准备 RC、anchor 和所需策略镜像。本次 AI 代理更新可只重建并重新创建 WebUI 服务；若同时升级 RC 或 SDK，仍按项目流程完成旧运行组收尾。
 
 ```sh
 # 只创建缺失的本地配置
-test -f webui/config.json || cp webui/config.json.example webui/config.json
+test -f webui/config.json || install -m 600 webui/config.json.example webui/config.json
+chmod 600 webui/config.json
 ./scripts/compose.sh -f compose.webui.yaml build webui
 ./scripts/compose.sh -f compose.webui.yaml up -d
 
@@ -22,24 +23,56 @@ test -f webui/config.json || cp webui/config.json.example webui/config.json
 
 ## API 配置
 
-编辑忽略的 `webui/config.json`：
+编辑忽略的服务端私有文件 `webui/config.json`，字段与旧版本一致：
 
 ```json
 {
-  "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+  "llm": true,
+  "endpoint": "http://host.docker.internal:8000/v1/chat/completions",
   "model": "your-model",
   "api_key": "",
   "timeout_s": 30
 }
 ```
 
-`endpoint` 是完整请求地址，不自动追加路径；`localhost` 指浏览器所在主机。`timeout_s` 大于 0 且不超过 120。修改后刷新页面，无需重新构建；若编辑器原子替换文件使 Docker 文件挂载仍指向旧 inode，重新创建 WebUI 容器。
+`endpoint` 是完整 HTTP(S) 请求地址，不自动追加路径，允许路径前缀和查询参数，不允许用户名、密码、fragment、控制字符或反斜线。非 ASCII 路径/参数使用 URL 百分号编码；Nginx 代理会把其中的字面 `$` 编码为 `%24`，避免变量展开。`localhost` 现在指 **WebUI 容器自身**；宿主服务使用已配置的 `host.docker.internal`，远端服务填写容器可达地址。`timeout_s` 大于 0 且不超过 120。空 Key 可用于无需鉴权的本地服务，非空 Key 按标准 Bearer token 字符校验。
 
-配置经只读挂载提供并由浏览器读取，因此 API Key 在客户端可见，这是浏览器直连方案的预期边界；它不进入 Git、镜像、构建产物或应用日志。兼容 API 必须允许页面来源的 CORS 请求及 `Content-Type`／`Authorization` 头。空 Key 可用于无需鉴权的本地服务。
+私有文件只读挂载到 `/run/robot-control-webui/config.json`，位于网页目录之外。固定基础镜像自带的 njs 仅在容器启动时运行一次，校验配置并生成权限为 0600 的 Nginx 代理配置。浏览器读取的 `/config.json` 是另外生成的公共元数据，只有 `llm`、`enabled`、`model`、`timeout_s`，不包含真实 endpoint 或 Key。Key 不进入 Git、镜像、前端构建产物或浏览器请求头。
 
-API 未配置时三路监控和复位可用，AI 发送不可用。网络、跨域、鉴权或响应错误显示原因，不提交控制操作。
+修改私有文件后重新创建 WebUI 容器，再刷新页面；仅修改配置不需要 build：
+
+```sh
+./scripts/compose.sh -f compose.webui.yaml up -d --no-deps --force-recreate webui
+```
+
+从旧版升级时先 `build webui` 再执行上述命令，让新前端、代理路由和非网页目录挂载一起生效。原文件可以继续使用，但原先指向浏览器本机的 `127.0.0.1` 地址需要按容器网络调整。不要把上游地址填成 WebUI 自己的 `/ai/chat/completions`，这会造成代理循环。
+
+浏览器只向当前页面来源发送 JSON POST，不携带 AI Key；Nginx 只转发到服务端配置的固定上游，独立设置 AI 的 Host 和 Authorization，不接受请求参数改写目标。跨来源请求、非 POST 或非 JSON 请求被拒绝。HTTPS 上游启用 SNI 与系统 CA 证书校验；请求不自动重试，上游 3xx 响应按 502 处理。认证、限流及其他接口错误使用本地通用错误内容，保留 HTTP 状态，避免回显凭据或私有地址。
+
+endpoint/model 留空时三路监控和复位仍可用，AI 发送不可用。私有配置缺失或格式非法会阻止 WebUI 启动，诊断不输出配置值。网络、鉴权、超时或响应错误不提交控制操作。
 
 RC 的 `ROBOT_CONTROL_MCP_TOKEN` 独立于 AI Key，由 Nginx 转发时添加，不出现在浏览器配置中。代理接受标准 Bearer token 字符；无效配置会让 WebUI 启动失败且不输出 token。
+
+## 直接命令模式
+
+`llm` 省略时默认为 `true`，保持自然语言流程。需要直接输入 TUI 命令时，私有配置可以只写：
+
+```json
+{"llm": false}
+```
+
+页面显示“命令输入”，每行一条命令，Enter 发送整批、Shift+Enter 换行。例如：
+
+```text
+set example.params.message "人工输入"
+policy example example
+```
+
+此模式不需要 API 配置，也不调用 LLM；服务端同时关闭 `/ai/chat/completions` 转发。浏览器原文调用 MCP `tui_command`，无需先 take；命令语法、控制权冲突及生命周期行为与本地 TUI 相同。可以输入 set、switch 和已注册的策略命令，策略解析在各行执行时进行。递归 MCP、终端面板和 snapshot 保持不支持。
+
+批次 FIFO 排队，逐行等待完成；某行失败则停止本批剩余行。真实本地 TUI 的非空提交（包括查询）清除当前批次后续行和排队批次，当前已执行行按原规则收尾。“停止”只停止本批后续行，不回滚已完成操作。刷新不取消服务端批次，可用“查询原回执”查看结果，不会重新提交；受理响应丢失时必须先在 RC 核对。
+
+首次启用需升级并按统一清理流程重启 RC，使其提供新增 MCP 工具，然后构建并重新创建 WebUI。旧 RC 不支持时页面会提示升级，不回退执行。后续只修改 `llm` 等 WebUI 配置无需重启 RC。完整批次限制、回执字段见 [MCP 人工文本批次](mcp.md#人工文本批次)。
 
 ## 自然语言操作
 
@@ -81,9 +114,13 @@ npm test
 npm run build
 ```
 
-shadcn-vue 组件由官方 CLI 2.9.0 生成并保存在源码中。后续可用 `npx shadcn-vue@2.9.0 add <组件>` 添加，再将默认图标替换为 Font Awesome。生成 CLI 不作为常驻依赖，运行镜像只包含 Nginx 和静态产物。
+Vite 开发服务使用相同配置校验和公共元数据，通过 Node 自带 fetch 在开发机端代理 AI。开发模式的 endpoint 应对开发机可达；可用 `RC_WEBUI_CONFIG_PATH=/绝对路径/config.json` 指定单独的私有配置。私有文件受 Vite 文件访问拒绝规则保护，`/@fs` 和 raw 导入不能读取该配置。开发模式修改配置后刷新页面即可，生产环境则按上文重新创建 WebUI 容器。
 
-激活项目 Python 测试环境后执行 `npm run test:e2e`，自动启动本机 18765/18766 的 mock RC、真实 example worker、本地兼容 API 替身，以及 5173 的 Vite；已启动时复用。`RC_WEBUI_E2E_URL` 与 `RC_WEBUI_TEST_API` 可指向专用 Docker 夹具。测试会修改 mock 状态，不得指向真机。
+shadcn-vue 组件由官方 CLI 2.9.0 生成并保存在源码中。后续可用 `npx shadcn-vue@2.9.0 add <组件>` 添加，再将默认图标替换为 Font Awesome。生成 CLI 不作为常驻依赖，运行镜像沿用固定 Nginx 镜像自带的 njs，仅启动时生成配置。
+
+激活项目 Python 测试环境后执行 `npm run test:e2e`，自动启动本机 18765/18766 的 mock RC、真实 example worker、明确拒绝 CORS 的兼容 API 替身，以及 5173 的 Vite。测试为 Vite 生成临时私有配置，不使用开发者的真实接口或凭据，不复用未知 Vite 服务。`RC_WEBUI_E2E_URL` 与 `RC_WEBUI_TEST_API` 可指向专用 Docker 夹具；浏览器追踪和截图写入临时目录，可用 `RC_WEBUI_E2E_ARTIFACTS` 指定。测试会修改 mock 状态，不得指向真机。
+
+`RC_WEBUI_TEST_IMAGE=<已构建镜像> python3 -m pytest -q tests/test_webui_proxy_config.py` 在实际 njs/Nginx 中验证启动生成、配置权限、URL 转义、非法 JSON 和错误脱敏；未指定镜像时明确跳过。
 
 `tests/webui_docker_smoke.py` 使用生产 overlay 创建临时项目，支持真实动态 example 容器；SIGTERM 后按项目 down 清理。`webui/tests/preview-benchmark.mjs` 识别该夹具的像素帧序号，统计浏览器实际新帧、延迟和资源趋势，不能直接用于无标记真机图像。
 

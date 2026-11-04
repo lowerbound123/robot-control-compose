@@ -98,6 +98,10 @@ RC 与 worker 通过 `runtime_tools` 协商 finish 能力。未协商时调用�
 
 ## 命令
 
+配置命令支持 `set <实例ID>.<字段路径> <JSON值>`，例如 `set example.params.message "新消息"` 或 `set example-1.params.message "新消息"`。唯一来源直接用策略名，重复来源用 `-0/-1/...`；歧义来源、未运行实例和不存在的字段都会拒绝。链中仅允许白名单热字段，其他成员的配置与版本保持不变；冷参数使用已有实例重载命令。单策略具名 `set` 保留原冷/热处理，旧 `set policy.*` 写法继续可用；`rc.*` 和 `global.*` 保留原义。
+
+具名编辑在受理时绑定运行组、配置版本和动作代次，暂停、接管或替换实例后不会把旧排队编辑应用到新实例；热更新提交复用注册热配置命令的双端确认和代次检查。保存仍使用 `save-config policy <实例ID>`。
+
 ```yaml
 tui_commands:
   set-gain:
@@ -111,6 +115,8 @@ tui_commands:
 在 main.py 声明 handler，业务验证由策略完成。使用 `help example` 查看静态声明，即使尚未运行也可以查看；执行 `policy example set-gain 0.5` 需要该实例已运行。链内同名裸命令不再覆盖前一个成员，使用显式目标或 `<instance_id>-<command>`。重复实例分别注册命令，例如 `policy a-0 set-gain 0.5`、`a-1-set-gain 0.8`，原名 a 不会指向其中某个实例。声明的命令同时向 MCP 开放：`policy_commands(policy_id=...)` 和 `help(policy_id=..., command=...)` 只读查询参数、时限、effect 与运行状态，不导入模型；重复来源查询展开全部实例。
 
 MCP 执行必须先 `take`，再调用 `policy_command(instance_id=..., command=..., args=[...])`；参数保留 JSON 原生 str/int/float/bool 类型，布尔值不能作为整数，字符串不自动转为数字。`command("policy <实例> <命令> ...")` 与已注册且无歧义的命令别名也受支持，沿用本地字符串参数解析。工具 `timeout_s` 仅限制回执等待，handler 执行时限仍来自 manifest。等待超时或断连不取消已受理命令。普通命令不自动恢复推理，三种生命周期 effect 完成后继续由 MCP 持有控制权，显式 `return` 或 `return_and_wait` 才恢复 policy。
+
+`effect: update_config` 提交热配置补丁。handler 只验证并返回已有 `params.*` 白名单叶字段的非空补丁，不直接修改 context 或配置。RC 使用现有 SDK `update_config` 事务，在双端确认后更新目标配置及逻辑链版本；配置对象、context、模型、进程和容器保持不变。TUI 调用保留原运行/暂停状态，MCP 调用仍需先 take，完成后保持 MCP 控制权和 policy 暂停。链中必须解析为明确实例，其他成员的配置与版本不变；`example-1-set-message "新消息"` 展示该用法。命令回包与 ACK 提交都复核 worker、配置版本、控制权及动作代次；未确认或失效的提交沿用热更新故障清理，不自动重试。该 effect 通过 `tui_command_effects_v2` 双端协商，需同步更新 RC/SDK。
 
 `effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停，`resume` 仍重置上下文。Docker 生命周期由 RC 管理。
 

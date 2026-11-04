@@ -14,5 +14,6 @@ if [ -n "${ROBOT_CONTROL_MCP_TOKEN:-}" ]; then
 fi
 export RC_MCP_AUTHORIZATION
 umask 077
+njs -m /etc/nginx/webui/render-config.mjs
 envsubst '${RC_MCP_AUTHORIZATION}' < /etc/nginx/rc.conf.template > /tmp/rc-nginx.conf
 exec nginx -c /tmp/rc-nginx.conf -g 'daemon off;'

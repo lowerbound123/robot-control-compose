@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from rc_policy_sdk.commands import RELOAD_EFFECTS, check_command_effects, command_specs, validate_arguments
+from rc_policy_sdk.commands import COMMAND_EFFECTS, check_command_effects, command_specs, validate_arguments
 from rc_policy_sdk.configuration import apply_patch, prepare_patch
 from rc_policy_sdk.control import RUNTIME_TOOLS, control_requests, runtime_tools
 from rc_policy_sdk.wire import encode_message
@@ -181,7 +181,7 @@ class PolicyProcess(MonitorClient):
                     session_id=self.session_id, policy_id=self.config['id'],
                     timeouts=dict(initialize=self.init_timeout_s,inference=self.inference_timeout_s,release=self.release_timeout_s),
                     event=dict(type='initialize',config=self.config,config_version=self.config_version,
-                               tui_command_effects_v2=list(RELOAD_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
+                               tui_command_effects_v2=list(COMMAND_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
                                global_state=global_descriptor, **({"context_id": self.context_id} if self._reinitialize_enabled else {})))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
@@ -435,6 +435,9 @@ class PolicyProcess(MonitorClient):
                             if response["type"] == "error":
                                 raise RuntimeError(response["error"])
                             if kind == "update_config":
+                                if (type(response.get('config_version')) is not int
+                                        or response['config_version'] != extras['config_version']):
+                                    raise RuntimeError('hot config acknowledgement version mismatch')
                                 apply_patch(self.config, extras["patch"])
                                 self.config_version = extras["config_version"]
                             self._commands_blocked = False

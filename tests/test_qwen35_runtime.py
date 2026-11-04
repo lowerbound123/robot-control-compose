@@ -3,6 +3,7 @@ import importlib
 from pathlib import Path
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
@@ -212,3 +213,87 @@ def test_release_idempotent_and_stops_new_predictions(running):
     policy.close()
     assert [event for event, _ in model.events].count('close') == 1
     with pytest.raises(RuntimeError): step(policy, [], 0)
+
+
+def test_hot_task_drains_old_prediction_and_replaces_cached_actions_without_loading():
+    from rc_policy_sdk.configuration import apply_patch
+
+    config = {'params': {'task': None}, 'hot_reloadable': ['params.task']}
+    params = config['params']
+    model = Model()
+    policy = implementation()(settings(), backend=model, policy_config=config)
+    try:
+        chunk = step(policy, [], 0)
+        model.started.clear()
+        model.gate.clear()
+        chunk = step(policy, chunk[21:], 21)
+        assert model.started.wait(1)
+        apply_patch(config, {'params.task': 'new task'})
+        assert config['params'] is params
+        entered = threading.Event()
+        def next_step():
+            entered.set()
+            return step(policy, chunk[1:], 22)
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            future = caller.submit(next_step)
+            try:
+                assert entered.wait(1)
+                with pytest.raises(TimeoutError):
+                    future.result(.03)
+                assert not any(event == 'reset' for event, _ in model.events)
+            finally:
+                model.output[:] = 7
+                model.gate.set()
+            result = future.result(2)
+        assert [call[2] for call in model.calls] == ['task', 'task', 'new task']
+        assert result.shape == (50, 14)
+        np.testing.assert_array_equal(result[:, 0], 7)  # No blend with old-task zeros.
+        assert [event for event, _ in model.events].count('reset') == 1
+        assert [event for event, _ in model.events].count('load') == 1
+        assert [event for event, _ in model.events].count('warmup') == 1
+        assert not any(event == 'close' for event, _ in model.events)
+        assert len({thread for _, thread in model.events}) == 1
+
+        apply_patch(config, {'params.task': None})
+        step(policy, result[1:], 23)
+        assert model.calls[-1][2] == 'task'
+        assert [event for event, _ in model.events].count('reset') == 2
+    finally:
+        model.gate.set()
+        policy.close()
+
+
+def test_same_effective_task_preserves_pending_prediction_and_cached_actions():
+    from rc_policy_sdk.configuration import apply_patch
+
+    config = {'params': {'task': 'task'}, 'hot_reloadable': ['params.task']}
+    model = Model()
+    policy = implementation()(settings(), backend=model, policy_config=config)
+    try:
+        chunk = step(policy, [], 0)
+        chunk = step(policy, chunk[21:], 21)
+        policy.pending.result(1)
+        for task in ('task', None):
+            apply_patch(config, {'params.task': task})
+            chunk = step(policy, chunk, 21)
+        assert len(model.calls) == 2
+        assert not any(event == 'reset' for event, _ in model.events)
+        assert chunk.shape == (50, 14)
+    finally:
+        policy.close()
+
+
+def test_task_update_cannot_clear_a_latched_inference_failure():
+    config = {'params': {'task': None}}
+    model = Model()
+    policy = implementation()(settings(), backend=model, policy_config=config)
+    try:
+        model.error = RuntimeError('model failed')
+        with pytest.raises(RuntimeError, match='model failed'):
+            step(policy, [], 0)
+        config['params']['task'] = 'another task'
+        with pytest.raises(RuntimeError, match='model failed'):
+            step(policy, [], 0)
+        assert not any(event == 'reset' for event, _ in model.events)
+    finally:
+        policy.close()

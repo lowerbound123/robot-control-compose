@@ -99,6 +99,8 @@ def result(payload, images=(), *, error=False):
 def create_server(controller):
     server = MCPServer("robot-control", version="0.3.0", instructions=(
         "Read-only until take, except recording on/off/toggle never requires takeover or changes motion/ownership. "
+        "The human-only tui_command text-batch escape hatch uses local TUI semantics without take. "
+        "Agents should not use tui_command or cancel_tui_command; use the structured tools and take instead. "
         "take pauses new policy inference and retains its model. "
         "return cancels manual motions, resets policy context from fresh feedback and resumes policy. "
         "return_and_wait resumes policy and awaits runtime.finish; its timeout or disconnection does not cancel the episode. "
@@ -271,6 +273,40 @@ def create_server(controller):
                       expected_control: ControlGuard | None = None) -> CallToolResult:
         """Execute RC/policy commands. Queries and recording need no take; other writes require take. UI commands stay local."""
         return await submit(line, wait, timeout_s, expected_control)
+
+    @server.tool(annotations=write)
+    async def tui_command(text: StrictStr, wait: bool = False, timeout_s: Timeout = 30,
+                          expected_control: ControlGuard | None = None) -> CallToolResult:
+        """Human WebUI text input only. Agents should not use this tool; use structured tools and take instead.
+
+        Execute newline-separated RC/policy commands with local TUI semantics, without take.
+        Text batches are FIFO; real local TUI input cancels their unstarted commands.
+        No recursive mcp calls, local panels or snapshots. A failed line stops its batch.
+        Timeout/disconnection only stops waiting. Query get_operation or explicitly cancel_tui_command.
+        """
+        try:
+            identity = await asyncio.to_thread(controller.submit_tui_batch, text,
+                expected_control=expected_control.model_dump() if expected_control is not None else None)
+            # An exit anywhere at the end of a batch may close the HTTP listener.
+            if text.strip().splitlines()[-1].strip() in ('exit', 'quit'):
+                return result({'operation_id': identity, 'status': 'accepted'})
+            return await finish_operation(identity, wait, timeout_s)
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            return rejected('tui_command', exc)
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                           idempotent_hint=True, open_world_hint=False))
+    async def cancel_tui_command(operation_id: StrictStr) -> CallToolResult:
+        """Human text-batch cancellation. Agents should not use this tool; prefer structured controls.
+
+        Idempotently stop only this batch's unstarted lines. An already-started command finishes
+        under its existing lifecycle; poll get_operation until the parent is terminal.
+        """
+        try:
+            payload = await asyncio.to_thread(controller.cancel_tui_batch, operation_id)
+            return result({**payload, 'controller': controller.status()})
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            return rejected('cancel_tui_command', exc)
 
     async def manage(tool, method, *args, wait=False, timeout_s=30, **kwargs):
         try:

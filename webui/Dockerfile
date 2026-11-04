@@ -6,8 +6,10 @@ COPY . .
 RUN npm run build
 
 FROM nginx:stable-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
+RUN njs -v && test -r /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /app/dist/ /usr/share/nginx/html/
 COPY nginx.conf.template /etc/nginx/rc.conf.template
+COPY server-config.mjs render-config.mjs /etc/nginx/webui/
 COPY --chmod=755 entrypoint.sh /rc-entrypoint.sh
 EXPOSE 8080
 ENTRYPOINT ["/rc-entrypoint.sh"]

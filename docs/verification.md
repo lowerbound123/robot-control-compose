@@ -61,6 +61,43 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 证据：`/private/tmp/rc-internvla-maas-scope-final.log`、`/private/tmp/rc-internvla-maas-linux-final.log`、`/private/tmp/rc-internvla-maas-ros.log`，以及 `/private/tmp/rc-internvla-maas-docker/` 和 `/private/tmp/rc-internvla-maas-example-docker/` 内的结果与清理 JSON。本轮为单智能体实施与自审；Docker 环境是本机 OrbStack Linux/arm64。真实 MaaS 服务、目标部署平台和机器人硬件尚未验收，未调用附件中的地址或凭据。
 
+## 按运行实例名 set 配置（2026-11-04）
+
+`set <实例ID>.<字段路径> <JSON值>` 支持单策略与原生链。唯一来源直接用策略名，重复来源使用 `-0/-1/...`。链内按热字段白名单提交，只更新目标实例及逻辑链版本；其他实例的配置、context 与执行进程不变。受理时捕获运行组、版本与动作代次，避免排队编辑在暂停、接管或切换后落到新实例。单策略的 `set policy.*` 及冷配置路径保持兼容，链内冷参数沿用显式实例重载命令。
+
+按本次用户要求仅执行受影响范围，策略验证使用 example：
+
+- `python3 scripts/test_scope.py`：**76 passed、1 skipped**，53.25 秒。包括具名唯一/重复实例、精确更新、原配置引用与 context、JSON 字符串/null、保存、歧义与冷字段拒绝、控制代次、MCP 和迟到 ACK；缺少 ROS 的跳过不计通过。
+- RC 配置、链解析、控制器、命令解析、实例保存及客户端代次单测：**66 passed**，10.57 秒。该范围使用 example 或测试自带的轻量替身，不启动业务模型策略。
+- Python 3.10 语法检查 5 个文件及 `git diff --check` 通过。未运行全量接口、Qwen/其他业务策略套件，也未启动 Docker、模型或硬件。
+
+证据：`/private/tmp/rc-named-set-red.log`、`/private/tmp/rc-named-set-green.log`、`/private/tmp/rc-named-set-example-scope.log`、`/private/tmp/rc-named-set-rc-scope.log`。
+
+## 注册热配置命令与 Qwen switch-task（2026-11-04）
+
+两个 Qwen 注册 `switch-task <str>`，handler 返回 `params.task` 热补丁，RC 通过新增的协商命令 effect `update_config` 复用现有 SDK 热更新事务。example 的 `set-message` 展示相同公共契约。链内只修改明确目标实例，保留所有 context、进程和容器，目标及逻辑链版本递增；MCP 接管要求和控制代次复核保持有效。
+
+- 最终 `python3 scripts/test_scope.py --interface`：**1479 passed、27 skipped**，531.66 秒，13 条既有 Pillow 弃用告警。跳过项不计通过。覆盖注册、能力协商、热白名单、原配置引用、链实例隔离、保存、MCP 权限及暂停后迟到结果/ACK 不提交。
+- 自审发现原 `PolicyProcess` 热更新 ACK 未核验 `config_version`，新增缺失值、旧版本和字符串版本故障注入，先 3 项失败后修复；相关命令、Qwen worker、热更新与冷重载专项 **54 passed**。
+- Humble / Python 3.10 新命令、ACK 校验及 example ROS 仿真：**22 passed**，12.60 秒。
+- 真实 Docker 的两个 Qwen 通过 `switch-task` 更新任务并恢复默认任务，容器、host、runtime 和 PID 保持一致，测试后端 load/warmup 各一次，配置版本 1→3，RC 退出码 0。
+- example / example 自链的 **7 组 Docker 检查通过**，实际 RC Python 3.10 → example Python 3.14。注册热命令更新第二个实例时，第一实例版本维持 4，目标从 4 到 5，两者容器、host、PID、模块和 context 不变；命令期间禁止调用 Docker。既有 lost-create 故障注入正确保留 RC 强制清理退出码 1，验收脚本退出 0。
+
+证据：`/private/tmp/rc-switch-task-interface-final.log`、`/private/tmp/rc-switch-task-ack-green.log`、`/private/tmp/rc-switch-task-humble.log`，以及 `/private/tmp/rc-switch-task-docker/`、`/private/tmp/rc-switch-task-example-docker/` 的结果与清理 JSON。本轮单智能体实施和自审；测试部署及专用镜像标签已清理，保留其他任务使用的 Docker 引擎。未调用真实模型、供应商或机器人硬件。
+
+## Qwen 任务热更新第一阶段（2026-11-04）
+
+本节记录首次通过 `set policy.params.task` 接入热参数时的验证：两个 Qwen 复用既有白名单热补丁与配置版本确认，当时未改 RC/SDK 公共协议；后续注册命令的契约扩展见上一节。使用与旧配置迁移见 [Qwen 策略说明](qwen35-policy.md#任务文本热更新)。
+
+- `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage`：**109 passed、9 skipped**，36.12 秒。包含 example 基线、两个正式入口和真实 RC/host/worker、热补丁版本同步、保存与 null 回退；宿主缺少模型依赖和 ROS 的跳过不计通过。
+- Linux / Python 3.11.17 的 Qwen 配置、入口、调度、CPU 后端和 CUDA 回退套件：**67 passed、4 skipped**，11.99 秒。实际两阶段缓存测试确认任务变化后立即重新生成子任务、模型对象保持不变；4 项跳过均需要 NVIDIA CUDA 设备。
+- 独立 Humble / Python 3.10 example ROS 仿真：**1 passed**，3.14 秒。
+- 隔离 Docker 中分别运行两个 Qwen，RC Python 3.10 → policy Python 3.11。任务覆盖及 null 回退前后，容器 ID、host、runtime 和执行 PID 均保持一致，配置版本从 1 到 3，测试后端 load/warmup 各一次；更新期间拦截 Docker 调用，确认热更新路径不调用 Docker。RC 退出码 0，临时容器、卷和网络已清空。
+
+CPU 容器首次运行遗漏正式 Compose 所需的 Transformers 补丁挂载，导致 `test_load_warmup_uses_checkpoint_config_and_rejects_wrong_chunk` 和 3 个 `test_fallback_temporaries_stay_on_the_input_device` 参数用例失败；补齐只读挂载后的上述最终套件全部通过，无需修改厂商源码。
+
+证据：`/private/tmp/rc-qwen-task-scope.log`、`/private/tmp/rc-qwen-task-model-tests-final.log`、`/private/tmp/rc-qwen-task-ros.log`、`/private/tmp/rc-qwen-task-docker/{result.json,cleanup.json}`。本轮单智能体实施与自审；Docker 使用本机 OrbStack，模型推理由测试后端代替，未执行真实 GPU 模型或机器人硬件验收。
+
 ## 历史验收
 
 本文保留 2026-10-27 的历史验收记录；源码外置后的复现命令已更新，最新验收见下方“源码挂载验收”。
@@ -215,6 +252,37 @@ Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 poli
 首次 Linux 全套触发既有 MCP 测试的启动竞态：HTTP 服务已监听，但 policy 仍在 switch，提前 take 正常返回 `busy: switch`。通过延迟测试 worker 启动 0.2 秒稳定复现，仅修正测试为等待初始化完成；生产控制逻辑不变。相同延迟实验转绿，MCP 模块 7 项通过，随后完整 Linux 套件通过。
 
 证据目录：`/private/tmp/rc-failure-decisions-20261030/`，包括 `host-full.log`、`linux-verified.log`、`policy-linux-verified.log`、`incremental-sdk337.txt` 和 `mcp-delayed-start-red.txt` / `mcp-delayed-start-green.txt`。未调用真实收费 API，也未进行真机准确率验收。
+
+## WebUI 直接命令与文本批次（2026-11-04）
+
+新增 `llm=false` 直接模式和人工 MCP `tui_command/cancel_tui_command`。文本批次无需 take、FIFO 逐行执行；本地 TUI 的非空输入清除未开始的行和等待批次，当前已执行行沿用原生命周期。实现及使用见 [WebUI](webui.md#直接命令模式) 和 [MCP](mcp.md#人工文本批次)。
+
+按用户指定范围仅做定向验证，未运行 `test_scope.py`、`--interface`、整个 tests 目录或业务 policy 套件：
+
+- 新增批次、MCP、两个真实 example worker 场景，以及直接受影响的 TUI/控制代次/日志节点：**43 passed**，6.75 秒，`/private/tmp/rc-tui-targeted-backend-final.log`。
+- 六个相关前端测试文件：**43 passed**，`/private/tmp/rc-tui-web-unit-final.log`；类型检查和生产构建通过，`/private/tmp/rc-tui-web-build-final.log`。
+- 固定 Nginx/njs 的真实容器配置测试：**10 passed**，2.77 秒，`/private/tmp/rc-tui-nginx-green.log`。初次发现 njs 不支持对象展开，改用先验证字段再 Object.assign；依赖未新增。
+- Chromium 开发模式：四个直接模式加一个 LLM 兼容用例 **5 passed**，14.4 秒；新增提交前停止竞态 **1 passed**，4.4 秒。日志为 `/private/tmp/rc-tui-dev-browser.log` 和 `/private/tmp/rc-tui-dev-stop-before-submit.log`。
+- 生产 Nginx：LLM 同源代理兼容 **1 passed**，3.0 秒；读取真实 `{"llm":false}` 私有配置的五个直接模式用例 **5 passed**，11.8 秒。证明无需 API 配置、AI 路由返回 503、文本原文仅提交一次、无需 take、递归整批拒绝、停止保留当前行收尾、刷新不取消或重发。日志为 `/private/tmp/rc-tui-production-llm.log` 和 `/private/tmp/rc-tui-production-direct-verified.log`。
+- 同一隔离生产部署运行 mock RC 和动态 example 容器，8 组 Compose/HTTP 检查通过；状态、直接配置、统一清理证据在 `/private/tmp/rc-tui-production/`。截图在 `/private/tmp/rc-tui-production-direct-verified/`，已核对三路实时 mock 图像、命令模式和批次成功回执。
+
+额外修复经失败用例验证的边界：生命周期丢弃子命令后清除来源记录，已终态队列请求不再执行；TUI 清队列不撤销已经开始的 exit；敏感的非法本地输入仍清队列且不泄露；停止请求立即发出，不等待下一次回执轮询。
+
+环境记录：旧 RC 镜像缺少已锁定的 ruamel.yaml；直接构建请求 Docker Hub 元数据时返回 401，改为继承本地 RC 镜像并安装仓库完整 rc.lock，通过 pip check。随机宿主端口在测试容器重启后变化，重新发现端口后生产用例通过。失败启动和旧端口用例不计通过。没有真实模型、ROS 仿真或硬件验收，没有修改用户私有配置。
+
+## WebUI 同源 AI 代理（2026-11-04）
+
+真实 endpoint 与 Key 由 WebUI 服务端私有 JSON 提供，Nginx 代理固定 `/ai/chat/completions`；浏览器只读取 `enabled/model/timeout_s`。复用基础镜像自带 njs 生成启动配置，未增加生产 Node/Python 后端。迁移步骤见 [WebUI 配置](webui.md#api-配置)。
+
+- 前端、共享配置与真实 HTTP 开发代理：**35 passed**，类型检查和生产构建通过。覆盖无 CORS、服务端鉴权、固定目标、超时、重定向和错误内容脱敏。
+- 实际只读 Nginx/njs 镜像配置测试：**9 passed**，2.28 秒；检查非 root、0600 私有配置、公共 JSON、字面 URL、非法 JSON/配置不输出凭据。
+- Chromium 开发模式：**9 passed**，23.1 秒；最终生产 Nginx 模式：**9 passed**，29.9 秒。实测上游 OPTIONS 返回 403 且没有 CORS 许可，页面仍能经同源代理完成查询/录制/复位/策略切换。浏览器请求无 AI Authorization，公共配置无 endpoint/key；MCP、三路预览、移动布局和错误时不执行操作均通过。
+- 生产 Compose 另验证私有文件不在网页目录、独立 AI/MCP 鉴权、POST/JSON/Origin 约束、客户端 query 不能改写上游、字面 `$host` 不被展开、401 与 418 保留状态并隐藏错误内容。上游 URL 的字面 `$` 按 `%24` 发送；Nginx 内部 client-abort 499 不能配置为 error_page，配置生成显式排除它。
+- 项目默认 example 范围：**60 passed、1 skipped**，46.27 秒；宿主缺少 ROS 的跳过不计通过。本轮没有修改 RC/SDK 契约或调用真实模型、机器人硬件；并行 Qwen 工作的验证另见其记录。
+
+日志：`/private/tmp/rc-webui-ai-proxy-unit-final2.log`、`/private/tmp/rc-webui-ai-proxy-build-final2.log`、`/private/tmp/rc-webui-ai-proxy-nginx-final.log`、`/private/tmp/rc-webui-ai-proxy-dev-e2e-final.log`、`/private/tmp/rc-webui-ai-proxy-e2e-verified.log`、`/private/tmp/rc-webui-ai-proxy-example-scope.log`。隔离 Docker 与清理证据在 `/private/tmp/rc-webui-ai-proxy-docker-verified/`，标准镜像复核在 `/private/tmp/rc-webui-ai-proxy-delivery/`；浏览器截图单独保存在临时目录。实测环境为 macOS/OrbStack Linux arm64、Chromium，Browser 插件不可用，使用已有 Playwright。
+
+以下首版记录保留当时浏览器直连 API 的历史实现和性能证据；当前部署使用上述同源代理。
 
 ## Vue 三路 WebUI 首版（2026-11-04）
 

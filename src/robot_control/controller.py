@@ -37,18 +37,19 @@ from .global_state_control import GlobalStateControl
 from .recording_control import RecordingControl, RECORD_HELP
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from .operations import ControlRequest, Operations
+from .terminal_batches import TerminalBatches
 from .direct import DirectMotion
 from rc_policy_sdk.actions import normalize_actions
 from rc_policy_sdk.control import control_requests
 
 
 HELP = "\n".join([
-    "set rc.path <JSON> / set policy.path <JSON>；show rc|policy；save-config rc / save-config policy [instance-id] / save-config <instance-id>",
+    "set <实例ID>.path <JSON>（重复节点带 -0/-1；单策略兼容 policy.path）；set rc.path <JSON>；show rc|policy；save-config rc / save-config policy [instance-id] / save-config <instance-id>",
     "reset/r；save <名称>；load <名称或路径>；pause；resume",
     "policies；switch <id> [--reset]；retry-reload <实例ID>；status；help；exit/quit",
     "take：MCP 接管并暂停推理；return：交还并恢复 policy（接管时 resume 同义）",
     "MCP：policy_chain 提交链列表（apply/save）；policy_commands/help 定向查询；policy_command/retry_reload 指定实例；record 无需 take",
-    '示例：set policy.params.delay_s 0.2；set policy.execution.mode "async"',
+    '示例：set example-1.params.message "新任务"；set example.params.message "新任务"；set policy.execution.mode "async"',
     'show global [key]；set global.<key> <JSON>；unset global.<key>：共享状态，退出自动保存',
     RECORD_HELP,
 ])
@@ -141,6 +142,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._init_chain_editor()
         self._init_globals()
         self._init_recording()
+        self._tui_batches = TerminalBatches(self)
 
     def _emit_command(self, message, level="info", *, record_history=True):
         self._emit(message, level, source=LogSource.COMMAND, record_history=record_history)
@@ -157,7 +159,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             else:
                 payload.update({key: event[key] for key in ('error', 'reason') if key in event})
                 if tool in ('send_command', 'move_eef', 'move_joints', 'return_and_wait',
-                            'policy_command', 'policy_chain', 'record') and 'result' in event:
+                            'policy_command', 'policy_chain', 'record', 'tui_command') and 'result' in event:
                     payload['result'] = event['result']
             level = 'error' if status == 'failed' else 'warning' if status == 'cancelled' else 'info'
             self._emit_command(f'MCP {tool} {status}: ' + json.dumps(payload, ensure_ascii=False), level)
@@ -283,8 +285,19 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 or expected['generation'] != self.buffer.generation):
             raise PermissionError('control state changed; discard the stale client plan')
 
-    def submit(self, line: str, *, origin="tui", policy_arguments=None, mcp_tool=None, expected_control=None):
-        reject_secret_edit(line)
+    def submit_tui_batch(self, text, *, expected_control=None):
+        with self._lock:
+            return self._tui_batches.submit(text, expected_control)
+
+    def cancel_tui_batch(self, identity):
+        with self._lock:
+            return self._tui_batches.cancel(identity)
+
+    def interrupt_tui_batches(self):
+        with self._lock:
+            self._tui_batches.interrupt()
+
+    def submit(self, line: str, *, origin="tui", policy_arguments=None, mcp_tool=None, expected_control=None, batch_id=None):
         if self.done.is_set():
             if origin == "tui" and line.strip() in ("exit", "quit"):
                 return
@@ -295,6 +308,12 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         if not command:
             return
         with self._lock:
+            if batch_id is not None:
+                if origin != 'tui' or self._tui_batches.active != batch_id:
+                    raise ValueError('invalid text batch source')
+            elif origin == 'tui':
+                self._tui_batches.interrupt()
+            reject_secret_edit(line)
             self._check_expected_control(expected_control)
             try:
                 words = shlex.split(command)
@@ -345,10 +364,15 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     self._wake.set()
                     return identity
             try:
+                config_request = self._policy_set_request(identity, command, origin, expected_control)
+                if config_request is not None:
+                    self._commands.put(config_request)
+                    self._wake.set()
+                    return identity
                 save_request = self._policy_save_request(identity, command, words, origin)
             except Exception as exc:
                 self.operations.update(identity, 'failed', error=exc)
-                self._emit_command(f'保存失败：{exc}', 'error')
+                self._emit_command(f'配置操作失败：{exc}', 'error')
                 return identity
             if save_request is not None:
                 self._commands.put(save_request)
@@ -408,6 +432,13 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
 
     def _dispatch(self, request):
         identity = request.operation_id
+        if not self._tui_batches.claim_child(identity):
+            return
+        try:
+            if self.operations.get(identity)['status'] in ('succeeded', 'failed', 'cancelled'):
+                return
+        except ValueError:
+            return  # Only terminal receipts can have expired from the bounded history.
         policy_wait = request.origin == 'mcp' and request.policy_name is None and request.line == 'return_and_wait'
         try:
             self._check_expected_control(request.expected_control)
@@ -427,6 +458,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             self.operations.update(identity, "running")
             self._dispatch_id = identity
             self._dispatch_origin = request.origin
+            if request.config_edit is not None:
+                self._dispatch_policy_set(request)
+                return
             if request.retry_candidate is not None:
                 self._dispatch_reload_retry(request)
                 return
@@ -760,6 +794,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             job["worker"].reset_context(cancel_event=cancel)
             return {}
         if kind == "hot_patch":
+            if job.get('command_request') is not None:
+                return self._run_command_hot_patch(job)
             job["worker"].update_config(job["patch"], job["version"], cancel_event=cancel)
             return {"config": job["config"], "identity": job["identity"]}
         from .runtime_manager import BlockedInfrastructure
@@ -1033,7 +1069,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 emit(f"policy {self._identity} ready；等待 resume")
                 self._record_configuration()
             elif job["kind"] == "hot_patch":
-                self.registry.commit(result["identity"], result["config"])
+                if not job.get('committed'):
+                    self.registry.commit(result["identity"], result["config"])
+                self._restore_policy_commands(self._worker)
                 self._pending_config = None
                 emit("policy 热配置已生效")
                 self._record_configuration()
@@ -1462,10 +1500,10 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         parts = line.split(maxsplit=2)
         if parts[0] == "set":
             if len(parts) != 3:
-                raise ValueError("用法：set policy.xxx.xxx <JSON值>")
+                raise ValueError("用法：set <实例ID>.<配置字段> <JSON值>（单策略兼容 policy.*）")
             scope, separator, path = parts[1].partition(".")
             if not separator:
-                raise ValueError("配置路径必须以 rc. 或 policy. 开头")
+                raise ValueError("配置路径必须以 <实例ID>.、rc. 或 policy. 开头")
             if scope == "rc":
                 dotted_get(self.config, path)
                 raise ValueError(f"rc.{path} 是冷参数，请编辑 RC YAML 配置后重启")
@@ -1474,7 +1512,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             value = json.loads(parts[2])
             record = self.registry.get(self._identity)
             if record.is_chain:
-                raise ValueError('链模式不能 set policy.*；请编辑成员原配置或使用其命令')
+                raise ValueError('链模式请指定实例：set <实例ID>.<配置字段> <JSON值>')
             config, hot = changed_config(record.config, path, value)
             self._pending_config = {"path": path, "value": value, "hot": hot}
             if hot:
@@ -1551,7 +1589,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         if self.runtime:
             self.runtime.release()
         self._state = "stopped"
-        self.operations.cancel_pending("controller stopped", exclude=self._exit_operations)
+        self.operations.cancel_pending("controller stopped", exclude=(*self._exit_operations, *self._tui_batches.batches))
         self._emit('控制与 policy 已退出；等待日志写入收尾')
         final_entry = {'event':'rc.exit', 'time':format_log_time(time.time()), 'level':'info',
             'exit_code':self.exit_code, 'exit_operations':list(self._exit_operations),
@@ -1563,6 +1601,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         # a full queue cannot immediately prune the final exit acknowledgement.
         for identity in self._exit_operations:
             self.operations.update(identity, "succeeded" if self.exit_code == 0 else "failed", result={"exit_code": self.exit_code})
+        self._tui_batches.finish_shutdown()
         self._emit("安全退出完成，退出码 0" if self.exit_code == 0 else f"退出完成，存在强制终止或清理错误，退出码 {self.exit_code}")
         self.done.set()
 
@@ -1575,6 +1614,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         while not self.done.is_set():
             with self._lock:
                 try:
+                    self._tui_batches.poll()
                     try:
                         urgent = self._urgent.get_nowait()
                     except queue.Empty:

@@ -29,6 +29,12 @@ export class McpGateway implements RcGateway {
     const client = await this.connection()
     if (expected && !expected.run_id) throw new ToolRejectedError('RC 缺少运行标识，请同步更新 RC 后再执行控制。')
     try {
+      if (name === 'tui_command' || name === 'cancel_tui_command') {
+        const catalog = await client.listTools()
+        if (!catalog.tools.some(tool => tool.name === name)) {
+          throw new ToolRejectedError('当前 RC 不支持文本命令批次，请升级并重启 RC。')
+        }
+      }
       const response = await client.callTool({ name, arguments: { ...args, ...(expected ? {
         expected_control: { run_id: expected.run_id, control_epoch: expected.control_epoch, generation: expected.generation },
       } : {}) } }, { timeout: 12_000 })

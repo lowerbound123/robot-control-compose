@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 import pytest
+from project_templates import template_path
 
 PACKAGE = Path(__file__).resolve().parents[1] / 'packages/qwen35-policy/src'
 sys.path.insert(0, str(PACKAGE))
@@ -146,3 +147,47 @@ def test_preflight_schema_choices_match_bundled_three_camera_dual_arm_layout(mon
             'images.rgb.hand_right': 'observation.images.image2',
         }
         assert schema.action_mask_spec == [6, -1, 6, -1]
+
+
+@pytest.mark.parametrize('identity', ['qwen35_single', 'qwen35_twostage'])
+def test_task_uses_existing_hot_patch_validation(identity):
+    from robot_control.config import changed_config
+    from rc_policy_sdk.configuration import apply_patch
+    from rc_qwen35_policy.configuration import validate_manifest
+
+    manifest = read_config(template_path(PACKAGE.parents[2] / 'policy' / identity / 'policy.yaml'))
+    candidate, hot = changed_config(manifest, 'params.task', '把杯子放到托盘里')
+    assert hot
+    validate_manifest(candidate)
+    params = manifest['params']
+    apply_patch(manifest, {'params.task': '把杯子放到托盘里'})
+    assert manifest['params'] is params
+    assert params['task'] == '把杯子放到托盘里'
+    candidate, hot = changed_config(manifest, 'params.task', None)
+    assert hot
+    validate_manifest(candidate)
+    assert candidate['params']['task'] is None
+    with pytest.raises(ValueError, match='not hot reloadable'):
+        apply_patch(manifest, {'params.model_config_path': 'other.json'})
+
+
+@pytest.mark.parametrize('task', ['', ' \n\t', 1, True, [], {}])
+def test_manifest_rejects_invalid_task_before_applying_patch(task):
+    from rc_qwen35_policy.configuration import validate_manifest
+
+    manifest = {'execution': {'mode': 'sync', 'call_every_actions': 1, 'control_mode': 'qpos'},
+                'params': {'model_config_path': 'model.json', 'task': task},
+                'hot_reloadable': ['params.task']}
+    with pytest.raises(ValueError, match='params.task'):
+        validate_manifest(manifest)
+
+
+def test_legacy_manifest_keeps_model_instruction_and_model_settings_stay_cold():
+    from rc_qwen35_policy.configuration import validate_manifest
+
+    manifest = {'execution': {'mode': 'sync', 'call_every_actions': 1, 'control_mode': 'qpos'},
+                'params': {'model_config_path': 'model.json'}, 'hot_reloadable': []}
+    validate_manifest(manifest)
+    manifest['hot_reloadable'] = ['params.model_config_path']
+    with pytest.raises(ValueError):
+        validate_manifest(manifest)

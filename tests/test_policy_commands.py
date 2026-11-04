@@ -70,3 +70,13 @@ def test_handler_validation_and_zero_arguments():
     original = copy.deepcopy(value)
     command_specs(value)
     assert original == value
+
+
+def test_hot_config_command_requires_negotiated_effect():
+    from rc_policy_sdk.commands import command_specs, check_command_effects
+    specs = command_specs({'tui_commands': {'change': {
+        'handler': 'change', 'args': ['str'], 'effect': 'update_config'}}})
+    assert specs['change']['effect'] == 'update_config'
+    with pytest.raises(ValueError, match='update_config'):
+        check_command_effects(specs, {'tui_command_effects_v2': ['reload_policy', 'reinitialize_policy']})
+    check_command_effects(specs, {'tui_command_effects_v2': ['update_config']})

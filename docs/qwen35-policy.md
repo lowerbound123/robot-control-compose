@@ -40,7 +40,7 @@ resume
 switch qwen35_twostage
 ```
 
-模型路径相对本策略目录；目标必须在现有 mounts 内可见。switch-model 的业务验证由 Qwen handler 完成，RC 只处理通用冷参数补丁和容器事务。旧模型进程与容器全部退出后才创建新容器；失败后停在空策略，不自动回滚或加载 hold。
+模型路径相对本策略目录；目标必须在现有 mounts 内可见。switch-model 的业务验证由 Qwen handler 完成，RC 只处理通用冷参数补丁和容器事务。旧模型进程与容器全部退出后才创建新容器；失败后停在空策略，不自动回滚或加载 hold。若 `params.task` 有覆盖值，切换模型配置后仍沿用该值；设为 `null` 才使用新模型配置的默认任务。
 
 所有切换成功后暂停。默认 switch 保持当前位置；显式 `--reset` 才复位。链内两个 Qwen 都声明 switch-model，必须写目标，例如 `policy qwen35_twostage switch-model model_alt.json`。
 
@@ -49,6 +49,61 @@ switch qwen35_twostage
 ```
 
 查看动态容器可按 `.setup/runtime.json` 的 deployment_id 筛选 `io.robot-control.deployment` 标签。运行记录在 `outputs/runtime`，不要仅依靠基础 project 的 ps 列表判断是否全部退出。
+
+## 任务文本热更新
+
+两个策略均可使用具名 `set` 热更新 `params.task`，并保留注册命令 `switch-task <str>`。以单独运行 `qwen35_single` 为例，在 TUI 中执行：
+
+```text
+set qwen35_single.params.task "把杯子放到托盘里"
+show policy
+save-config policy
+```
+
+`params.task` 接受非空字符串，推理时映射为模型输入的 `task`。默认值为 `null`，表示使用初始化时从 `model.json` 读取的 `runtime.instruction`；`set qwen35_single.params.task null` 恢复该默认任务。链内同样支持 `null`，将前缀换为目标实例 ID 即可。空字符串、纯空白及其他类型会被拒绝。直接编辑 `model.json` 不会更新当前任务。
+
+热补丁在 SDK 和 RC 两端确认配置版本后生效，保留原配置对象、容器、host、执行进程和已加载模型。运行状态保持不变：运行中无需额外 `resume`，暂停中修改则等恢复后使用新任务。下一次策略回调发现有效任务文本变化时，会先等待后台旧推理结束并丢弃其结果，清空旧动作缓存与 twostage 的子任务 token 缓存，再以当前观测生成新动作；不会把旧任务动作混合进新任务动作。同一有效文本不会触发重置。已有推理故障仍遵循原故障处理规则，修改任务不能用于清除故障。
+
+`switch-task` 的 handler 只验证非空文本并返回热补丁；`effect: update_config` 由 RC 提交到指定实例，确认后递增配置版本。单策略仍可使用 `set policy.params.task "任务文本"`。`save-config policy` 将覆盖值写回当前策略的 `policy.yaml`，不改写 `model.json`。
+
+具名 `set` 的前缀是运行实例 ID，沿用容器对应的实例命名：来源在链中只出现一次时直接用策略名；重复时按出现顺序用 `-0`、`-1` 等后缀。重复来源的裸策略名会报歧义，不会自动选择某个节点。例如：
+
+```text
+set qwen35_single-0.params.task "抓取杯子"
+set qwen35_single-1.params.task "把杯子放到托盘里"
+set qwen35_twostage.params.task "整理桌面"
+set qwen35_single-1.params.task null
+save-config policy qwen35_single-1
+```
+
+链成员的具名 `set` 只修改 manifest 白名单中的热字段，冷参数仍使用该实例已注册的重载命令。单策略的 `set policy.*` 保持兼容。`switch-task` 也可按实例调用：
+
+```text
+policy qwen35_single switch-task "抓取杯子"
+policy qwen35_twostage switch-task "把杯子放到托盘里"
+save-config policy qwen35_twostage
+```
+
+每条命令仅更新目标实例与逻辑链的配置版本，其他实例的配置、context 和模型保持不变。MCP 需先 `take`，再调用 `policy_command(instance_id="qwen35_twostage", command="switch-task", args=["新任务"], wait=True)`；完成后仍由 MCP 持有控制权并保持 policy 暂停。
+
+已有本地 `policy.yaml` 不会被 setup 覆盖。升级时保留其他设置，在两个策略各自的清单中补充以下内容，并重新加载策略一次以启用新代码与白名单；后续任务更新均无需重载：
+
+```yaml
+params:
+  model_config_path: model.json
+  task: null
+hot_reloadable:
+  - params.task
+tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [str]
+    help: 热更新任务文本，保留容器和已加载模型
+    effect: update_config
+    timeout_s: 5
+```
+
+保留已有 `switch-model` 命令声明。注册热配置命令需要 RC 和 SDK 双端支持 `update_config` effect；旧端不支持时明确拒绝初始化，不会降级为普通命令或冷重载。模型、checkpoint、GPU、推理参数和 `params.model_config_path` 仍为冷配置。
 
 ## PyTorch 回退与 CUDA Graph
 

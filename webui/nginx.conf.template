@@ -18,12 +18,17 @@ http {
     proxy_set_header Connection "";
     proxy_set_header Authorization "${RC_MCP_AUTHORIZATION}";
     resolver 127.0.0.11 valid=5s ipv6=off;
+    map $http_origin $webui_ai_request_origin {
+        "" "$scheme://$http_host";
+        default $http_origin;
+    }
     server {
         listen 8080;
         server_name localhost 127.0.0.1;
         if ($host !~ "^(localhost|127\\.0\\.0\\.1)$") { return 421; }
         root /usr/share/nginx/html;
         set $rc_upstream robot-control:4000;
+        set $webui_origin "$scheme://$http_host";
         client_max_body_size 256k;
         location = /mcp {
             proxy_pass http://$rc_upstream;
@@ -45,9 +50,11 @@ http {
             gzip off;
         }
         location = /config.json {
-            try_files $uri =404;
+            alias /tmp/webui-public.json;
+            default_type application/json;
             add_header Cache-Control "no-store" always;
         }
+        include /tmp/webui-ai.conf;
         location /assets/ {
             try_files $uri =404;
             add_header Cache-Control "public, max-age=31536000, immutable";

@@ -3,7 +3,7 @@ const api = process.env.RC_WEBUI_TEST_API || 'http://127.0.0.1:18766'
 const rc = process.env.RC_WEBUI_E2E_URL || 'http://127.0.0.1:18765'
 async function configure(page: Page, options = {}) {
   await page.route('**/config.json', route => route.fulfill({ json: {
-    endpoint: `${api}/v1/chat/completions`, model: 'test-translator', api_key: 'local-test-only', timeout_s: 3, ...options,
+    enabled: true, model: 'test-translator', timeout_s: 3, ...options,
   } }))
 }
 test.beforeEach(async ({ request }) => { expect((await request.post(`${api}/test/reset`)).ok()).toBeTruthy() })
@@ -11,7 +11,7 @@ test.beforeEach(async ({ request }) => { expect((await request.post(`${api}/test
 test('route, real images, reset, and mobile layout work without an AI configuration', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
-  await configure(page, { endpoint: '', model: '', api_key: '' })
+  await configure(page, { enabled: false, model: '' })
   await page.goto('/')
   await expect(page).toHaveURL(/\/monitor$/)
   await expect(page).toHaveTitle('Robot Control · 监控')
@@ -51,7 +51,7 @@ test('browser AI translation starts recording without takeover and renders recei
 })
 
 test('stale camera status recovers and closing the page releases all preview subscriptions', async ({ page, request }) => {
-  await configure(page, { endpoint: '', model: '', api_key: '' })
+  await configure(page, { enabled: false, model: '' })
   await page.goto('/monitor')
   const head = page.locator('[data-camera="head"]')
   await expect(head.locator('.camera-state')).toHaveAttribute('data-state', 'live')
@@ -104,19 +104,73 @@ test('manual intervention while the model is thinking discards the old plan', as
   expect(after.control_owner).toBe('policy')
 })
 
-test('API timeout and CORS failures are visible and keep reset usable', async ({ page }) => {
+test('API timeout and proxy connection failures keep reset usable', async ({ page }) => {
   await configure(page, { timeout_s: .05 })
   await page.goto('/monitor')
   await page.getByLabel('自然语言指令').fill('超时')
   await page.getByRole('button', { name: '发送指令' }).click()
   await expect(page.getByRole('status')).toContainText('超时')
   await page.unroute('**/config.json')
-  await configure(page, { endpoint: `${api}/no-cors` })
+  await configure(page)
+  await page.route('**/ai/chat/completions', route => route.abort('failed'))
   await page.reload()
   await page.getByLabel('自然语言指令').fill('查询状态')
   await page.getByRole('button', { name: '发送指令' }).click()
-  await expect(page.getByRole('status')).toContainText('CORS')
+  await expect(page.getByRole('status')).toContainText('同源 AI 代理')
   await expect(page.getByRole('button', { name: '复位', exact: true })).toBeEnabled()
+})
+
+test('real same-origin AI works without CORS and keeps endpoint/key out of the browser', async ({ page, request }, testInfo) => {
+  const errors: string[] = []
+  const sent: { url: string; authorization?: string }[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('request', request => { if (request.url().includes('chat/completions') || request.url().includes('/no-cors')) {
+    sent.push({ url: request.url(), authorization: request.headers().authorization })
+  } })
+  const preflight = await request.fetch(`${api}/no-cors`, { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:5173' } })
+  expect(preflight.status()).toBe(403)
+  expect(preflight.headers()['access-control-allow-origin']).toBeUndefined()
+  await page.goto('/monitor')
+  const exposed = await page.evaluate(async () => (await fetch('/config.json?raw')).text())
+  expect(Object.keys(JSON.parse(exposed)).sort()).toEqual(['enabled', 'llm', 'model', 'timeout_s'])
+  expect(exposed).not.toContain('local-test-only')
+  expect(exposed).not.toContain('endpoint')
+  if (process.env.RC_WEBUI_TEST_PRIVATE_CONFIG && !process.env.RC_WEBUI_E2E_URL) {
+    const denied = await request.get(`/@fs${process.env.RC_WEBUI_TEST_PRIVATE_CONFIG}`)
+    expect(denied.status()).toBe(403)
+    expect(await denied.text()).not.toContain('local-test-only')
+  }
+  await page.getByLabel('自然语言指令').fill('查询状态')
+  await page.getByRole('button', { name: '发送指令' }).click()
+  await expect(page.getByRole('status')).toContainText('已执行')
+  expect(sent).toHaveLength(1)
+  expect(new URL(sent[0]!.url).origin).toBe(new URL(page.url()).origin)
+  expect(new URL(sent[0]!.url).pathname).toBe('/ai/chat/completions')
+  expect(sent[0]!.authorization).toBeUndefined()
+  const received = await (await request.get(`${api}/test/requests`)).json()
+  expect(received).toHaveLength(1)
+  expect(received[0].auth_valid).toBe(true)
+  expect(received[0].origin).toBeNull()
+  expect(received[0].cookie).toBeNull()
+  expect(errors).toEqual([])
+  await expect.poll(() => page.getByTestId('camera-head').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
+  for (const camera of ['head', 'left_wrist', 'right_wrist']) {
+    await expect(page.locator(`[data-camera="${camera}"] .camera-state`)).toHaveAttribute('data-state', 'live')
+  }
+  await page.screenshot({ path: testInfo.outputPath('same-origin-ai.png') })
+})
+
+test('provider errors and redirects do not disclose server credentials or execute commands', async ({ page, request }) => {
+  await page.goto('/monitor')
+  const before = await (await request.get(`${rc}/health`)).json()
+  for (const [input, code] of [['认证错误', 401], ['其他错误', 418], ['重定向', 502]] as const) {
+    await page.getByLabel('自然语言指令').fill(input)
+    await page.getByRole('button', { name: '发送指令' }).click()
+    await expect(page.getByRole('status')).toContainText(`HTTP ${code}`)
+    await expect(page.getByRole('status')).not.toContainText('local-test-only')
+    const after = await (await request.get(`${rc}/health`)).json()
+    expect(after.generation).toBe(before.generation)
+  }
 })
 
 test('switching to example self-chain stays paused until explicit resume', async ({ page, request }) => {

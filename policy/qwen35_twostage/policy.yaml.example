@@ -6,8 +6,16 @@ execution:
   control_mode: qpos
 params:
   model_config_path: model.json
-hot_reloadable: []
+  task: null # null 沿用 model.json 的 runtime.instruction；非空字符串覆盖任务
+hot_reloadable:
+  - params.task
 tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [str]
+    help: 热更新任务文本，保留容器和已加载模型
+    effect: update_config
+    timeout_s: 5
   switch-model:
     handler: switch_model
     args:

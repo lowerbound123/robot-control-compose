@@ -1,4 +1,5 @@
 {
+  "llm": true,
   "endpoint": "",
   "model": "",
   "api_key": "",

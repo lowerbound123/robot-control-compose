@@ -187,7 +187,27 @@ def test_two_stage_generates_every_three_predictions_and_reset(cpu_torch, monkey
     b.reset_context()
     b.predict(np.zeros(14), {}, "task")
     assert len(count) == 3
-    b.close()
+
+    # Exercise the hot-update path with the real two-stage cache/generation
+    # logic, replacing only model loading and the expensive model boundary.
+    from rc_qwen35_policy.runtime import AsyncQwenPolicy
+    from test_qwen35_runtime import metadata, settings
+    from rc_policy_sdk.configuration import apply_patch
+    manifest = {'params': {'task': None}, 'hot_reloadable': ['params.task']}
+    loaded_model = b.policy
+    monkeypatch.setattr(b, 'load', lambda: None)
+    monkeypatch.setattr(b, 'warmup', lambda: None)
+    scheduler = AsyncQwenPolicy(settings(), policy_config=manifest, backend=b)
+    try:
+        frames = {name: np.zeros((2, 2, 3), np.uint8) for name in ('head', 'left_wrist', 'right_wrist')}
+        chunk = scheduler.step({'qpos': np.zeros(14)}, [], frames, runtime=metadata(0))
+        assert len(count) == 3  # Reuse the current task's subtask tokens.
+        apply_patch(manifest, {'params.task': 'new task'})
+        scheduler.step({'qpos': np.zeros(14)}, chunk[1:], frames, runtime=metadata(1))
+        assert len(count) == 4  # Generate a fresh subtask immediately after task change.
+        assert b.policy is loaded_model
+    finally:
+        scheduler.close()
     b.close()
     assert b.policy is None and b._subtask_tokens is None
 

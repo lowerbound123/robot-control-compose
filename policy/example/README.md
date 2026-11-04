@@ -37,7 +37,7 @@ example
 | --- | --- | --- |
 | 动作与调度 | 独立运行时用 `set policy.execution.control_mode "mixed"`、`set-chunk-size 4`、`set policy.execution.mode "async"`，再 `resume` | 三项均冷改。空输入时 qpos 读 `state["qpos"]`，epos 读 `state["eef"]`，mixed 从 qpos 开始逐帧交替，动作与模式一一对应；非空时保留上游的帧和标签。 |
 | 模拟慢推理 | `set policy.params.inference_delay_s 0.18` | 仅阻塞推理回调。sync 等结果再消费；async 可继续发送缓存中已就绪的目标，结果返回后裁掉实际消费的前缀。默认延迟为 0。 |
-| 热配置与日志 | `set policy.params.message "新消息"`、`set policy.params.log_every_n_calls 2`、`example` | worker 和配置引用保持不变；两端确认版本后命令、monitor 及后续日志反映新值。只有 manifest 的白名单叶字段可热改。 |
+| 热配置与日志 | `set example.params.message "新消息"`、`set example.params.log_every_n_calls 2`、`example` | 链内用 `set example-1.params.message "新消息"` 只热改指定实例；唯一节点用策略名，重复节点带 `-0/-1`。worker、context 和配置引用保持不变，两端确认版本后命令、monitor 及后续日志反映新值。`set-message "新消息"` 和单策略 `set policy.*` 仍可使用，只有 manifest 的白名单叶字段可热改。 |
 | 主动暂停与结束 | 先 `resume`，再 `next-result pause 人工检查`、`next-result completed 成功` 或 `next-result terminated 未完成`（每次分别运行） | 命令只登记一次请求。下一轮 `policy()` 调用 `runtime.pause/finish` 并返回合法动作；整条链成功后由 RC 丢弃结束轮动作、清空缓存并暂停。reset_context（含 resume/归还时的重置）会清除旧请求。 |
 | 异常与恢复 | 在 mock 上运行中执行 `next-result fault 演练`，观察 `status`，再 `switch example` | 真实推理异常走 RC 原有故障/清理流程；MCP 已持有的控制权不会被 policy 抢回。 |
 | 全局状态 | `shared-read`，再 `shared-write "新值" <刚读到的版本>`；用 `show global example_note` 查看 | 只更新共享键 `example_note`。其他实例可读，过期版本报冲突且不修改；`unset global.example_note` 可清除，退出按 RC 规则持久化。 |

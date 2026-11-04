@@ -20,6 +20,13 @@ class PolicySaveTarget:
 
 
 @dataclass(frozen=True)
+class PolicyConfigEdit:
+    instance_id: str
+    path: str
+    value: object
+
+
+@dataclass(frozen=True)
 class ControlRequest:
     operation_id: str
     line: str
@@ -39,6 +46,7 @@ class ControlRequest:
     retry_generation: int | None = None
     generation: int | None = None
     expected_control: dict | None = None
+    config_edit: PolicyConfigEdit | None = None
 
 
 class Operations:

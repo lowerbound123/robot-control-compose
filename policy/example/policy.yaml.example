@@ -15,6 +15,12 @@ hot_reloadable:
   - params.log_every_n_calls
   - params.inference_delay_s
 tui_commands:
+  set-message:
+    handler: set_message
+    args: [str]
+    help: 热更新本实例的消息，保留 context 和执行进程
+    effect: update_config
+    timeout_s: 5
   example:
     handler: example
     args: []

@@ -56,8 +56,13 @@ export class PlanExecutor {
   busy = false
   unresolvedOperation: string | null = null
   pendingRunId: string | null = null
+  pendingKind: 'plan' | 'tui_batch' | null = null
   uncertainSubmission = false
   private cancelled = false
+  private detached = false
+  private batchCancelSent = false
+  private batchCancellation?: Promise<void>
+  private batchCancelError = false
   private expected?: RcStatus
   private readonly pollMs: number
   private readonly receiptTimeoutMs: number
@@ -65,10 +70,21 @@ export class PlanExecutor {
     this.pollMs = options.pollMs ?? 200
     this.receiptTimeoutMs = options.receiptTimeoutMs ?? 120_000
   }
-  cancel() { this.cancelled = true }
+  cancel() {
+    this.cancelled = true
+    if (this.pendingKind === 'tui_batch' && this.unresolvedOperation) void this.cancelBatch(this.unresolvedOperation)
+  }
+  detach() { this.detached = true }
+
+  private cancelBatch(id: string) {
+    if (!this.batchCancellation) this.batchCancellation = this.gateway.call('cancel_tui_command', { operation_id: id })
+      .then(() => { this.batchCancelSent = true })
+      .catch(() => { this.batchCancelError = true })
+    return this.batchCancellation
+  }
 
   private async current() {
-    if (this.cancelled) throw Error('已停止后续步骤；已受理操作仍以 RC 回执为准。')
+    if (this.cancelled || this.detached) throw Error('已停止后续步骤；已受理操作仍以 RC 回执为准。')
     const status = await this.gateway.status()
     if (this.expected && !sameControl(this.expected, status)) throw Error('RC 状态或控制代次已变化，可能发生人工干预，后续步骤已停止。')
     return status
@@ -81,13 +97,21 @@ export class PlanExecutor {
     emit(payload)
     const deadline = Date.now() + this.receiptTimeoutMs
     while (!terminal.has(String(payload.status))) {
-      if (this.cancelled || Date.now() >= deadline) throw Error(`等待已结束，操作 ${id} 尚待确认；不会自动重发。`)
+      if (this.detached || (this.cancelled && this.pendingKind !== 'tui_batch') || Date.now() >= deadline) {
+        throw Error(`等待已结束，操作 ${id} 尚待确认；不会自动重发。`)
+      }
+      if (this.cancelled && this.pendingKind === 'tui_batch' && !this.batchCancelSent) {
+        await this.cancelBatch(id)
+        if (this.batchCancelError) throw Error('停止请求尚未确认，请查询原回执；批次不会重发。')
+      }
       await delay(this.pollMs)
       try { payload = await this.gateway.call('get_operation', { operation_id: id }) }
       catch { continue } // Read retries are safe; the accepted write is never repeated.
+      if (this.pendingKind === 'tui_batch' && !terminal.has(String(payload.status))) emit(payload)
     }
     this.unresolvedOperation = null
     this.pendingRunId = null
+    this.pendingKind = null
     emit(payload)
     if (payload.status !== 'succeeded') throw new ToolRejectedError(String(payload.error || payload.reason || '操作失败或已取消。'))
     return payload
@@ -96,11 +120,12 @@ export class PlanExecutor {
   private async write(name: string, args: Payload, emit: (value: Payload) => void, changesControl = true) {
     const before = await this.current()
     this.pendingRunId = before.run_id ?? null
+    this.pendingKind = 'plan'
     let accepted: Payload
     try { accepted = await this.gateway.call(name, { ...args, wait: false }, before) }
     catch (error) {
       if (!(error instanceof ToolRejectedError)) this.uncertainSubmission = true
-      else this.pendingRunId = null
+      else { this.pendingRunId = null; this.pendingKind = null }
       throw error
     }
     const completed = await this.receipt(accepted, emit)
@@ -121,6 +146,7 @@ export class PlanExecutor {
     }
     this.busy = true
     this.cancelled = false
+    this.detached = false
     this.expected = initial
     try {
       for (const [index, step] of plan.steps.entries()) {
@@ -146,17 +172,51 @@ export class PlanExecutor {
     } finally { this.busy = false }
   }
 
+  async runText(text: string, initial: RcStatus, emit: (value: Payload) => void = () => {}) {
+    if (!text.trim() || text.length > 4000) throw Error('请输入 1～4000 字的命令，每行一条。')
+    if (this.busy) throw Error('已有指令正在执行。')
+    if (this.unresolvedOperation || this.uncertainSubmission) throw Error('上一条操作尚待确认，暂不能提交新批次。')
+    this.busy = true
+    this.cancelled = this.detached = this.batchCancelSent = false
+    this.batchCancellation = undefined
+    this.batchCancelError = false
+    this.expected = initial
+    try {
+      const before = await this.current()
+      this.pendingRunId = before.run_id ?? null
+      this.pendingKind = 'tui_batch'
+      // Persist before the write: refreshing before its response must not lose
+      // the fact that the server may already have accepted the batch.
+      this.uncertainSubmission = true
+      emit({ submission: 'pending', kind: 'tui_batch' })
+      let accepted: Payload
+      try {
+        accepted = await this.gateway.call('tui_command', { text, wait: false }, before)
+        if (typeof accepted.operation_id !== 'string') throw Error('批次受理结果缺少操作 ID，请在 RC 核对。')
+      } catch (error) {
+        if (error instanceof ToolRejectedError) {
+          this.uncertainSubmission = false
+          this.pendingRunId = this.pendingKind = null
+        }
+        throw error
+      }
+      this.uncertainSubmission = false
+      return await this.receipt(accepted, emit)
+    } finally { this.busy = false }
+  }
+
   async reconcile() {
     if (this.uncertainSubmission) throw Error('提交响应已丢失，是否受理未知。请在 RC 核对操作后解除本地锁定。')
     if (!this.unresolvedOperation) return null
     const result = await this.gateway.call('get_operation', { operation_id: this.unresolvedOperation })
-    if (terminal.has(String(result.status))) { this.unresolvedOperation = null; this.pendingRunId = null }
+    if (terminal.has(String(result.status))) { this.unresolvedOperation = null; this.pendingRunId = null; this.pendingKind = null }
     return result
   }
 
   acknowledgeUnknown() {
     if (this.busy) throw Error('请先等待当前操作结束。')
     this.uncertainSubmission = false
+    if (!this.unresolvedOperation) { this.pendingRunId = null; this.pendingKind = null }
     if (!this.unresolvedOperation) this.pendingRunId = null
     // An operation with a known ID must still be reconciled, never forgotten.
   }

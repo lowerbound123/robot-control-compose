@@ -10,7 +10,7 @@ import sys
 import traceback
 import types
 
-from .commands import RELOAD_EFFECTS, check_command_effects, command_specs, resolve_handlers
+from .commands import COMMAND_EFFECTS, check_command_effects, command_specs, resolve_handlers
 from .command_runtime import CommandExecutor
 from .monitor import MonitorExecutor, monitor_callback
 from .control import RUNTIME_TOOLS, runtime_tools
@@ -127,7 +127,7 @@ def run_session(connection, policy_dir, namespace):
         if callable(getattr(module,'wants_observations',None)):
             supported=supported and module.wants_observations(context)
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
-                      "tui_command_effects_v2": list(RELOAD_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
+                      "tui_command_effects_v2": list(COMMAND_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
                       "global_state_version": 1 if channel.global_memory is not None else None})
         channel.send({'type':'capabilities','observe':supported})
         while True:
