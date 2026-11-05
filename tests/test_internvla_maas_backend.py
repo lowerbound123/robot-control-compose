@@ -10,7 +10,7 @@ import pytest
 from internvla_maas_helpers import PACKAGE, configured, images, model_server, settings, wait
 
 pytest.importorskip('websockets')
-pytest.importorskip('msgpack_numpy')
+pytest.importorskip('msgpack')
 pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason='MaaS policy image uses Python 3.11')
 
 
@@ -95,8 +95,13 @@ def test_transport_errors_are_actionable_and_redacted(tmp_path, options, expecte
     {'type': 'actions', 'space': 'joint_pos', 'mode': 'delta', 'actions': {'joint_pos': np.zeros((50, 14), np.float32)}},
     {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': np.zeros((49, 14), np.float32)}},
     {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': np.full((50, 14), np.nan, np.float32)}},
+    {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': np.full((50, 14), np.inf, np.float32)}},
+    {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': np.zeros((50, 14), np.int32)}},
+    {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': [[0.0] * 14] * 50}},
+    {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': {
+        b'nd': True, b'type': '<f4', b'kind': b'', b'shape': [50, 14], b'data': bytes(2800)}}},
     {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute', 'actions': {'joint_pos': np.full((50, 14), 1e100, np.float64)}},
-], ids=['stop', 'error', 'delta', 'shape', 'nan', 'float32-overflow'])
+], ids=['stop', 'error', 'delta', 'shape', 'nan', 'inf', 'integer', 'list', 'legacy', 'float32-overflow'])
 def test_bad_replies_latch_failure_without_replay_or_reset_recovery(tmp_path, body):
     with model_server() as server:
         server.responses.put({'body': body})
@@ -142,6 +147,19 @@ def test_timeout_and_idle_disconnect_are_terminal(tmp_path):
                 except RuntimeError:
                     return True
             wait(failed)
+        finally:
+            model.close()
+
+
+def test_action_reply_above_old_limit_uses_diagnostic_four_mib_limit(tmp_path):
+    with model_server() as server:
+        server.responses.put({'body': {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute',
+            'actions': {'joint_pos': np.ones((50, 14), np.float32)}, 'metadata': bytes(2 * 1024 * 1024)}})
+        model = backend(configured(tmp_path, settings(server.address)))
+        try:
+            model.load()
+            actual = model.predict(np.zeros(14, np.float32), images(), 'task')
+            np.testing.assert_array_equal(actual, np.ones((50, 14), np.float32))
         finally:
             model.close()
 

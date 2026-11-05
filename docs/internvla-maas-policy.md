@@ -50,7 +50,11 @@ resume
 
 ## 协议和动作边界
 
-使用 `maas-robot/1` 二进制 WebSocket 和 `msgpack-numpy` 数组格式，严格一问一答。按交接文件的 Python 参考实现编码；不支持正文另述的 `__ndarray__` 格式，也不自动回退。解码前拒绝对象、结构化数组和异常 buffer/shape，避免进入 pickle 回退；输入动作消息上限为 1 MiB，不限制为这一大小的输出原始图像。
+使用 `maas-robot/1` 二进制 WebSocket，严格一问一答。数组编码以已验证能收到动作的 `diagnose_maas_ndarray.py` 为准：`{b"__ndarray__": True, b"data": array.tobytes(), b"dtype": array.dtype.str, b"shape": array.shape}`。NumPy 数值及布尔标量使用 `{b"__npgeneric__": True, b"data": value.item(), b"dtype": value.dtype.str}`；普通元数据保持 MessagePack 原生类型。
+
+数组元数据固定为字节键。接收端在校验 dtype、shape 和字节长度后，用 `frombuffer(...).reshape(...).copy()` 还原独立持有数据的 ndarray。只支持普通数值和布尔类型，拒绝对象、结构化、复数及畸形数据，不使用 pickle。输入消息上限为 4 MiB，WebSocket 与解码器一致；输出原始图像不受此入站上限限制。
+
+不接受旧的 `msgpack-numpy`（`nd/type/kind/shape/data`）编码，也不自动回退。运行依赖为 NumPy、msgpack、websockets 及 SDK 所需依赖，已移除 `msgpack-numpy`。更新后应重建本策略镜像，并冷重载使用它的实例。
 
 握手顺序是 `server_hello → robot_hello → ready`。校验模型、协议、相机角色、`joint_pos` 状态和动作字段、50 行 horizon 及执行频率。机器人声明 14 自由度、raw 图像和绝对关节动作空间。
 
@@ -72,6 +76,6 @@ python3 scripts/test_scope.py --policy internvla_maas
 
 这会运行 example 基线和 MaaS 专属测试。协议测试使用本机 WebSocket 替身，worker 测试使用真实 SDK host、子进程和共享内存；不会请求真实模型或启动硬件。
 
-新镜像的 test target 可验证 Python 3.11/Linux 协议与调度。`tests/internvla_maas_docker_smoke.py --evidence-dir <目录>` 使用隔离部署，验证 RC Python 3.10 到策略 Python 3.11、正式 Compose、冷切换、故障停止和手动恢复。其 `RC_TEST_RC_IMAGE` 须包含 RC 测试依赖及测试服务所需的 websockets、msgpack、msgpack-numpy；这些附加依赖不进入正式 RC 镜像。还应运行 `tests/example_docker_smoke.py` 覆盖 example 自链。
+新镜像的 test target 可验证 Python 3.11/Linux 协议与调度。测试参考编解码器冻结成功诊断脚本的四个函数，独立于生产实现，不依赖下载目录。`tests/internvla_maas_docker_smoke.py --evidence-dir <目录>` 使用隔离部署，验证 RC Python 3.10 到策略 Python 3.11、正式 Compose、冷切换、故障停止和手动恢复。其 `RC_TEST_RC_IMAGE` 须包含 RC 测试依赖及测试服务所需的 websockets、msgpack；这些附加依赖不进入正式 RC 镜像。还应运行 `tests/example_docker_smoke.py` 覆盖 example 自链。
 
 真实服务连通性、实际训练单位/机位以及真机动作单独验收；本地替身和容器通过不代表这些项目已通过。

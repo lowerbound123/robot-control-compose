@@ -31,8 +31,8 @@ def configured(tmp_path, value=None):
 @contextmanager
 def model_server(*, host='127.0.0.1', hello_patch=None, reject_status=None, close_code=None,
                  hello_delay=0, ready_delay=0):
-    """Real WebSocket peer using the attachment's independent reference codec."""
-    import msgpack_numpy
+    """Real WebSocket peer using the successful diagnostic script's independent codec."""
+    from internvla_maas_reference import packb, unpackb
     import numpy as np
     from websockets.sync.server import serve
     from websockets.exceptions import ConnectionClosed
@@ -67,8 +67,8 @@ def model_server(*, host='127.0.0.1', hello_patch=None, reject_status=None, clos
                 hello.update(hello_patch or {})
                 if hello_delay:
                     time.sleep(hello_delay)
-                connection.send(msgpack_numpy.packb(hello))
-                robot = msgpack_numpy.unpackb(connection.recv())
+                connection.send(packb(hello))
+                robot = unpackb(connection.recv())
                 robot_id = robot['robot_id']
                 with self.lock:
                     self.hellos.append({'message': robot, 'path': connection.request.path})
@@ -83,10 +83,10 @@ def model_server(*, host='127.0.0.1', hello_patch=None, reject_status=None, clos
                     return
                 if ready_delay:
                     time.sleep(ready_delay)
-                connection.send(msgpack_numpy.packb({'type': 'ready', 'session_id': str(len(self.hellos)),
+                connection.send(packb({'type': 'ready', 'session_id': str(len(self.hellos)),
                                                     'revision': 'test', 'checkpoint': 'fixture'}))
                 for frame in connection:
-                    obs = msgpack_numpy.unpackb(frame)
+                    obs = unpackb(frame)
                     with self.lock:
                         self.requests.append(obs)
                     try:
@@ -105,8 +105,8 @@ def model_server(*, host='127.0.0.1', hello_patch=None, reject_status=None, clos
                         continue
                     actions = np.repeat(obs['state']['joint_pos'][None], 50, axis=0)
                     body = response.get('body', {'type': 'actions', 'space': 'joint_pos', 'mode': 'absolute',
-                                                'server_ms': 1.25, 'actions': {'joint_pos': actions}})
-                    connection.send(msgpack_numpy.packb(body))
+                                                'server_ms': np.float32(1.25), 'actions': {'joint_pos': actions}})
+                    connection.send(packb(body))
             except ConnectionClosed:
                 pass
             finally:

@@ -49,6 +49,17 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 证据：`/private/tmp/rc-mcp-management-interface-final.log`、`/private/tmp/rc-mcp-management-linux-final.log`、`/private/tmp/rc-mcp-management-docker-final/{result.json,cleanup.json}`。最终资源复核另存 `/private/tmp/rc-mcp-management-cleanup-final.json`。
 
+## InternVLA MaaS ndarray 编码（2026-11-05）
+
+收发切换为用户已验证的 `diagnose_maas_ndarray.py` 编码：字节键 `__ndarray__` / `__npgeneric__`，独立数组副本，4 MiB 入站限制。移除 `msgpack-numpy`，其余锁定依赖版本不变；RC↔SDK 契约未变。
+
+- 编码专项 **64 passed**；独立测试参考的四个函数与成功脚本 AST 一致。新增测试先在旧实现出现 **56 failed、8 passed**，替换后通过。
+- 无 `msgpack-numpy` 的 Python 3.11 环境，所选 `--policy internvla_maas` 范围 **207 passed、1 skipped**，71.74 秒；宿主缺 ROS 的跳过不计通过。新 Linux/Python 3.11 测试镜像中策略套件 **124 passed**，0.83 秒。
+- 已启动的 MaaS 隔离 Docker 验收 **4 组通过**，RC 退出码 0；example 自链 **7 组通过**，既有故障注入的强制清理如实保留 RC 退出码 1。两套临时部署清理完成。
+- ROS 补跑 **1 failed**：只读测试容器未设置可写 HOME，ROS 无法创建 `/root/.ros/log`，未进入策略执行。用户随后要求停止扩展回归并直接提交推送，因此不再补跑。未运行全仓 `--interface`，未连接真实 MaaS 或机器人。
+
+证据：`/private/tmp/rc-maas-ndarray-{codec-red,codec-green,scope,linux,ros}.log`，以及 `/private/tmp/rc-maas-ndarray-docker/`、`/private/tmp/rc-maas-ndarray-example-docker/` 下的结果与清理记录。正式 MaaS 运行镜像和专用测试镜像构建成功。
+
 ## InternVLA MaaS 网络策略（2026-11-04）
 
 实现与配置见 [网络策略说明](internvla-maas-policy.md)。本轮没有修改 RC↔SDK 公共契约，也没有修改 Qwen 实现；服务地址、身份和凭据由用户提供。

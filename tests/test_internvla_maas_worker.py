@@ -15,7 +15,7 @@ from project_templates import copy_templates
 from rc_policy_sdk.images import ImagePool
 
 pytest.importorskip('websockets')
-pytest.importorskip('msgpack_numpy')
+pytest.importorskip('msgpack')
 pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason='local MaaS worker requires Python 3.11')
 
 

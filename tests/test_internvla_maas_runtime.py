@@ -11,7 +11,7 @@ import pytest
 from internvla_maas_helpers import PACKAGE, configured, images, model_server, settings, wait
 
 pytest.importorskip('websockets')
-pytest.importorskip('msgpack_numpy')
+pytest.importorskip('msgpack')
 pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason='MaaS policy image uses Python 3.11')
 
 

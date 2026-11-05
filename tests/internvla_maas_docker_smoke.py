@@ -1,7 +1,7 @@
 """Isolated real RC/SDK/policy containers talking to a local MaaS peer.
 
 RC_TEST_RC_IMAGE must include RC's test dependencies plus websockets,
-msgpack and msgpack-numpy for the test peer. No real service or hardware.
+msgpack for the independent __ndarray__ test peer. No real service or hardware.
 """
 import argparse
 import json
