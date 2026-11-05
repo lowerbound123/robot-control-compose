@@ -27,6 +27,9 @@ class AsyncMaasPolicy(AsyncChunkPolicy):
                 column[column > -2.0] += np.float32(.15)
         return result
 
+    def monitor(self):
+        return self.backend.monitor()
+
     def step(self, state, action_chunk, images, *, runtime):
         try:
             self.backend.check_health()

@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from .codec import MAX_MESSAGE_BYTES, pack, unpack
+from .metrics import RequestMetrics
 
 CAMERAS = {'head': 'front', 'left_wrist': 'wrist_left', 'right_wrist': 'wrist_right'}
 
@@ -35,6 +36,7 @@ class MaasBackend:
         self._closed = self._interrupted = False
         self._seq = 0
         self._episode = None
+        self._metrics = RequestMetrics()
         # websockets DEBUG includes Authorization headers and payloads. Never
         # propagate its transport logger into the worker's captured root logger.
         self._logger = logging.Logger('internvla-maas.transport', logging.CRITICAL + 1)
@@ -71,6 +73,9 @@ class MaasBackend:
                 raise MaasError(self._failure)
             if self._closed:
                 raise MaasError('MaaS backend is closed')
+
+    def monitor(self):
+        return self._metrics.snapshot()
 
     def _serve(self):
         asyncio.set_event_loop(self._loop)
@@ -115,11 +120,18 @@ class MaasBackend:
         self._active_task = asyncio.current_task()
         try:
             async with asyncio.timeout(timeout):
-                return await function()
+                result = await function()
+            if prediction:
+                self._metrics.finish(failed=False)
+            return result
         except asyncio.CancelledError:
+            if prediction:
+                self._metrics.cancel()
             await self._disconnect()
             raise
         except Exception as error:
+            if prediction:
+                self._metrics.finish(failed=True)
             fault = self._fault(error)
             await self._disconnect()
             raise fault from None
@@ -138,6 +150,8 @@ class MaasBackend:
             except CancelledError:
                 raise MaasError('MaaS request cancelled by lifecycle') from None
             except FutureTimeout:
+                if prediction:
+                    self._metrics.finish(failed=True)
                 self.abort()
                 raise self._fault(TimeoutError()) from None
 
@@ -208,7 +222,9 @@ class MaasBackend:
             message = dict(type='obs', seq=self._seq, t=time.time(), episode_id=self._episode,
                            instruction=instruction, images=frames, state={'joint_pos': state})
             self._seq += 1
-            await self._ws.send(pack(message))
+            payload = pack(message)
+            self._metrics.start()
+            await self._ws.send(payload)
             reply = await self._receive()
             if (reply['type'] != 'actions' or reply.get('space') != 'joint_pos'
                     or reply.get('mode') != 'absolute' or not isinstance(reply.get('actions'), dict)):

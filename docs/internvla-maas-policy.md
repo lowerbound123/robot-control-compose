@@ -34,7 +34,19 @@ RC `frequency_hz` 必须手工设为服务的 `control_hz`，默认均为 30。�
 
 RC 外层超时应留出余量。使用上述默认值时，建议 `timeouts.initialize_s >= 35`、`timeouts.inference_s >= 65`、`timeouts.release_s >= 8`；仓库默认初始化/释放期限已足够，但默认推理期限 60 秒应增加。保留现有 RC 安全限速配置；限速未完成目标时不消费动作行。
 
-## 运行与冷切换
+## 执行配置与服务切换
+
+新模板默认 `execution.mode: async`；`sync` 同样支持。`call_every_actions` 使用通用配置规则，允许正整数，不再强制等于 1。`async` 在策略回调在途时继续消费旧缓存；模型请求本身仍严格串行，耗尽缓存后保持当前目标等待结果。
+
+模板将 `execution.mode` 和 `execution.call_every_actions` 放入热修改白名单，可使用：
+
+```text
+set policy.execution.mode "async"
+set policy.execution.call_every_actions 3
+monitor-internvla_maas on
+```
+
+热修改经 RC/SDK 两端确认版本后生效，保留当前运行/暂停状态、模型连接和统计。已有私有 `policy.yaml` 不会被 setup 覆盖；若希望热改，需将上述两个字段加入其 `hot_reloadable`，然后重载一次。没有声明热改的字段沿用通用冷修改流程。MaaS 动作为关节目标，`control_mode` 仍须为 `qpos`。
 
 ```text
 switch internvla_maas
@@ -44,9 +56,24 @@ policy internvla_maas switch-model model_alt.json
 resume
 ```
 
-所有配置都是冷配置。`switch-model` 先做文件/字段校验，返回通用冷补丁；服务握手在旧实例退出证明齐备后的新实例初始化中执行。目标路径相对本策略目录，或为容器可访问的绝对路径。命令成功后保持暂停。链内使用明确实例名，例如 `policy internvla_maas-0 switch-model model_alt.json`。
+`model.json` 中的服务、推理和动作配置仍为冷配置，`params.model_config_path` 不能热改。`switch-model` 先做文件/字段校验，返回通用冷补丁；服务握手在旧实例退出证明齐备后的新实例初始化中执行。目标路径相对本策略目录，或为容器可访问的绝对路径。命令成功后保持暂停。链内使用明确实例名，例如 `policy internvla_maas-0 switch-model model_alt.json`。
 
 每个实例独占容器、执行进程、后台网络线程和 WebSocket。客户端不会为重复实例自动生成或修改 robot_id；配置相同身份的并发实例会被网关以 4409 拒绝，不能把来源共用理解为连接共用。
+
+## 请求监控
+
+本地 TUI 使用 `monitor-internvla_maas on` 打开、`monitor-internvla_maas off` 关闭；重复实例使用明确实例名，例如 `monitor-internvla_maas-0 on`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `avg_latency_ms` | 当前 context 内已结束观测请求的平均延迟，毫秒。 |
+| `median_latency_ms` | 同一批请求的精确中位延迟，毫秒。 |
+| `last_latency_ms` | 上一次已结束观测请求的延迟，毫秒；请求在途时保留上一次值。 |
+| `failed_requests` | 没有得到有效动作的请求次数，单次请求最多计一次。 |
+
+延迟从发起 `obs` 发送尝试计时，至动作接收、解码及校验完成，或请求失败为止；不包含握手、发送前准备或断开清理。服务端 error/stop、非法动作、超时和在途断线计为失败，其耗时也计入平均值和中位数。初始化握手、发送前校验失败以及生命周期主动取消不计入统计。
+
+无已完成请求时三个延迟字段显示 `—`，失败次数为 0。普通暂停/恢复、reset 重连和执行参数热修改保留累计值；冷重载或同进程重新初始化创建新 context 时清零。monitor 仅读取有锁的标量快照，不发请求、不等待推理，也不改变故障处理方式。中位数在请求完成时增量维护，监控读取不遍历请求历史。
 
 ## 协议和动作边界
 

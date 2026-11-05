@@ -65,13 +65,24 @@ def test_invalid_json_is_sanitized(tmp_path, content):
     assert 'private-canary' not in str(error.value)
 
 
-def test_manifest_preserves_sync_cold_contract():
+@pytest.mark.parametrize('mode,interval', [('sync', 1), ('async', 1), ('async', 5), ('sync', 50)])
+def test_manifest_allows_standard_scheduling_and_hot_execution_fields(mode, interval):
     loader()
     from rc_internvla_maas.configuration import validate_manifest
-    good = dict(execution=dict(mode='sync', call_every_actions=1, control_mode='qpos'),
-                params={'model_config_path': 'model.json'}, hot_reloadable=[])
+    good = dict(execution=dict(mode=mode, call_every_actions=interval, control_mode='qpos'),
+                params={'model_config_path': 'model.json'},
+                hot_reloadable=['execution.mode', 'execution.call_every_actions'])
     validate_manifest(good)
-    for patch in ({'hot_reloadable': ['params.model_config_path']},
-                  {'execution': dict(mode='async', call_every_actions=1, control_mode='qpos')}):
-        with pytest.raises(ValueError):
-            validate_manifest({**good, **patch})
+
+
+@pytest.mark.parametrize('patch', [
+    {'hot_reloadable': ['params.model_config_path']},
+    {'execution': dict(mode='async', call_every_actions=1, control_mode='epos')},
+])
+def test_manifest_keeps_actual_joint_space_and_cold_model_binding(patch):
+    loader()
+    from rc_internvla_maas.configuration import validate_manifest
+    good = dict(execution=dict(mode='async', call_every_actions=1, control_mode='qpos'),
+                params={'model_config_path': 'model.json'}, hot_reloadable=[])
+    with pytest.raises(ValueError):
+        validate_manifest({**good, **patch})

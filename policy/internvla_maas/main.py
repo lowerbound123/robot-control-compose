@@ -17,6 +17,10 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     return context.step(state, action_chunk, images, runtime=runtime)
 
 
+def monitor(context):
+    return context.monitor()
+
+
 def switch_model(context, config_path):
     return context.switch_model(config_path)
 

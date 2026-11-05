@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 import numpy as np
@@ -65,6 +66,55 @@ def test_real_worker_releases_shared_images_and_reopens_context(tmp_path, monkey
         assert not forced
 
 
+def test_monitor_and_hot_scheduling_work_during_real_worker_inference(tmp_path, monkeypatch):
+    with model_server() as server:
+        directory, manifest = prepare(tmp_path, server, monkeypatch)
+        worker = LocalPolicyProcess(directory, manifest, init_timeout_s=5, inference_timeout_s=3, release_timeout_s=3)
+        pool = ImagePool(tmp_path / 'frames', cameras=('head', 'left_wrist', 'right_wrist'))
+        for name, frame in images().items():
+            pool.publish(name, frame, 1.)
+        lease = pool.acquire()
+        gate = threading.Event()
+        def monitor():
+            assert worker.submit_monitor(1)
+            response = wait(worker.poll_monitor)
+            assert response['type'] == 'monitor_result', response
+            return response['result']
+        try:
+            worker.start()
+            identity = worker.runtime_id
+            assert worker.supports_monitor
+            empty = {'avg_latency_ms': '—', 'median_latency_ms': '—', 'last_latency_ms': '—', 'failed_requests': 0}
+            assert monitor() == empty
+            server.responses.put({'gate': gate})
+            worker.submit({'request_id': 1, 'generation': 1, 'config_version': 1,
+                           'state': {'qpos': [0.] * 14}, 'action_chunk': [], 'images': lease.descriptors,
+                           'runtime': {'control_epoch': 1, 'consumed_actions': 0}})
+            wait(lambda: len(server.requests) == 1)
+            assert monitor() == empty and worker.poll() is None
+            gate.set()
+            response = wait(worker.poll)
+            assert response['type'] == 'result' and response['images_released'] is True
+            completed = monitor()
+            assert completed['avg_latency_ms'] > 0
+            assert completed['avg_latency_ms'] == completed['median_latency_ms'] == completed['last_latency_ms']
+            assert completed['failed_requests'] == 0
+            for version, mode in ((2, 'sync'), (3, 'async')):
+                worker.update_config({'execution.mode': mode, 'execution.call_every_actions': version}, version)
+                assert worker.runtime_id == identity and worker.config_version == version
+                assert len(server.hellos) == 1 and len(server.requests) == 1
+                assert monitor() == completed
+            worker.reset_context()
+            assert monitor() == completed and len(server.hellos) == 2
+        finally:
+            gate.set()
+            forced = worker.close()
+            assert worker.cleanup_confirmed and not worker.has_readers
+            lease.release()
+            pool.close()
+        assert not forced
+
+
 def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeypatch):
     from robot_control.controller import RobotController
     from robot_control.robots import MockRobot
@@ -99,6 +149,15 @@ def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeyp
             old = controller._worker
             command('resume')
             wait(lambda: controller.status()['consumed'] >= 23)
+            sessions = len(server.hellos)  # resume performs its ordinary context reset.
+            for line in ('set policy.execution.mode "sync"',
+                         'set policy.execution.call_every_actions 3',
+                         'set policy.execution.mode "async"'):
+                version = controller.status()['config_version']
+                command(line)
+                assert controller.status()['config_version'] == version + 1
+                assert controller.status()['state'] == 'running'
+                assert controller._worker is old and len(server.hellos) == sessions
             command('pause')
             command('policy internvla_maas switch-model alternate.json')
             assert controller.status()['state'] == 'paused'

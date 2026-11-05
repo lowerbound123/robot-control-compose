@@ -49,6 +49,16 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 证据：`/private/tmp/rc-mcp-management-interface-final.log`、`/private/tmp/rc-mcp-management-linux-final.log`、`/private/tmp/rc-mcp-management-docker-final/{result.json,cleanup.json}`。最终资源复核另存 `/private/tmp/rc-mcp-management-cleanup-final.json`。
 
+## InternVLA MaaS async 配置与请求监控（2026-11-05）
+
+取消策略专属的 sync/每步回调限制及禁止所有热修改的检查，模板默认 async，支持模式和调用间隔的白名单热修改。新增只读 monitor：平均、中位、上次请求延迟（毫秒）与失败次数；统计当前 context 内实际发送的已结束请求，排除握手和主动取消。
+
+- 按用户要求仅验证受影响的 MaaS 配置、部署发现、monitor、backend、runtime、worker 六个文件：**82 passed**，4.63 秒。没有运行全量回归、example 套件、ROS 或 Docker。
+- 精确时钟用例核对奇偶样本中位数、平均值、失败次数去重，以及成功、服务端拒绝、非法动作、断线、超时、主动取消的统计。请求在途时反复读 monitor 不会发请求或等待推理。
+- 真实本地 host/worker 验证 monitor 独立响应、共享图像释放、版本确认、sync/async 和调用间隔热修改；运行中的 RC 保留 worker 和已有连接，普通 reset 保留统计。冷重载和故障恢复沿用已有行为。
+
+证据：`/private/tmp/rc-maas-monitor-red.log`、`/private/tmp/rc-maas-monitor-worker-red.log`、`/private/tmp/rc-maas-monitor-targeted-final.log`。中间新增断言忽略了 resume 原有的重连，改为比较热修改前后的会话数量后通过；没有为此修改生产生命周期逻辑。未连接真实 MaaS 服务或硬件。
+
 ## InternVLA MaaS ndarray 编码（2026-11-05）
 
 收发切换为用户已验证的 `diagnose_maas_ndarray.py` 编码：字节键 `__ndarray__` / `__npgeneric__`，独立数组副本，4 MiB 入站限制。移除 `msgpack-numpy`，其余锁定依赖版本不变；RC↔SDK 契约未变。

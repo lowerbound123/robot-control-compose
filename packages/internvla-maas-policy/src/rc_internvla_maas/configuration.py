@@ -98,9 +98,9 @@ def load_model_config(path, *, project_root):
 
 def validate_manifest(config):
     execution = config.get('execution', {})
-    if (execution.get('mode') != 'sync' or execution.get('call_every_actions') != 1
-            or execution.get('control_mode') != 'qpos'):
-        raise ValueError('MaaS requires sync callbacks every complete qpos action')
-    if config.get('hot_reloadable'):
-        raise ValueError('MaaS configuration is cold; use switch-model')
+    # Mode and cadence use the shared schema and hot-patch transaction.
+    if execution.get('control_mode') != 'qpos':
+        raise ValueError('MaaS returns joint-position actions; control_mode must be qpos')
+    if 'params.model_config_path' in config.get('hot_reloadable', []):
+        raise ValueError('model_config_path requires a cold reload; use switch-model')
     _text(config.get('params', {}).get('model_config_path'), 'params.model_config_path')

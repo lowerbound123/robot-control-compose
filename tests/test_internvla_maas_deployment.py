@@ -22,7 +22,12 @@ def test_discovery_setup_and_reload_command_do_not_require_model_dependencies(tm
     assert records[0]['valid'] is True
     config = read_config(directory / 'policy.yaml')
     assert config['tui_commands']['switch-model']['effect'] == 'reload_policy'
-    assert config['hot_reloadable'] == []
+    from rc_policy_sdk.configuration import apply_patch
+    from rc_internvla_maas.configuration import validate_manifest
+    assert config['execution']['mode'] == 'async'
+    for mode in ('sync', 'async'):
+        apply_patch(config, {'execution.mode': mode, 'execution.call_every_actions': 4})
+        validate_manifest(config)
     sys.path.insert(0, str(ROOT / 'scripts'))
     from config_files import configuration_updates, write_updates
     from setup_project import select_policies
