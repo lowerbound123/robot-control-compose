@@ -4,8 +4,10 @@ from concurrent.futures import CancelledError, TimeoutError as FutureTimeout
 import copy
 import logging
 import math
+from numbers import Real
 import threading
 import time
+from time import monotonic
 from urllib.parse import quote, urlencode
 import uuid
 
@@ -14,7 +16,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from .codec import MAX_MESSAGE_BYTES, pack, unpack
-from .metrics import RequestMetrics
+from .metrics import RequestMetrics, StageTimings
 
 CAMERAS = {'head': 'front', 'left_wrist': 'wrist_left', 'right_wrist': 'wrist_right'}
 
@@ -37,6 +39,9 @@ class MaasBackend:
         self._seq = 0
         self._episode = None
         self._metrics = RequestMetrics()
+        self._timings = StageTimings(
+            ('dispatch', 'prepare', 'pack', 'send', 'response_wait', 'decode', 'validate', 'server'),
+            last_image_bytes='—', last_request_bytes='—', last_response_bytes='—')
         # websockets DEBUG includes Authorization headers and payloads. Never
         # propagate its transport logger into the worker's captured root logger.
         self._logger = logging.Logger('internvla-maas.transport', logging.CRITICAL + 1)
@@ -75,7 +80,7 @@ class MaasBackend:
                 raise MaasError('MaaS backend is closed')
 
     def monitor(self):
-        return self._metrics.snapshot()
+        return {**self._metrics.snapshot(), **self._timings.snapshot()}
 
     def _serve(self):
         asyncio.set_event_loop(self._loop)
@@ -113,10 +118,12 @@ class MaasBackend:
                 code = socket.close_code or 1006
                 self._fault(MaasError(f'MaaS connection closed ({code}); cold reload required'))
 
-    async def _dispatch(self, function, timeout, *, prediction=False):
+    async def _dispatch(self, function, timeout, *, prediction=False, queued_at=None):
         with self._lock:
             if prediction and self._interrupted:
                 raise asyncio.CancelledError()
+        if prediction and queued_at is not None:
+            self._timings.record('dispatch', (monotonic() - queued_at) * 1000.)
         self._active_task = asyncio.current_task()
         try:
             async with asyncio.timeout(timeout):
@@ -143,8 +150,9 @@ class MaasBackend:
             self.check_health()
             if self._loop is None:
                 raise MaasError('MaaS backend is not loaded')
+            queued_at = monotonic() if prediction else None
             future = asyncio.run_coroutine_threadsafe(
-                self._dispatch(function, timeout, prediction=prediction), self._loop)
+                self._dispatch(function, timeout, prediction=prediction, queued_at=queued_at), self._loop)
             try:
                 return future.result(timeout + self.service['close_timeout_s'] + 2)
             except CancelledError:
@@ -155,8 +163,19 @@ class MaasBackend:
                 self.abort()
                 raise self._fault(TimeoutError()) from None
 
-    async def _receive(self):
-        message = unpack(await self._ws.recv())
+    async def _receive(self, *, timed=False):
+        if timed:
+            with self._timings.measure('response_wait'):
+                frame = await self._ws.recv()
+            self._timings.set_values(last_response_bytes=len(frame) if isinstance(frame, bytes) else '—')
+            self._timings.missing('server')
+            with self._timings.measure('decode'):
+                message = unpack(frame)
+            server_ms = message.get('server_ms')
+            if isinstance(server_ms, Real) and not isinstance(server_ms, bool):
+                self._timings.record('server', float(server_ms))
+        else:
+            message = unpack(await self._ws.recv())
         if message['type'] in ('stop', 'error'):
             details = self._redact(message.get('reason', message.get('message', '')))
             code = self._redact(message.get('code', ''))
@@ -205,36 +224,43 @@ class MaasBackend:
 
     def predict(self, qpos, images, instruction):
         async def request():
-            if self._ws is None:
-                raise MaasError('MaaS session is unavailable; cold reload required')
-            state = np.asarray(qpos, dtype=np.float32).copy()
-            if state.shape != (14,) or not np.isfinite(state).all():
-                raise MaasError('MaaS state must be finite float32[14]')
-            with np.errstate(over='raise', invalid='raise'):
-                for index, offset in self.config['observations']['state_offsets'].items():
-                    state[int(index)] += offset
-            frames = {}
-            for name, role in CAMERAS.items():
-                frame = np.asarray(images[name])
-                if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8 or not frame.size:
-                    raise MaasError('MaaS images must be nonempty RGB uint8 HWC')
-                frames[role] = frame
-            message = dict(type='obs', seq=self._seq, t=time.time(), episode_id=self._episode,
-                           instruction=instruction, images=frames, state={'joint_pos': state})
-            self._seq += 1
-            payload = pack(message)
+            with self._timings.measure('prepare'):
+                if self._ws is None:
+                    raise MaasError('MaaS session is unavailable; cold reload required')
+                state = np.asarray(qpos, dtype=np.float32).copy()
+                if state.shape != (14,) or not np.isfinite(state).all():
+                    raise MaasError('MaaS state must be finite float32[14]')
+                with np.errstate(over='raise', invalid='raise'):
+                    for index, offset in self.config['observations']['state_offsets'].items():
+                        state[int(index)] += offset
+                frames = {}
+                for name, role in CAMERAS.items():
+                    frame = np.asarray(images[name])
+                    if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8 or not frame.size:
+                        raise MaasError('MaaS images must be nonempty RGB uint8 HWC')
+                    frames[role] = frame
+                self._timings.set_values(last_image_bytes=sum(frame.nbytes for frame in frames.values()))
+                message = dict(type='obs', seq=self._seq, t=time.time(), episode_id=self._episode,
+                               instruction=instruction, images=frames, state={'joint_pos': state})
+                self._seq += 1
+            with self._timings.measure('pack'):
+                payload = pack(message)
+            self._timings.set_values(last_request_bytes=len(payload))
             self._metrics.start()
-            await self._ws.send(payload)
-            reply = await self._receive()
-            if (reply['type'] != 'actions' or reply.get('space') != 'joint_pos'
-                    or reply.get('mode') != 'absolute' or not isinstance(reply.get('actions'), dict)):
-                raise MaasError('MaaS must return absolute joint_pos actions')
-            actions = reply['actions'].get('joint_pos')
-            if (not isinstance(actions, np.ndarray) or actions.shape != (50, 14)
-                    or actions.dtype.kind != 'f' or not np.isfinite(actions).all()):
-                raise MaasError('MaaS actions must be finite floating point [50,14]')
-            with np.errstate(over='raise', invalid='raise'):
-                return actions.astype(np.float32, copy=True)
+            with self._timings.measure('send'):
+                await self._ws.send(payload)
+            reply = await self._receive(timed=True)
+            with self._timings.measure('validate'):
+                if (reply['type'] != 'actions' or reply.get('space') != 'joint_pos'
+                        or reply.get('mode') != 'absolute' or not isinstance(reply.get('actions'), dict)):
+                    raise MaasError('MaaS must return absolute joint_pos actions')
+                actions = reply['actions'].get('joint_pos')
+                if (not isinstance(actions, np.ndarray) or actions.shape != (50, 14)
+                        or actions.dtype.kind != 'f' or not np.isfinite(actions).all()):
+                    raise MaasError('MaaS actions must be finite floating point [50,14]')
+                with np.errstate(over='raise', invalid='raise'):
+                    result = actions.astype(np.float32, copy=True)
+            return result
         return self._call(request, self.config['execution']['inference_timeout_s'], prediction=True)
 
     async def _interrupt(self):

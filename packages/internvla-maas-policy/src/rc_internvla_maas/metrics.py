@@ -1,7 +1,52 @@
 """Lifetime observation-request statistics; snapshots never touch transport."""
 import heapq
+import math
+from contextlib import contextmanager
 from threading import Lock
-from time import monotonic
+from time import monotonic, perf_counter
+
+
+class StageTimings:
+    """Constant-memory phase averages and last samples, including partial work."""
+    def __init__(self, stages, **values):
+        self._lock = Lock()
+        self._stages = {name: (0, 0., None) for name in stages}
+        self._values = values
+
+    @contextmanager
+    def measure(self, name):
+        started = perf_counter()
+        try:
+            yield
+        finally:
+            self.record(name, (perf_counter() - started) * 1000.)
+
+    def record(self, name, elapsed_ms):
+        if not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+            return
+        with self._lock:
+            count, mean, _ = self._stages[name]
+            count += 1
+            value = float(elapsed_ms)
+            self._stages[name] = (count, mean + (value - mean) / count, value)
+
+    def missing(self, name):
+        with self._lock:
+            count, mean, _ = self._stages[name]
+            self._stages[name] = (count, mean, None)
+
+    def set_values(self, **values):
+        with self._lock:
+            self._values.update(values)
+
+    def snapshot(self):
+        with self._lock:
+            result = {}
+            for name, (count, mean, last) in self._stages.items():
+                result.update({f'avg_{name}_ms': mean if count else '—',
+                               f'last_{name}_ms': last if last is not None else '—',
+                               f'{name}_samples': count})
+            return {**result, **self._values}
 
 
 class RequestMetrics:

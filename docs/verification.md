@@ -49,6 +49,16 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 证据：`/private/tmp/rc-mcp-management-interface-final.log`、`/private/tmp/rc-mcp-management-linux-final.log`、`/private/tmp/rc-mcp-management-docker-final/{result.json,cleanup.json}`。最终资源复核另存 `/private/tmp/rc-mcp-management-cleanup-final.json`。
 
+## InternVLA MaaS 策略内分阶段计时（2026-11-05）
+
+在原有请求总延迟和失败次数之外，增加 14 个阶段的平均耗时、最近耗时和样本数，以及图像/请求/响应字节数。覆盖快照提交、网络线程派发、准备、打包、发送、响应等待、解码、校验、服务端自报时间、后台推理、结果就绪等待、结果收集、夹爪后处理和完整回调。复用 SDK 原调度实现及完成时间戳，不修改 RC/SDK 公共接口。
+
+- 新增专项先 **10 failed**，实现后 **10 passed**。已知时钟结合真实本地 WebSocket 核对打包 2 ms、发送 4 ms、等待 50 ms、解码 3 ms，以及实际消息字节数；服务端时间缺失/非法不伪造样本、不拒绝合法动作。
+- 受影响的 timing、monitor、backend、runtime、worker 五个 MaaS 文件最终 **58 passed**，4.46 秒。验证就绪后等待 125 ms 的采纳延迟、缓存回调不新增模型请求计数、失败阶段计时、原失败次数与主动取消口径、只读 monitor 和普通 reset 保留统计。
+- 新阶段只保存平均值、最近值和计数，不增长历史数组；合并快照满足 SDK 的内建标量、项数和大小限制。分项存在包含关系及不同样本群体，不能直接相加。没有启动全量回归、ROS、Docker、真实 MaaS 或硬件，RC 端计时不在本次范围。
+
+证据：`/private/tmp/rc-maas-detailed-red.log`、`/private/tmp/rc-maas-detailed-green.log`、`/private/tmp/rc-maas-detailed-targeted.log`。
+
 ## InternVLA MaaS async 配置与请求监控（2026-11-05）
 
 取消策略专属的 sync/每步回调限制及禁止所有热修改的检查，模板默认 async，支持模式和调用间隔的白名单热修改。新增只读 monitor：平均、中位、上次请求延迟（毫秒）与失败次数；统计当前 context 内实际发送的已结束请求，排除握手和主动取消。

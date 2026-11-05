@@ -16,6 +16,10 @@ pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason='MaaS image u
 EMPTY = {'avg_latency_ms': '—', 'median_latency_ms': '—', 'last_latency_ms': '—', 'failed_requests': 0}
 
 
+def request_stats(snapshot):
+    return {key: snapshot[key] for key in EMPTY}
+
+
 def metrics_module():
     return importlib.import_module('rc_internvla_maas.metrics')
 
@@ -77,24 +81,24 @@ def test_monitor_stays_responsive_in_flight_and_reset_retains_statistics(tmp_pat
         gate = threading.Event()
         try:
             model.load()
-            assert model.monitor() == EMPTY  # Handshake isn't an observation request.
+            assert request_stats(model.monitor()) == EMPTY  # Handshake isn't an observation request.
             with ThreadPoolExecutor(1) as pool:
                 for index, duration in enumerate((.125, .375), 1):
                     gate.clear()
                     server.responses.put({'gate': gate})
                     pending = pool.submit(model.predict, np.zeros(14, np.float32), images(), 'task')
                     wait(lambda: len(server.requests) == index)
-                    before = model.monitor()
+                    before = request_stats(model.monitor())
                     for _ in range(10):
-                        assert model.monitor() == before
+                        assert request_stats(model.monitor()) == before
                     assert not pending.done()
                     now[0] += duration
                     gate.set()
                     assert pending.result(2).shape == (50, 14)
             expected = dict(avg_latency_ms=250., median_latency_ms=250., last_latency_ms=375., failed_requests=0)
-            assert model.monitor() == expected
+            assert request_stats(model.monitor()) == expected
             model.reset_context()
-            assert model.monitor() == expected
+            assert request_stats(model.monitor()) == expected
             assert len(server.requests) == 2
         finally:
             gate.set()
@@ -118,17 +122,17 @@ def test_failed_request_counted_once_before_disconnect_cleanup(tmp_path, monkeyp
         expected = dict(avg_latency_ms=125., median_latency_ms=125., last_latency_ms=125., failed_requests=1)
         disconnect = model._disconnect
         async def observe_disconnect():
-            assert model.monitor() == expected
+            assert request_stats(model.monitor()) == expected
             await disconnect()
         try:
             model.load()
             monkeypatch.setattr(model, '_disconnect', observe_disconnect)
             with pytest.raises(RuntimeError):
                 model.predict(np.zeros(14, np.float32), images(), 'task')
-            assert model.monitor() == expected
+            assert request_stats(model.monitor()) == expected
             with pytest.raises(RuntimeError):
                 model.predict(np.zeros(14, np.float32), images(), 'task')
-            assert model.monitor() == expected and len(server.requests) == 1
+            assert request_stats(model.monitor()) == expected and len(server.requests) == 1
         finally:
             monkeypatch.setattr(model, '_disconnect', disconnect)
             model.close()
@@ -146,7 +150,7 @@ def test_lifecycle_cancellation_is_not_a_failed_request(tmp_path):
                 model.abort()
                 with pytest.raises(RuntimeError):
                     pending.result(2)
-            assert model.monitor() == EMPTY
+            assert request_stats(model.monitor()) == EMPTY
         finally:
             model.close()
 
@@ -158,6 +162,6 @@ def test_pre_send_validation_failure_has_no_request_statistics(tmp_path):
             model.load()
             with pytest.raises(RuntimeError):
                 model.predict(np.zeros(13, np.float32), images(), 'task')
-            assert model.monitor() == EMPTY and not server.requests
+            assert request_stats(model.monitor()) == EMPTY and not server.requests
         finally:
             model.close()

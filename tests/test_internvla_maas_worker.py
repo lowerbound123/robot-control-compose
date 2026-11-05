@@ -85,13 +85,15 @@ def test_monitor_and_hot_scheduling_work_during_real_worker_inference(tmp_path, 
             identity = worker.runtime_id
             assert worker.supports_monitor
             empty = {'avg_latency_ms': '—', 'median_latency_ms': '—', 'last_latency_ms': '—', 'failed_requests': 0}
-            assert monitor() == empty
+            initial = monitor()
+            assert {key: initial[key] for key in empty} == empty
             server.responses.put({'gate': gate})
             worker.submit({'request_id': 1, 'generation': 1, 'config_version': 1,
                            'state': {'qpos': [0.] * 14}, 'action_chunk': [], 'images': lease.descriptors,
                            'runtime': {'control_epoch': 1, 'consumed_actions': 0}})
             wait(lambda: len(server.requests) == 1)
-            assert monitor() == empty and worker.poll() is None
+            pending = monitor()
+            assert {key: pending[key] for key in empty} == empty and worker.poll() is None
             gate.set()
             response = wait(worker.poll)
             assert response['type'] == 'result' and response['images_released'] is True
