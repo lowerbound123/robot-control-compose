@@ -19,5 +19,5 @@ try {
   fs.writeFileSync('/tmp/webui-ai-error.json', '{"error":"AI proxy request failed"}', { mode: 0o600 })
 } catch (_) {
   // JSON/parser/fs exceptions may contain configuration values. Never print them.
-  throw Error('Cannot load WebUI server config; check endpoint, model, api_key and timeout_s')
+  throw Error('Cannot load WebUI server config; check endpoint, model, api_key, timeout_s and effort')
 }

@@ -317,14 +317,16 @@ def create_server(controller):
 
     @server.tool(annotations=write)
     async def policy_chain(policies: list[StrictStr], action: Literal['apply', 'save'] = 'apply',
-                           wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+                           wait: bool = False, timeout_s: Timeout = 30,
+                           expected_control: ControlGuard | None = None) -> CallToolResult:
         """After take, apply an ordered source list (duplicates allowed) or save it as default_chain.
 
         Apply rebuilds the group, stays paused under MCP, and does not save or reset.
         Save only writes the supplied list; it does not change the active group or member parameters.
         """
         return await manage('policy_chain', controller.submit_policy_chain, policies, action,
-                            wait=wait, timeout_s=timeout_s)
+                            wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=write)
     async def record(action: Literal['status', 'on', 'off', 'toggle'] = 'status',
@@ -342,21 +344,25 @@ def create_server(controller):
 
     @server.tool(annotations=write)
     async def policy_command(instance_id: str, command: str, args: list[PolicyArgument] = [],
-                             wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+                             wait: bool = False, timeout_s: Timeout = 30,
+                             expected_control: ControlGuard | None = None) -> CallToolResult:
         """After take, execute one declared command on an exact loaded instance using strictly typed JSON arguments.
 
         Query policy_commands/help for argument types and effects. Lifecycle effects preserve MCP ownership and pause policy.
         timeout_s bounds this wait, not the manifest's handler deadline. No automatic retry.
         """
         return await manage('policy_command', controller.submit_policy_command, instance_id, command, list(args),
-                            wait=wait, timeout_s=timeout_s)
+                            wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=write)
-    async def retry_reload(instance_id: str, wait: bool = False, timeout_s: Timeout = 30) -> CallToolResult:
+    async def retry_reload(instance_id: str, wait: bool = False, timeout_s: Timeout = 30,
+                           expected_control: ControlGuard | None = None) -> CallToolResult:
         """After take, cold-retry the exact failed instance reported by status.retry_reload_instance; keep MCP ownership."""
         import shlex
         return await manage('retry_reload', controller.submit, shlex.join(['retry-reload', instance_id]),
-                            origin='mcp', mcp_tool='retry_reload', wait=wait, timeout_s=timeout_s)
+                            origin='mcp', mcp_tool='retry_reload', wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=write)
     async def take(wait: bool = True, timeout_s: Timeout = 30,
@@ -381,7 +387,8 @@ def create_server(controller):
             return result({'error': str(exc)}, error=True)
 
     @server.tool(annotations=write)
-    async def return_and_wait(timeout_s: PolicyWaitTimeout | None = None) -> CallToolResult:
+    async def return_and_wait(timeout_s: PolicyWaitTimeout | None = None,
+                              expected_control: ControlGuard | None = None) -> CallToolResult:
         """After take, return control and await explicit policy completion/termination; default: no timeout.
 
         A timeout (0 returns immediately), cancellation or disconnect only ends this
@@ -392,7 +399,7 @@ def create_server(controller):
         try:
             # Registration is a short lock/queue operation. Do it before the
             # first await so cancellation cannot leave an unregistered episode.
-            identity = controller.submit_policy_wait()
+            identity = controller.submit_policy_wait(expected_control=expected_control.model_dump() if expected_control is not None else None)
             deadline = None if timeout_s is None else time.monotonic() + timeout_s
             payload = controller.get_policy_result(identity)
             while not payload['finished']:
@@ -410,11 +417,12 @@ def create_server(controller):
         except (ValueError, RuntimeError, PermissionError) as exc:
             return rejected('return_and_wait', exc)
 
-    async def motion(tool, make_steps, wait, timeout_s, clear_queue, include_images, cameras, image_quality):
+    async def motion(tool, make_steps, wait, timeout_s, clear_queue, include_images, cameras, image_quality, expected_control):
         try:
             validate_images(cameras, image_quality)
             steps = make_steps()
-            identity = await asyncio.to_thread(controller.submit_direct, steps, clear_queue=clear_queue, tool_name=tool)
+            identity = await asyncio.to_thread(controller.submit_direct, steps, clear_queue=clear_queue, tool_name=tool,
+                expected_control=expected_control.model_dump() if expected_control is not None else None)
             return await finish_operation(identity, wait, timeout_s, include_images, cameras, image_quality)
         except (ValueError, RuntimeError, PermissionError) as exc:
             return rejected(tool, exc)
@@ -422,7 +430,7 @@ def create_server(controller):
     @server.tool(annotations=write)
     async def send_command(commands: str | list[str | list[str]], wait: bool = False, timeout_s: Timeout = 30,
                            clear_queue: bool = False, include_images: bool = False, cameras: list[str] | None = None,
-                           image_quality: Quality | None = None) -> CallToolResult:
+                           image_quality: Quality | None = None, expected_control: ControlGuard | None = None) -> CallToolResult:
         """Queue relative commands after take. Example: left:up:0.02@slow | right:hold. Lists are sequential steps.
 
         Motions: forward/backward, left/right, up/down, twist-clockwise/counterclockwise,
@@ -430,23 +438,23 @@ def create_server(controller):
         open/close, hold, home. Moves use meters/radians; gripper values are raw absolute commands.
         clear_queue removes pending steps only. wait timeout does not cancel motion.
         """
-        return await motion('send_command', lambda: parse_commands(commands, direct["default_speed"]), wait, timeout_s, clear_queue, include_images, cameras, image_quality)
+        return await motion('send_command', lambda: parse_commands(commands, direct["default_speed"]), wait, timeout_s, clear_queue, include_images, cameras, image_quality, expected_control)
 
     @server.tool(annotations=write)
     async def move_eef(targets: dict[Arm, EefTarget], wait: bool = False, timeout_s: Timeout = 30,
                        clear_queue: bool = False, include_images: bool = False, cameras: list[str] | None = None,
-                       image_quality: Quality | None = None) -> CallToolResult:
+                       image_quality: Quality | None = None, expected_control: ControlGuard | None = None) -> CallToolResult:
         """Queue absolute xyz/RPY (meters/radians) for selected arms; optional raw gripper and speed. Requires take."""
         return await motion('move_eef', lambda: [structured_step(4, {arm: value.model_dump(exclude_none=True) for arm, value in targets.items()}, direct["default_speed"])],
-                            wait, timeout_s, clear_queue, include_images, cameras, image_quality)
+                            wait, timeout_s, clear_queue, include_images, cameras, image_quality, expected_control)
 
     @server.tool(annotations=write)
     async def move_joints(targets: dict[Arm, JointTarget], wait: bool = False, timeout_s: Timeout = 30,
                           clear_queue: bool = False, include_images: bool = False, cameras: list[str] | None = None,
-                          image_quality: Quality | None = None) -> CallToolResult:
+                          image_quality: Quality | None = None, expected_control: ControlGuard | None = None) -> CallToolResult:
         """Queue six absolute joint angles per selected arm, with separate raw gripper and speed. Requires take."""
         return await motion('move_joints', lambda: [structured_step(5, {arm: value.model_dump(exclude_none=True) for arm, value in targets.items()}, direct["default_speed"])],
-                            wait, timeout_s, clear_queue, include_images, cameras, image_quality)
+                            wait, timeout_s, clear_queue, include_images, cameras, image_quality, expected_control)
 
     return server
 

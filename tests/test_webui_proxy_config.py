@@ -46,7 +46,7 @@ cat /tmp/webui-public.json
 def test_real_njs_generates_valid_nginx_and_sanitized_public_config(tmp_path, endpoint, model):
     result = render(tmp_path, dict(endpoint=endpoint, model=model, api_key='private-render-canary', timeout_s=.5))
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == dict(llm=True, enabled=bool(endpoint and model), model=model, timeout_s=.5)
+    assert json.loads(result.stdout) == dict(llm=True, enabled=bool(endpoint and model), model=model, timeout_s=.5, effort=None)
     assert 'private-render-canary' not in result.stdout + result.stderr
     assert endpoint not in result.stdout if endpoint else True
 
@@ -72,14 +72,29 @@ def test_invalid_json_diagnostic_does_not_print_file_contents(tmp_path):
 def test_direct_mode_needs_no_provider_config(tmp_path):
     result = render(tmp_path, {'llm': False})
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == dict(llm=False, enabled=False, model='', timeout_s=30)
+    assert json.loads(result.stdout) == dict(llm=False, enabled=False, model='', timeout_s=30, effort=None)
+
+
+@pytest.mark.parametrize('effort', [None, 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+def test_real_njs_projects_optional_effort(tmp_path, effort):
+    result = render(tmp_path, {'endpoint': 'https://model.example/v1', 'model': 'fixture',
+                              'api_key': '', 'timeout_s': 30, 'effort': effort})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['effort'] == effort
+
+
+@pytest.mark.parametrize('effort', ['private-render-canary', ['high'], True])
+def test_real_njs_rejects_invalid_effort_without_echo(tmp_path, effort):
+    result = render(tmp_path, {'llm': False, 'effort': effort})
+    assert result.returncode != 0
+    assert 'private-render-canary' not in result.stdout + result.stderr
 
 
 def test_real_host_gateway_render_keeps_upstream_out_of_public_config(tmp_path):
     result = render(tmp_path, {'llm': False}, upstream='http://host.docker.internal:4000',
                     hosts='127.0.0.1 localhost\n192.0.2.1 host.docker.internal\n')
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == dict(llm=False, enabled=False, model='', timeout_s=30)
+    assert json.loads(result.stdout) == dict(llm=False, enabled=False, model='', timeout_s=30, effort=None)
     assert '192.0.2.1' not in result.stdout and 'host.docker.internal' not in result.stdout
 
 

@@ -1,9 +1,11 @@
 // Vite-only adapter. Production requests are handled by Nginx.
 import { readFile } from 'node:fs/promises'
+import { once } from 'node:events'
 import configuration from './server-config.mjs'
 
 function reply(response, status, value) {
   if (response.destroyed || response.writableEnded) return
+  if (response.headersSent) { response.destroy(); return }
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
   response.end(JSON.stringify(value))
 }
@@ -55,7 +57,7 @@ export default function createAiMiddleware(configPath) {
       try {
         const upstream = await fetch(config.endpoint, {
           method: 'POST', redirect: 'manual', signal: controller.signal,
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json',
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json', 'Accept-Encoding': 'identity',
             ...(config.api_key ? { Authorization: `Bearer ${config.api_key}` } : {}) },
           body: Buffer.concat(chunks),
         })
@@ -66,21 +68,28 @@ export default function createAiMiddleware(configPath) {
           return
         }
         const reader = upstream.body?.getReader()
+        const streaming = upstream.headers.get('content-type')?.toLowerCase().includes('text/event-stream') === true
         const output = []
         let size = 0
+        if (streaming) {
+          response.writeHead(upstream.status, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' })
+          response.flushHeaders()
+        }
         if (reader) for (;;) {
           const { value, done } = await reader.read()
           if (done) break
           size += value.length
-          if (size > 128_000) { await reader.cancel(); reply(response, 502, { error: 'AI response too large' }); return }
-          output.push(value)
+          if (size > (streaming ? 8 * 1024 * 1024 : 128_000)) { await reader.cancel(); reply(response, 502, { error: 'AI response too large' }); return }
+          if (streaming) {
+            if (!response.write(value)) await once(response, 'drain', { signal: controller.signal })
+          } else output.push(value)
         }
         if (!response.destroyed) {
-          response.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-          response.end(Buffer.concat(output))
+          if (!streaming) response.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+          response.end(streaming ? undefined : Buffer.concat(output))
         }
       } catch { reply(response, timedOut ? 504 : 502, { error: 'AI proxy request failed' }) }
-      finally { clearTimeout(timer); response.removeListener('close', close) }
+      finally { clearTimeout(timer); controller.abort(); response.removeListener('close', close) }
     })().catch(() => reply(response, 502, { error: 'AI proxy request failed' }))
   }
 }

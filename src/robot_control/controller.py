@@ -4,6 +4,7 @@ from __future__ import annotations
 from .secret_config import public_value, public_message, reject_secret_edit
 
 import copy
+from dataclasses import replace
 import json
 import os
 import queue
@@ -117,7 +118,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._exit_operations = []
         self._publish_fault = False
         self._published_targets = {}
-        self.operations = Operations()
+        self.operations = Operations(control_lock=self._lock, control_snapshot=lambda: {
+            'run_id': self.run_id, 'control_epoch': self._control_epoch, 'generation': self.buffer.generation})
         self._init_policy_results()
         self.direct = DirectMotion(self.config.get("direct_control", {}), self.config["frequency_hz"],
                                    self.operations, self._send_direct, self.robot, emit=self._emit)
@@ -338,7 +340,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 observer = self._mcp_operation_logger(tool, {'line': command})
             identity = self.operations.create(command, observer=observer)
             if words and words[0] == 'retry-reload':
-                self._queue_reload_retry(identity, command, words, origin=origin)
+                self._queue_reload_retry(identity, command, words, origin=origin, expected_control=expected_control)
                 return identity
             if recording and not readonly:
                 self._submit_recording(identity, words)
@@ -360,6 +362,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     self._emit_command(f"policy command [{identity}] failed: {exc}", "error")
                     return identity
                 if custom is not None:
+                    custom = replace(custom, expected_control=copy.deepcopy(expected_control))
                     self._commands.put(custom)
                     self._wake.set()
                     return identity
@@ -375,6 +378,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 self._emit_command(f'配置操作失败：{exc}', 'error')
                 return identity
             if save_request is not None:
+                save_request = replace(save_request, expected_control=copy.deepcopy(expected_control))
                 self._commands.put(save_request)
                 self._wake.set()
                 return identity
@@ -397,8 +401,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             self._wake.set()
             return identity
 
-    def submit_direct(self, steps, *, clear_queue=False, tool_name='send_command'):
+    def submit_direct(self, steps, *, clear_queue=False, tool_name='send_command', expected_control=None):
         with self._lock:
+            self._check_expected_control(expected_control)
             self._require_mcp()
             if not self._connected or self._operation is not None or self._motion is not None or self._stop.is_set():
                 raise RuntimeError("busy: robot connection or lifecycle operation")
@@ -409,7 +414,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             details = {'steps': len(steps), 'arms': sorted({arm for step in steps for arm in step.arms}),
                        'clear_queue': clear_queue, 'first_step': steps[0].text if steps else None}
             identity = self.operations.create("direct motion", observer=self._mcp_operation_logger(tool_name, details))
-            self._commands.put(ControlRequest(identity, "direct", "mcp", self._control_epoch, tuple(steps), clear_queue))
+            self._commands.put(ControlRequest(identity, "direct", "mcp", self._control_epoch, tuple(steps), clear_queue,
+                                              expected_control=copy.deepcopy(expected_control)))
             self._wake.set()
             return identity
 

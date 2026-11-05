@@ -10,18 +10,20 @@ from .operations import ControlRequest
 
 
 class ChainManagement:
-    def submit_policy_chain(self, policies, action='apply'):
+    def submit_policy_chain(self, policies, action='apply', *, expected_control=None):
         if (action not in ('apply', 'save') or not isinstance(policies, list) or not policies
                 or any(not isinstance(name, str) for name in policies)):
             raise ValueError('policy_chain requires a nonempty policy list and apply/save action')
         with self._lock:
+            self._check_expected_control(expected_control)
             self._require_mcp()
             if self.done.is_set() or self._stop.is_set() or self._operation is not None:
                 raise RuntimeError('busy: controller lifecycle or shutdown')
             identity = self.operations.create(f'policy_chain {action}', observer=self._mcp_operation_logger(
                 'policy_chain', {'action': action, 'policies': list(policies)}))
             self._commands.put(ControlRequest(identity, f'policy_chain {action}', 'mcp', self._control_epoch,
-                chain_action=action, chain_policies=tuple(policies), generation=self.buffer.generation))
+                chain_action=action, chain_policies=tuple(policies), generation=self.buffer.generation,
+                expected_control=copy.deepcopy(expected_control)))
             self._wake.set()
             return identity
 

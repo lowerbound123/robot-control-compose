@@ -62,12 +62,13 @@ class PolicyCommandSupport(PolicyCapabilities):
             text = self._format_capabilities(capabilities)
             return '\n'.join(([HELP, 'Policy TUI commands:'] if name is None else []) + [text])
 
-    def submit_policy_command(self, instance_id, command, args=None):
+    def submit_policy_command(self, instance_id, command, args=None, *, expected_control=None):
         arguments = [] if args is None else args
         if not isinstance(instance_id, str) or not isinstance(command, str) or not isinstance(arguments, list):
             raise ValueError('policy_command requires instance_id, command and an argument list')
         line = shlex.join(['policy', instance_id, command, *(str(arg) for arg in arguments)])
-        return self.submit(line, origin='mcp', policy_arguments=arguments, mcp_tool='policy_command')
+        return self.submit(line, origin='mcp', policy_arguments=arguments, mcp_tool='policy_command',
+                           expected_control=expected_control)
 
     def _policy_control_current(self, origin, epoch):
         return (self.control_owner == ('mcp' if origin == 'mcp' else 'policy')

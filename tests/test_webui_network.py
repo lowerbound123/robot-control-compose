@@ -16,12 +16,30 @@ BACKEND = os.environ.get('RC_WEBUI_TEST_BACKEND_IMAGE', 'robot-control-compose-r
 pytestmark = pytest.mark.skipif(not IMAGE, reason='set RC_WEBUI_TEST_IMAGE for Docker network checks')
 
 BACKEND_CODE = r'''
-import json, os
+import json, os, time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_POST(self): self.do_GET()
     def do_GET(self):
+        if self.path == '/ai-fixture':
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+            if (self.headers.get('Authorization') != 'Bearer ai-stream-test'
+                    or 'text/event-stream' not in self.headers.get('Accept', '') or body.get('stream') is not True):
+                self.send_error(400); return
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Set-Cookie', 'private-stream-canary')
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n')
+            self.wfile.flush()
+            deadline = time.monotonic() + 10
+            while not Path('/tmp/release-stream').exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.wfile.write(b'data: [DONE]\n\n')
+            self.wfile.flush()
+            return
         if self.headers.get('Authorization') != 'Bearer rc-network-test':
             self.send_error(401); return
         if self.headers.get('Host') != 'localhost:4000':
@@ -105,7 +123,54 @@ def test_real_proxy_forwards_health_mcp_and_three_camera_streams(tmp_path, mode)
                 assert reply.read() == (b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n'
                                         b'\xff\xd8\xff\xd9\r\n--frame--\r\n')
         with opener.open(address + '/config.json', timeout=5) as reply:
-            assert json.load(reply) == dict(llm=False, enabled=False, model='', timeout_s=30)
+            assert json.load(reply) == dict(llm=False, enabled=False, model='', timeout_s=30, effort=None)
+    finally:
+        docker('rm', '-f', web, backend, check=False)
+        docker('network', 'rm', network, check=False)
+
+
+def test_real_nginx_delivers_sse_before_the_provider_is_allowed_to_finish(tmp_path):
+    prefix = 'rc-webui-sse-' + uuid4().hex[:10]
+    network, backend, web = prefix, prefix + '-backend', prefix + '-web'
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps(dict(endpoint='http://robot-control:4000/ai-fixture', model='test',
+                                      api_key='ai-stream-test', timeout_s=5)))
+    config.chmod(0o600)
+    opener = build_opener(ProxyHandler({}))
+    try:
+        docker('network', 'create', network)
+        docker('run', '-d', '--pull=never', '--name', backend, '--network', network,
+               '--network-alias', 'robot-control', '--env', 'PORT=4000',
+               '--entrypoint', 'python3', BACKEND, '-u', '-c', BACKEND_CODE)
+        for _ in range(100):
+            if docker('logs', backend).stdout.strip() == '4000':
+                break
+            time.sleep(.05)
+        else:
+            pytest.fail('SSE fixture did not start')
+        docker('run', '-d', '--pull=never', '--name', web, '--network', network,
+               '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,mode=1777,size=16m',
+               '--user', f'{os.getuid()}:{os.getgid()}', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
+               '--mount', f'type=bind,source={config},target=/run/robot-control-webui/config.json,readonly',
+               '-p', '127.0.0.1::8080', IMAGE)
+        address = 'http://' + docker('port', web, '8080/tcp').stdout.strip()
+        for _ in range(100):
+            try:
+                with opener.open(address + '/monitor', timeout=.5):
+                    break
+            except OSError:
+                time.sleep(.05)
+        else:
+            pytest.fail('Nginx did not become ready')
+        with opener.open(Request(address + '/ai/chat/completions', data=b'{"stream":true}',
+                                 headers={'Content-Type': 'application/json'}), timeout=3) as reply:
+            assert reply.headers['Content-Type'].startswith('text/event-stream')
+            assert reply.headers.get('Set-Cookie') is None
+            assert reply.readline() == b'data: {"choices":[{"delta":{"content":"first"}}]}\n'
+            assert reply.readline() == b'\n'
+            # The provider cannot finish until AFTER we have read the first chunk.
+            docker('exec', backend, 'touch', '/tmp/release-stream')
+            assert reply.read() == b'data: [DONE]\n\n'
     finally:
         docker('rm', '-f', web, backend, check=False)
         docker('network', 'rm', network, check=False)

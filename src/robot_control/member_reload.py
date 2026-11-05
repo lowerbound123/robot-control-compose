@@ -1,5 +1,6 @@
 """Replace one independently owned policy deployment while its chain is paused."""
 from dataclasses import dataclass
+import copy
 import time
 
 from .config import PolicyRecord, validate_entry
@@ -20,7 +21,7 @@ class MemberReloadSupport:
                               epoch=self._control_epoch, commit=True, public_id=public_id, in_place=in_place,
                               source_generation=self.buffer.generation, origin=origin)
 
-    def _queue_reload_retry(self, identity, line, words, *, origin='tui'):
+    def _queue_reload_retry(self, identity, line, words, *, origin='tui', expected_control=None):
         candidate = self._retry_candidate
         try:
             if len(words) != 2:
@@ -30,7 +31,8 @@ class MemberReloadSupport:
             if self._operation is not None or candidate is None or words[1] != candidate.member.instance_id:
                 raise ValueError(f'{words[1]}: 没有可重试的目标实例')
             self._commands.put(ControlRequest(identity, line, origin, self._control_epoch,
-                               retry_candidate=candidate, retry_generation=self.buffer.generation))
+                               retry_candidate=candidate, retry_generation=self.buffer.generation,
+                               expected_control=copy.deepcopy(expected_control)))
             self._wake.set()
         except (ValueError, PermissionError) as exc:
             self.operations.update(identity, 'failed', error=exc)

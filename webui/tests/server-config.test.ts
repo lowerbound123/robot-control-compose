@@ -13,7 +13,7 @@ describe('server-only API configuration', () => {
   it('exports only enabled/model/timeout and keeps credentials private', async () => {
     const implementation = await serverModule()
     const parsed = implementation.parseConfig(privateConfig)
-    expect(implementation.publicConfig(parsed)).toEqual({ llm: true, enabled: true, model: 'test-model', timeout_s: 30 })
+    expect(implementation.publicConfig(parsed)).toEqual({ llm: true, enabled: true, model: 'test-model', timeout_s: 30, effort: null })
     expect(parsed.host).toBe('models.example:8443')
     expect(parsed.tls_name).toBe('models.example')
     const nginx = implementation.nginxLocation(parsed)
@@ -25,7 +25,7 @@ describe('server-only API configuration', () => {
   it('keeps monitoring available when API settings are empty', async () => {
     const implementation = await serverModule()
     const parsed = implementation.parseConfig({ endpoint: '', model: '', api_key: '', timeout_s: 30 })
-    expect(implementation.publicConfig(parsed)).toEqual({ llm: true, enabled: false, model: '', timeout_s: 30 })
+    expect(implementation.publicConfig(parsed)).toEqual({ llm: true, enabled: false, model: '', timeout_s: 30, effort: null })
     expect(implementation.nginxLocation(parsed)).toContain('return 503;')
   })
 
@@ -56,7 +56,7 @@ describe('server-only API configuration', () => {
   it('accepts direct-only config and disables the upstream even if credentials exist', async () => {
     const implementation = await serverModule()
     expect(implementation.publicConfig(implementation.parseConfig({ llm: false }))).toEqual({
-      llm: false, enabled: false, model: '', timeout_s: 30,
+      llm: false, enabled: false, model: '', timeout_s: 30, effort: null,
     })
     const parsed = implementation.parseConfig({ ...privateConfig, llm: false })
     expect(parsed.enabled).toBe(false)

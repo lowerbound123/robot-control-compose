@@ -1,6 +1,6 @@
 # MCP 管理与控制
 
-WebUI 使用的 `status` 额外返回本次 RC 的 `run_id`。`take`、`return`、`command`、`record` 支持可选 `expected_control={run_id, control_epoch, generation}`：RC 对提交时状态进行原子复核，普通排队控制命令在执行前再次复核。浏览器可据此拒绝翻译期间人工干预或重启前生成的旧操作。不传时沿用原有行为；录制仍不要求接管。见 [WebUI](webui.md)。
+WebUI 使用的 `status` 额外返回本次 RC 的 `run_id`。`take`、`return`、`command`、`record`、`policy_command`、`policy_chain`、`retry_reload`、`return_and_wait`、`send_command`、`move_eef`、`move_joints` 支持可选 `expected_control={run_id, control_epoch, generation}`：RC 对提交时状态进行原子复核，普通排队控制命令在执行前再次复核。浏览器可据此拒绝翻译期间人工干预或重启前生成的旧操作。不传时沿用原有行为；录制仍不要求接管。终态回执新增不可变的 `completion_control`（相同三个字段），记录完成时的控制状态；`controller` 仍是查询时的当前快照，不能用它替代完成证明。见 [WebUI](webui.md)。
 
 服务默认提供 Streamable HTTP `/mcp`。本地 TUI/headless 的 `mcp <工具> <JSON>` 使用同一组注册工具。`help mcp` 查看完整参数；MCP `help()` 查看 RC 帮助。
 

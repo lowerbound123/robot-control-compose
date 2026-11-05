@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/client'
 import { isStatus, ToolRejectedError, type Payload, type RcGateway, type RcStatus } from './commands'
+import type { ToolCatalog } from './agent-capabilities'
 
 export class McpGateway implements RcGateway {
   private client?: Client
@@ -25,8 +26,9 @@ export class McpGateway implements RcGateway {
     return this.connecting
   }
 
-  async call(name: string, args: Payload = {}, expected?: RcStatus): Promise<Payload> {
+  async call(name: string, args: Payload = {}, expected?: RcStatus, signal?: AbortSignal): Promise<Payload> {
     const client = await this.connection()
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     if (expected && !expected.run_id) throw new ToolRejectedError('RC 缺少运行标识，请同步更新 RC 后再执行控制。')
     try {
       if (name === 'tui_command' || name === 'cancel_tui_command') {
@@ -37,11 +39,12 @@ export class McpGateway implements RcGateway {
       }
       const response = await client.callTool({ name, arguments: { ...args, ...(expected ? {
         expected_control: { run_id: expected.run_id, control_epoch: expected.control_epoch, generation: expected.generation },
-      } : {}) } }, { timeout: 12_000 })
+      } : {}) } }, { timeout: 12_000, signal })
       const payload = response.structuredContent
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new ToolRejectedError('RC 未返回结构化结果。')
+      // A malformed response does not prove that a write was rejected.
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw Error('RC 未返回结构化结果，提交是否受理需核对。')
       const result = payload as Payload
-      if (response.isError && typeof result.operation_id !== 'string') throw new ToolRejectedError(String(result.error || 'RC 拒绝了请求。'))
+      if (response.isError && (typeof result.operation_id !== 'string' || typeof result.status !== 'string')) throw new ToolRejectedError(String(result.error || 'RC 拒绝了请求。'))
       return result
     } catch (error) {
       if (!(error instanceof ToolRejectedError)) {
@@ -50,6 +53,12 @@ export class McpGateway implements RcGateway {
       }
       throw error
     }
+  }
+
+  async catalog(): Promise<ToolCatalog> {
+    const client = await this.connection()
+    const catalog = await client.listTools(undefined, { cacheMode: 'refresh' })
+    return { instructions: client.getInstructions() || '', tools: catalog.tools }
   }
 
   async status(): Promise<RcStatus> {

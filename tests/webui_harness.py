@@ -26,6 +26,83 @@ from robot_control.robots.mock import MockRobot
 from robot_control.mcp_server import MCPService
 
 
+def model_fixture(body):
+    """Deterministic decisions driven by the same live context as a real model."""
+    messages = body.get('messages', [])
+    context, exchanges = {}, []
+    text = messages[-1].get('content', '') if messages else ''
+    for index, message in enumerate(messages):
+        try:
+            data = json.loads(message.get('content', ''))
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get('kind') == 'live_capabilities_and_context':
+            context = data
+            text = messages[index + 1]['content']
+        elif data.get('kind') == 'tool_result_data':
+            exchanges.append(data)
+    capabilities = context.get('capabilities', {})
+    calls = [exchange['tool'] for exchange in exchanges]
+    names = [call['name'] for call in calls]
+    status = capabilities.get('status', {})
+    def decision(name=None, arguments=None, message=None):
+        return {'message': message or (text + (' · 已执行' if name is None else ' · ' + name)),
+                'tool_call': None if name is None else {'name': name, 'arguments': arguments or {}}}
+    if '非法' in text:
+        value = decision('unregistered_tool')
+    elif '未知策略' in text:
+        value = decision('policy_command', {'instance_id': 'not-installed', 'command': 'set-message', 'args': ['测试']})
+    elif '重复实例' in text:
+        value = decision(message='请明确选择 example-0 还是 example-1。')
+    elif '设置消息' in text or '刚才那个策略' in text or '链后设置' in text:
+        instances = [row['instance_id'] for row in capabilities.get('policy_commands', {}).get('policies', []) if row.get('loaded')]
+        target = 'example-1' if 'example-1' in instances else next(iter(instances), None)
+        if 'show' not in names:
+            value = decision('show', {'scope': 'policy'})
+        elif status.get('control_owner') != 'mcp':
+            value = decision('take')
+        elif '链后设置' in text and 'policy_chain' not in names:
+            value = decision('policy_chain', {'policies': ['example', 'example']})
+        elif 'policy_command' not in names:
+            value = decision('policy_command', {'instance_id': target, 'command': 'set-message', 'args': ['浏览器验证消息']})
+        elif names.count('show') < 2:
+            value = decision('show', {'scope': 'policy'})
+        else:
+            value = decision(message=f'{target} 消息已更新并查询核实 · 已执行')
+    elif '任务完成' in text or '任务终止' in text:
+        instances = [row['instance_id'] for row in capabilities.get('policy_commands', {}).get('policies', []) if row.get('loaded')]
+        if 'return_and_wait' in names:
+            value = decision(message='策略任务已完成，已收到 completed 结果。')
+        elif status.get('control_owner') != 'mcp':
+            value = decision('take')
+        else:
+            value = decision('return_and_wait')
+    elif '录制' in text:
+        value = decision() if 'record' in names else decision('record', {'action': 'off' if '停止录制' in text else 'on'})
+    elif '毫米' in text:
+        if status.get('control_owner') != 'mcp':
+            value = decision('take')
+        elif 'send_command' not in names:
+            value = decision('send_command', {'commands': 'left:up:0.001@slow'})
+        elif 'state' not in names:
+            value = decision('state')
+        else:
+            value = decision(message='已发送左臂上移一毫米的目标并读取反馈。')
+    elif '复位' in text or '切换自链' in text or '继续' in text:
+        operation = 'return' if '继续' in text else 'command'
+        if operation in names:
+            value = decision()
+        elif status.get('control_owner') != 'mcp':
+            value = decision('take')
+        else:
+            value = decision(operation, {} if operation == 'return' else {'line': 'switch example_chain' if '切换自链' in text else 'reset'})
+    else:
+        value = decision() if 'status' in names else decision('status')
+    return text, context, exchanges, value
+
+
 class PreviewTestRobot(MockRobot):
     def __init__(self, config=None):
         super().__init__(config)
@@ -100,6 +177,8 @@ def main():
         service = MCPService(controller, {'host': args.host, 'port': args.port})
         batch_gate, batch_held = threading.Event(), threading.Event()
         batch_gate.set()
+        stream_gate = threading.Event()
+        stream_gate.set()
 
         def command(line):
             result = controller.wait_operation(controller.submit(line), 15)
@@ -135,8 +214,26 @@ def main():
             def do_POST(self):
                 length = int(self.headers.get('Content-Length', 0))
                 body = json.loads(self.rfile.read(length) or b'{}')
+                if self.path == '/test/stream-hold':
+                    stream_gate.clear()
+                    self.reply({'ready': True})
+                    return
+                if self.path == '/test/stream-release':
+                    stream_gate.set()
+                    self.reply({'ready': True})
+                    return
                 if self.path == '/test/pause':
                     self.reply(command('pause'))
+                    return
+                if self.path == '/test/policy-result':
+                    # A local operator triggers the real example runtime result
+                    # after the return/reset barrier, without changing ownership.
+                    import shlex
+                    outcome = body.get('outcome', 'completed')
+                    if outcome not in ('completed', 'terminated'):
+                        self.reply({'error': 'invalid outcome'}, 400)
+                        return
+                    self.reply(command(shlex.join(['policy', 'example', 'next-result', outcome, '浏览器任务结果'])))
                     return
                 if self.path == '/test/batch-hold':
                     batch_gate.clear()
@@ -160,14 +257,18 @@ def main():
                     return
                 if self.path == '/test/reset':
                     batch_gate.set()
+                    stream_gate.set()
                     for line in ('record off', 'pause', 'switch example', 'return', 'pause'):
                         command(line)
                     requests.clear()
                     self.reply(controller.status())
                     return
-                text = body.get('messages', [{}])[-1].get('content', '')
+                text, context, exchanges, decision = model_fixture(body)
                 auth_valid = self.headers.get('Authorization') == 'Bearer local-test-only'
                 requests.append({'text': text, 'model': body.get('model'), 'auth_valid': auth_valid,
+                                 'stream': body.get('stream'),
+                                 'effort': body.get('reasoning_effort'), 'context': context,
+                                 'exchanges': exchanges, 'decision': decision,
                                  'origin': self.headers.get('Origin'), 'cookie': self.headers.get('Cookie'),
                                  'host': self.headers.get('Host'), 'path': self.path})
                 if not auth_valid or '认证错误' in text:
@@ -186,15 +287,33 @@ def main():
                 if 'HTTP错误' in text:
                     self.reply({'error': 'local-test-only private-upstream'}, 500, cors=False)
                     return
-                if '非法' in text: steps = [{'action': 'reset'}, {'action': 'quit'}]
-                elif '未知策略' in text: steps = [{'action': 'switch', 'policy': 'not-installed'}]
-                elif '停止录制' in text: steps = [{'action': 'record', 'mode': 'off'}]
-                elif '录制' in text: steps = [{'action': 'record', 'mode': 'on'}]
-                elif '复位' in text: steps = [{'action': 'reset'}]
-                elif '切换自链' in text: steps = [{'action': 'switch', 'policy': 'example_chain'}]
-                elif '继续' in text: steps = [{'action': 'resume'}]
-                else: steps = [{'action': 'status'}]
-                content = 'bad json' if '坏JSON' in text else json.dumps({'message': text, 'steps': steps}, ensure_ascii=False)
+                content = 'bad json' if '坏JSON' in text else json.dumps(decision, ensure_ascii=False)
+                if body.get('stream') is True:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    def chunk(delta, finish=None):
+                        value = {'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
+                        self.wfile.write(('data: ' + json.dumps(value, ensure_ascii=False) + '\n\n').encode())
+                        self.wfile.flush()
+                    try:
+                        thinking = '正在核对当前状态与可用操作。\n完整确认指令后，再提交执行。'
+                        if '长输出' in text:
+                            thinking = '\n'.join(f'测试思考片段 {i + 1}：核对当前请求的执行条件。' for i in range(22))
+                        chunk({'reasoning_content': thinking})
+                        for offset in range(0, len(content), 6):
+                            chunk({'content': content[offset:offset + 6]})
+                            time.sleep(.005)
+                        if '流式等待' in text:
+                            stream_gate.wait(15)
+                        if '流式中断' not in text:
+                            chunk({}, 'stop')
+                            self.wfile.write(b'data: [DONE]\n\n')
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    return
                 self.reply({'choices': [{'message': {'content': content}}]}, cors=False)
 
         api = ThreadingHTTPServer((args.host, args.api_port), Handler)

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { readConfig, translate } from '../src/lib/translator'
+import { readConfig } from '../src/lib/translator'
+import { translate } from './model-transport'
 
 const config = { llm: true, enabled: true, model: 'test', timeout_s: 1 }
 const context = { state: 'paused' }
@@ -23,13 +24,13 @@ describe('compatible API translator', () => {
       expect(body.messages.at(-1).content).toBe('复位')
       expect(body.messages[0].content).toContain('reset')
       expect(body.messages[0].content).toContain('example')
-      return new Response(JSON.stringify({ choices: [{ message: { content: '{"message":"复位","steps":[{"action":"reset"}]}' } }] }))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"message":"复位","tool_call":{"name":"command","arguments":{"line":"reset"}}}' } }] }))
     })
     const result = await translate(config, '复位', context, ['example'], undefined, fetcher)
-    expect(result.steps).toEqual([{ action: 'reset' }])
+    expect(result.tool_call).toEqual({ name: 'command', arguments: { line: 'reset' } })
   })
   it('fails closed on malformed JSON, unknown commands, HTTP or proxy failures', async () => {
-    for (const content of ['not json', '{"message":"x","steps":[{"action":"exit"}]}']) {
+    for (const content of ['not json', '{"message":"x","tool_call":{"name":"missing","arguments":{}}}']) {
       await expect(translate(config, 'x', context, [], undefined, async () => new Response(JSON.stringify({ choices: [{ message: { content } }] })))).rejects.toThrow()
     }
     await expect(translate(config, 'x', context, [], undefined, async () => new Response('error', { status: 401 }))).rejects.toThrow(/401/)

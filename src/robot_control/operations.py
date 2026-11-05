@@ -6,6 +6,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
+from contextlib import nullcontext
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -50,12 +51,13 @@ class ControlRequest:
 
 
 class Operations:
-    def __init__(self, history=256, max_pending=256):
+    def __init__(self, history=256, max_pending=256, *, control_lock=None, control_snapshot=None):
         self.on_event = None
         self._condition = threading.Condition()
         self._items = OrderedDict()
         self._observers = {}
         self.history, self.max_pending = history, max_pending
+        self._control_lock, self._control_snapshot = control_lock, control_snapshot
 
     def create(self, command, *, observer=None):
         reject_secret_edit(command)
@@ -89,6 +91,13 @@ class Operations:
             self._items.pop(key)
 
     def update(self, identity, status, *, result=None, error=None, reason=None):
+        # Lock order is controller -> receipts, the same as controller dispatch.
+        # Capture only the control guard, never a later HTTP reader's live state.
+        with self._control_lock if self._control_lock is not None else nullcontext():
+            completion = self._control_snapshot() if status in TERMINAL and self._control_snapshot else None
+            self._update(identity, status, result=result, error=error, reason=reason, completion=completion)
+
+    def _update(self, identity, status, *, result=None, error=None, reason=None, completion=None):
         if identity is None:
             return
         with self._condition:
@@ -103,6 +112,8 @@ class Operations:
             if reason is not None:
                 item['reason'] = str(reason)
             if status in TERMINAL:
+                if completion is not None:
+                    item['completion_control'] = dict(completion)
                 # Retain the most recently completed receipts. A long policy
                 # episode may have been created before hundreds of short calls.
                 self._items.move_to_end(identity)

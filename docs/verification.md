@@ -371,3 +371,35 @@ Python 3.11 example 基线 78 通过、1 项因缺少 ROS 环境跳过（不计�
 真机部署机（10.6.3.69）WebUI 发送自然语言消息返回 502，而 `/health`、`/preview/status` 与三路图像正常，说明 RC 代理链路可用、故障只在 `/ai/chat/completions`。Nginx 日志为 `upstream SSL certificate verify error: (20:unable to get local issuer certificate)`，上游 `api.tensoris.ai`。宿主 curl 与容器内 wget 均可完成 TLS 握手，容器信任库包含 ISRG Root X1/X2，因此不是 CA 缺失；`openssl s_client -verify_depth 1` 在该链（leaf → YE2 → Root YE → ISRG Root X2）上复现 `certificate chain too long` 与 `unable to get local issuer certificate`，`-verify_depth 2` 验证通过，确认为 Nginx `proxy_ssl_verify_depth` 默认 1 级对 Let's Encrypt 新层级过浅。
 
 生成的 AI 代理配置增加 `proxy_ssl_verify_depth 4` 并补充单测断言；未修改 RC/SDK 控制语义，监控与 MCP 转发路径不变。WebUI 67 项单测与前端构建通过（2026-11-05）。部署机需重建 WebUI 镜像后复测自然语言发送；本轮只读检查没有在部署机启动、重建或修改任何容器，现场复测结果未计入通过证据。
+
+## WebUI 流式 AI、玻璃交互与暂停／恢复（2026-11-05）
+
+同源 AI 请求改为 SSE 流式接收，支持真实思考字段与指令说明预览；仅完整 `[DONE]` 和有效白名单 JSON 可以交给执行器。开发代理逐段转发，生产 Nginx 关闭缓冲／压缩并保留固定上游、私有鉴权、TLS 和错误脱敏。悬浮历史保存本页最近 50 次请求，取消、迟到响应、确认结果和各阶段光效分开处理。顶部新增直接执行的暂停／恢复按钮，在两种 LLM 模式中均可用。部署只需重建 WebUI，配置字段及 RC/SDK/policy 契约不变。
+
+- 全部 WebUI 单测 **99 passed**，最终类型检查及生产构建通过。覆盖 Unicode／转义分片、思考别名、选择隔离、未结束／截断／拒答、长度限制、超时取消、代理首段和客户端断开，以及历史、回执和手动暂停优先级。日志 `/private/tmp/rc-webui-stream-unit-complete.log`、`/private/tmp/rc-webui-stream-build-complete.log`。
+- Chromium 开发模式完整浏览器套件 **20 passed，48.2 秒**；真实生产 Nginx + mock RC + 动态 example 容器完整套件 **20 passed，约 1.1 分钟**。覆盖 example 自链、原直接命令批次、新流式和恢复语义、两种模式的暂停／恢复及移动布局。日志 `/private/tmp/rc-webui-stream-toolbar-browser.log`、`/private/tmp/rc-webui-stream-complete-browser.log`。
+- 固定镜像 njs/Nginx 配置和真实网络检查 **18 passed，6.43 秒**。新增生产首段测试通过独立 gate 保证：客户端读到首段后，上游才获准发送 `[DONE]`。日志 `/private/tmp/rc-webui-stream-nginx.log`。
+- 项目默认 `python3 scripts/test_scope.py`（现有 Python 3.11 测试环境）**78 passed、1 skipped，58.47 秒**；跳过原因为宿主缺少 ROS/rclpy，不计通过。日志 `/private/tmp/rc-webui-stream-example-scope.log`。未启动其他业务策略或真实硬件，未调用真实模型供应商。
+- 已检查桌面 1440×900、手机 320／390 和平板 768 宽度截图；末轮提高辅助文字对比度后，再完成 **4 项定向浏览器验收**及构建。截图 `/private/tmp/rc-webui-stream-visual-final/`，日志 `/private/tmp/rc-webui-stream-visual-final.log`。系统减少动态效果时旋转停止，直接模式无 AI 历史区。
+
+检查中修正了：手动查询的迟到回执覆盖新请求光效、待确认时只读查询的历史归属、窗口尺寸变化误判为手动回看、展开回执后新请求输出被隐藏。生产浏览器首轮存在一个测试时序问题：点击查询后立即读取了旧文案，而页面快照已确认回执；改为等待异步渲染结果，最终完整套件通过。主动取消按本次设计使用独立取消状态，旧“必须为红色错误”断言相应更新。
+
+验证使用现有 Playwright；当前会话没有 Browser 插件，匹配浏览器下载在临时目录。首次环境运行缺少子进程 PYTHONPATH 和浏览器，均作为失败记录，修正后重新验收。自审确认没有修改控制／租约契约，没有自动重试写操作，没有把思考或半份指令当作执行结果。
+
+两个隔离生产部署均以清理退出码 0 结束，容器、policy 实例和卷全部清空；临时 WebUI 镜像已移除，Docker 恢复原先停止状态。清理证据 `/private/tmp/rc-webui-stream-cleanup-final.json`，未修改用户私有配置或替换原有标准镜像。
+
+## WebUI 动态 MCP 助手与 effort（2026-11-05）
+
+在流式界面和暂停／恢复基础上，改为每次刷新能力目录、按真实结果逐轮调用一个工具的助手。增加近期对话、独立六部分提示词、原生参数校验、两类回执和可选 effort；七个 MCP 写工具补齐可选控制代次，终态操作记录不可变完成代次。此次需要同步更新 RC 与 WebUI，SDK/policy 公开契约不变。
+
+- WebUI 完整单测 **126 passed**，类型检查和生产构建通过。日志 `/private/tmp/rc-webui-agent-unit-verified.log`、`/private/tmp/rc-webui-agent-build-verified.log`。覆盖动态描述、类型／实例校验、上限、结果节选、上下文、effort、流式异常、取消和未知受理，不调用真实模型。
+- 开发代理完整 Chromium 套件 **27 passed，约 1.1 分钟**；生产 Nginx、mock RC、真实动态 example 容器完整套件 **27 passed，约 1.6 分钟**。日志 `/private/tmp/rc-webui-agent-dev-final.log`、`/private/tmp/rc-webui-agent-production-final-browser.log`。验证配置查询→接管→policy 命令→查询核实、链应用后使用新实例、completed/terminated、刷新恢复任务回执、无图像运动与反馈、异常响应不重发，以及既有流式、直接批次、监控和工具栏。
+- 最后收紧目录完整性检查后，开发与生产分别补跑 **7 passed**（21.5 秒、33.5 秒）。初次误把 SDK 明确允许的 `timeout_s=-1` 当作非法，真实浏览器验收暴露问题；修正为接受 -1、拒绝缺失字段，并增加回归。最终日志 `/private/tmp/rc-webui-agent-description-verified-dev.log`、`/private/tmp/rc-webui-agent-description-verified-production.log`。
+- 真实固定 njs/Nginx 的配置、effort、网络、流式首段、固定上游与错误脱敏套件 **29 passed，9.35 秒**。日志 `/private/tmp/rc-webui-agent-nginx-delivery.log`。新增 effort 用例首次缺少旧配置必填项，补全测试配置后通过；失败不计通过。
+- 受影响 MCP、控制代次、运动、策略命令／重载、业务结果、直接批次和日志专项 **145 passed，70.90 秒**。日志 `/private/tmp/rc-webui-agent-backend-expanded.log`。默认 `python3 scripts/test_scope.py` 使用 example 和 example 自链：**78 passed、1 skipped，56.31 秒**；宿主缺少 ROS/rclpy 的跳过不计通过，日志 `/private/tmp/rc-webui-agent-scope.log`。
+
+自审修正了两个结果边界：手动查询到 terminated 时保持中性、不闪绿；缺少结构化内容的写响应按受理未知保留锁定，不当作拒绝并自动解锁。原始回执、失败原因和迟到响应保护仍由同一执行器负责。已检查桌面与手机截图，产物保存在 `/private/tmp/rc-webui-agent-production-final-browser/`。
+
+验收使用本地 API 替身、隔离测试配置和 mock 机器人，没有访问真实模型、厂商驱动或硬件，没有改用户私有凭据。临时部署清理证据位于 `/private/tmp/rc-webui-agent-production/cleanup.json` 与 `/private/tmp/rc-webui-agent-production-final/cleanup.json`；没有提交任务账本或运行产物。
+
+两个临时项目均清理退出 0，容器、policy 实例与卷为空。测试镜像已移除，Docker 恢复初始停止状态，汇总 `/private/tmp/rc-webui-agent-cleanup-final.json`。改动保留在原工作区，未提交或推送。

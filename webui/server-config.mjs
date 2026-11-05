@@ -3,11 +3,13 @@ function invalid() { throw Error('Invalid WebUI server API configuration') }
 
 function parseConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-      || Object.keys(value).some(key => !['llm', 'endpoint', 'model', 'api_key', 'timeout_s'].includes(key))) invalid()
+      || Object.keys(value).some(key => !['llm', 'endpoint', 'model', 'api_key', 'timeout_s', 'effort'].includes(key))) invalid()
   // The pinned njs CLI doesn't support object spread. Validate keys before
   // copying so Object.assign cannot interpret an untrusted __proto__ key.
   value = Object.assign(value.llm === false ? { endpoint: '', model: '', api_key: '', timeout_s: 30 }
     : { llm: true }, value)
+  const effort = value.effort === undefined ? null : value.effort
+  if (effort !== null && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) invalid()
   if (typeof value.llm !== 'boolean'
       || !['endpoint', 'model', 'api_key'].every(key => typeof value[key] === 'string')
       || typeof value.timeout_s !== 'number' || !Number.isFinite(value.timeout_s)
@@ -27,12 +29,12 @@ function parseConfig(value) {
     const path = match[4] || '/'
     endpoint = match[1] + '://' + host + (path[0] === '?' ? '/' : '') + path
   }
-  return { llm: value.llm, endpoint, model: value.model, api_key: value.api_key, timeout_s: value.timeout_s,
+  return { llm: value.llm, endpoint, model: value.model, api_key: value.api_key, timeout_s: value.timeout_s, effort,
     enabled: value.llm && !!endpoint && !!value.model.trim(), host, tls_name }
 }
 
 function publicConfig(config) {
-  return { llm: config.llm, enabled: config.enabled, model: config.model, timeout_s: config.timeout_s }
+  return { llm: config.llm, enabled: config.enabled, model: config.model, timeout_s: config.timeout_s, effort: config.effort }
 }
 
 function nginxQuote(text) {
@@ -59,7 +61,8 @@ function nginxLocation(config) {
     proxy_set_header Host ${nginxQuote(config.host)};
     proxy_set_header Authorization ${nginxQuote(config.api_key ? 'Bearer ' + config.api_key : '')};
     proxy_set_header Content-Type application/json;
-    proxy_set_header Accept application/json;
+    proxy_set_header Accept "text/event-stream, application/json";
+    proxy_set_header Accept-Encoding "";
     proxy_set_header Connection "";
     proxy_ssl_server_name on;
     proxy_ssl_name ${nginxQuote(config.tls_name)};
@@ -71,6 +74,7 @@ function nginxLocation(config) {
     proxy_read_timeout ${timeout};
     proxy_next_upstream off;
     proxy_buffering off;
+    gzip off;
     proxy_cache off;
     proxy_hide_header Set-Cookie;
     proxy_hide_header WWW-Authenticate;

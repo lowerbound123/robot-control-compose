@@ -15,9 +15,10 @@ class PolicyResultSupport:
         self._policy_wait = None
         self._latest_policy_wait = None
 
-    def submit_policy_wait(self):
+    def submit_policy_wait(self, *, expected_control=None):
         """Atomically reserve one episode and revoke manual writes before queuing."""
         with self._lock:
+            self._check_expected_control(expected_control)
             if self._policy_wait is not None:
                 raise PolicyWaitActive(self._policy_wait['operation_id'])
             self._require_mcp()
@@ -38,7 +39,8 @@ class PolicyResultSupport:
             self._latest_policy_wait = identity
             self._return_requested = True
             self._return_operation = handoff
-            self._urgent.put(ControlRequest(handoff, 'return_and_wait', 'mcp', self._control_epoch))
+            self._urgent.put(ControlRequest(handoff, 'return_and_wait', 'mcp', self._control_epoch,
+                                            expected_control=copy.deepcopy(expected_control)))
             self._wake.set()
             return identity
 

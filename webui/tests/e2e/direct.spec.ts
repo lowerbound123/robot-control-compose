@@ -60,7 +60,8 @@ test('direct text stop leaves started line to finish and cancels its tail', asyn
   await page.getByRole('button', { name: '停止后续步骤' }).click()
   await stopped
   await request.post(`${api}/test/batch-release`)
-  await expect(page.getByRole('status')).toHaveAttribute('data-error', 'true')
+  await expect(page.locator('.composer-shell')).toHaveAttribute('data-phase', 'cancelled')
+  await expect(page.getByRole('status')).toHaveAttribute('data-error', 'false')
   expect((await (await request.get(`${api}/test/batch-state`)).json()).config.params.message).toBe('first')
 })
 
@@ -81,10 +82,13 @@ test('direct text refresh recovers the parent receipt without cancellation or re
   await page.reload()
   await expect(page.getByRole('button', { name: '查询原回执' })).toBeVisible()
   await request.post(`${api}/test/batch-release`)
-  await expect.poll(async () => {
-    await page.getByRole('button', { name: '查询原回执' }).click()
-    return await page.getByRole('status').textContent()
-  }).toContain('操作回执已确认')
+  await expect(async () => {
+    const query = page.getByRole('button', { name: '查询原回执' })
+    if (await query.isVisible()) await query.click({ timeout: 500 })
+    // Clicking only starts the async query; wait for the rendered receipt. A
+    // completed query removes its button, so do not wait for it on the next retry.
+    await expect(page.getByRole('status')).toContainText('操作回执已确认', { timeout: 500 })
+  }).toPass({ timeout: 10_000 })
   expect(calls.filter(name => name === 'tui_command')).toHaveLength(1)
   expect(calls).not.toContain('cancel_tui_command')
 })

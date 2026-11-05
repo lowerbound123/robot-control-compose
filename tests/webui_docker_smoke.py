@@ -109,7 +109,7 @@ def main():
         for path in ('/monitor', '/config.json', '/preview/status'):
             with urlopen(url + path, timeout=3) as response: assert response.status == 200
         with urlopen(url + '/config.json', timeout=3) as response:
-            assert json.load(response) == {'llm': True, 'enabled': True, 'model': 'local-fixture', 'timeout_s': 3}
+            assert json.load(response) == {'llm': True, 'enabled': True, 'model': 'local-fixture', 'timeout_s': 3, 'effort': None}
         with urlopen(Request(url + '/ai/chat/completions?endpoint=http://ignored.invalid',
                 data=json.dumps({'model': 'local-fixture', 'messages': [{'role': 'user', 'content': '查询状态'}]}).encode(),
                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer browser-untrusted', 'Origin': url}), timeout=5) as response:

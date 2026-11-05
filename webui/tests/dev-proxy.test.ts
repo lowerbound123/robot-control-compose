@@ -38,7 +38,7 @@ it('sanitizes config and proxies a no-CORS API with server-owned target and key'
   })
   const origin = await proxy(upstream)
   const publicConfig = await (await fetch(origin + '/config.json?raw')).text()
-  expect(JSON.parse(publicConfig)).toEqual({ llm: true, enabled: true, model: 'fixture', timeout_s: 1 })
+  expect(JSON.parse(publicConfig)).toEqual({ llm: true, enabled: true, model: 'fixture', timeout_s: 1, effort: null })
   expect(publicConfig).not.toContain(upstream)
   expect(publicConfig).not.toContain('canary')
   const response = await fetch(origin + '/ai/chat/completions?target=http://ignored.invalid', {
@@ -89,4 +89,58 @@ it('bounds slow requests without retries', async () => {
   const response = await fetch(origin + '/ai/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   expect(response.status).toBe(504)
   expect(calls).toBe(1)
+})
+
+it('forwards the first SSE chunk before upstream completion without exposing headers', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const upstream = await listen(async (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Set-Cookie': 'private-canary' })
+    res.write('data: {"choices":[]}\n\n')
+    await gate
+    res.end('data: [DONE]\n\n')
+  })
+  const origin = await proxy(upstream)
+  try {
+    const response = await fetch(origin + '/ai/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"stream":true}' })
+    expect(response.headers.get('content-type')).toContain('text/event-stream')
+    expect(response.headers.has('set-cookie')).toBe(false)
+    const reader = response.body!.getReader()
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: {"choices":[]}\n\n')
+    release()
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: [DONE]\n\n')
+    expect((await reader.read()).done).toBe(true)
+  } finally { release() }
+})
+
+it('terminates an already-started stream on timeout instead of appending JSON or retrying', async () => {
+  let calls = 0
+  const upstream = await listen((_req, res) => {
+    calls++
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    res.write(': heartbeat\n\n')
+  })
+  const origin = await proxy(upstream, { timeout_s: .1 })
+  const response = await fetch(origin + '/ai/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+  expect(response.status).toBe(200)
+  const reader = response.body!.getReader()
+  expect(new TextDecoder().decode((await reader.read()).value)).toBe(': heartbeat\n\n')
+  await expect(reader.read()).rejects.toThrow()
+  expect(calls).toBe(1)
+})
+
+it('cancels upstream when a streaming browser disconnects', async () => {
+  let closed!: () => void
+  const close = new Promise<void>(resolve => { closed = resolve })
+  const upstream = await listen((_req, res) => {
+    res.once('close', closed)
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    res.write(': ready\n\n')
+  })
+  const origin = await proxy(upstream)
+  const response = await fetch(origin + '/ai/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+  const reader = response.body!.getReader()
+  await reader.read()
+  await reader.cancel()
+  await close
 })
