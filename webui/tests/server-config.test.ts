@@ -18,6 +18,7 @@ describe('server-only API configuration', () => {
     expect(parsed.tls_name).toBe('models.example')
     const nginx = implementation.nginxLocation(parsed)
     expect(nginx).toContain('proxy_pass $ai_endpoint;')
+    expect(nginx).toContain('proxy_ssl_verify_depth 4;')
     expect(nginx).toContain('Bearer private-canary')
   })
 

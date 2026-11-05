@@ -48,6 +48,10 @@ function nginxLocation(config) {
   // 499 is Nginx's internal client-abort code and is forbidden in error_page.
   for (let status = 400; status <= 599; status++) if (status !== 499) errors.push(status)
   for (let status = 300; status <= 399; status++) redirects.push(status)
+  // Nginx verifies at most one intermediate CA by default. Let's Encrypt's
+  // current Root YE hierarchy presents leaf + three CA certificates, so the
+  // default depth rejects a valid chain with "unable to get local issuer
+  // certificate" (502). Keep a small margin above the current chain length.
   const proxy = config.enabled ? `
     set $ai_endpoint ${nginxQuote(config.endpoint.replace(/\$/g, '%24'))};
     proxy_pass $ai_endpoint;
@@ -60,6 +64,7 @@ function nginxLocation(config) {
     proxy_ssl_server_name on;
     proxy_ssl_name ${nginxQuote(config.tls_name)};
     proxy_ssl_verify on;
+    proxy_ssl_verify_depth 4;
     proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
     proxy_connect_timeout ${timeout};
     proxy_send_timeout ${timeout};

@@ -365,3 +365,9 @@ Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 poli
 生产 WebUI 新增 `RC_WEBUI_UPSTREAM`，默认容器服务名保持动态 DNS；真机目标从 `/etc/hosts` 解析 host-gateway IPv4。未修改 RC/SDK 控制语义。WebUI 67 项测试与构建通过，实际固定 njs/Nginx 配置和 Docker 网络用例 17 项通过；旧镜像在宿主机连接用例中返回 502，新镜像在默认 bridge 和 host 上游下均通过状态、MCP 请求、三路 multipart 及认证头转发验证。默认与真机 Compose 合并检查通过。
 
 Python 3.11 example 基线 78 通过、1 项因缺少 ROS 环境跳过（不计通过）；example Docker 验收 7 项通过，容器和卷清理确认。故意注入的丢失 create 回执触发强制清理并保留 RC exit 1，属于该用例的预期断言，验收脚本退出 0。Docker 证据来自 OrbStack 的 Linux ARM64 引擎，未运行真机、厂商驱动、真实供应商或图像帧率验收。初次本地端口权限失败和 njs 默认参数语法失败均已修正执行方式或代码后重跑，未计为通过。
+
+## 2026-11-05 WebUI AI 上游多级证书链校验深度
+
+真机部署机（10.6.3.69）WebUI 发送自然语言消息返回 502，而 `/health`、`/preview/status` 与三路图像正常，说明 RC 代理链路可用、故障只在 `/ai/chat/completions`。Nginx 日志为 `upstream SSL certificate verify error: (20:unable to get local issuer certificate)`，上游 `api.tensoris.ai`。宿主 curl 与容器内 wget 均可完成 TLS 握手，容器信任库包含 ISRG Root X1/X2，因此不是 CA 缺失；`openssl s_client -verify_depth 1` 在该链（leaf → YE2 → Root YE → ISRG Root X2）上复现 `certificate chain too long` 与 `unable to get local issuer certificate`，`-verify_depth 2` 验证通过，确认为 Nginx `proxy_ssl_verify_depth` 默认 1 级对 Let's Encrypt 新层级过浅。
+
+生成的 AI 代理配置增加 `proxy_ssl_verify_depth 4` 并补充单测断言；未修改 RC/SDK 控制语义，监控与 MCP 转发路径不变。WebUI 67 项单测与前端构建通过（2026-11-05）。部署机需重建 WebUI 镜像后复测自然语言发送；本轮只读检查没有在部署机启动、重建或修改任何容器，现场复测结果未计入通过证据。

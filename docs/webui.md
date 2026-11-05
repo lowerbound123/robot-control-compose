@@ -83,7 +83,7 @@ export RC_WEBUI_UPSTREAM=http://host.docker.internal:4000
 
 从旧版升级时先 `build webui` 再执行上述命令，让新前端、代理路由和非网页目录挂载一起生效。原文件可以继续使用，但原先指向浏览器本机的 `127.0.0.1` 地址需要按容器网络调整。不要把上游地址填成 WebUI 自己的 `/ai/chat/completions`，这会造成代理循环。
 
-浏览器只向当前页面来源发送 JSON POST，不携带 AI Key；Nginx 只转发到服务端配置的固定上游，独立设置 AI 的 Host 和 Authorization，不接受请求参数改写目标。跨来源请求、非 POST 或非 JSON 请求被拒绝。HTTPS 上游启用 SNI 与系统 CA 证书校验；请求不自动重试，上游 3xx 响应按 502 处理。认证、限流及其他接口错误使用本地通用错误内容，保留 HTTP 状态，避免回显凭据或私有地址。
+浏览器只向当前页面来源发送 JSON POST，不携带 AI Key；Nginx 只转发到服务端配置的固定上游，独立设置 AI 的 Host 和 Authorization，不接受请求参数改写目标。跨来源请求、非 POST 或非 JSON 请求被拒绝。HTTPS 上游启用 SNI 与系统 CA 证书校验，证书链校验深度放宽到 4 级（Nginx 默认 1 级）；Let's Encrypt Root YE 等新层级会发送 leaf 加多级中间证书，默认深度会把合法链误判为 502。请求不自动重试，上游 3xx 响应按 502 处理。认证、限流及其他接口错误使用本地通用错误内容，保留 HTTP 状态，避免回显凭据或私有地址。
 
 endpoint/model 留空时三路监控和复位仍可用，AI 发送不可用。私有配置缺失或格式非法会阻止 WebUI 启动，诊断不输出配置值。网络、鉴权、超时或响应错误不提交控制操作。
 
