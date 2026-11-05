@@ -65,3 +65,45 @@ describe('server-only API configuration', () => {
   })
 })
 
+async function rcUpstream(value?: string, hosts = '') {
+  const implementation = await serverModule()
+  expect(implementation.rcUpstream).toBeTypeOf('function')
+  return implementation.rcUpstream(value, hosts)
+}
+
+describe('RC proxy upstream', () => {
+  it('retains Docker DNS for the default service and accepts explicit HTTP host ports', async () => {
+    expect(await rcUpstream()).toBe('robot-control:4000')
+    expect(await rcUpstream('http://robot-control:4000', '172.18.0.2 robot-control')).toBe('robot-control:4000')
+    expect(await rcUpstream('http://rc.internal:4100')).toBe('rc.internal:4100')
+    expect(await rcUpstream('http://192.0.2.10:4000')).toBe('192.0.2.10:4000')
+  })
+
+  it('uses the exact IPv4 host-gateway alias instead of Docker DNS', async () => {
+    const hosts = '# 192.0.2.9 host.docker.internal\n'
+      + '192.0.2.8 host.docker.internal.invalid\n'
+      + '::1 localhost host.docker.internal\n'
+      + '192.0.2.7 unrelated # host.docker.internal\n'
+      + '192.0.2.1\tgateway host.docker.internal # Docker host gateway\n'
+    expect(await rcUpstream('http://HOST.DOCKER.INTERNAL:4000', hosts)).toBe('192.0.2.1:4000')
+  })
+
+  it.each(['', '127.0.0.1 localhost', '999.1.2.3 host.docker.internal',
+    '::1 host.docker.internal', '192.0.2.1 host.docker.internal.invalid'])
+  ('fails closed when the host gateway has no valid IPv4 mapping (%j)', async hosts => {
+    await expect(rcUpstream('http://host.docker.internal:4000', hosts))
+      .rejects.toThrow('Invalid WebUI RC upstream')
+  })
+
+  it.each(['', 'https://robot-control:4000', 'http://robot-control', 'http://robot-control:0',
+    'http://robot-control:65536', 'http://robot-control:4000/', 'http://robot-control:4000/mcp',
+    'http://user:private-canary@robot-control:4000', 'http://robot-control:4000?private-canary',
+    'http://robot-control:4000#private-canary', 'http://robot-control:4000;private-canary',
+    'http://$host:4000', 'http://robot-control:4000\n', 'http://robot-control:4000\\',
+    'http://-robot-control:4000', 'http://rc..internal:4000', 'http://999.1.2.3:4000'])
+  ('rejects invalid upstreams without echoing their values (%j)', async value => {
+    await expect(rcUpstream(value)).rejects.toThrow('Invalid WebUI RC upstream')
+    await expect(rcUpstream(value)).rejects.not.toThrow('private-canary')
+  })
+})
+

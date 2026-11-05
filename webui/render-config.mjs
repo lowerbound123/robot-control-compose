@@ -3,6 +3,13 @@ import fs from 'fs'
 import configuration from './server-config.mjs'
 
 try {
+  const upstream = configuration.rcUpstream(process.env.RC_WEBUI_UPSTREAM, fs.readFileSync('/etc/hosts', 'utf8'))
+  fs.writeFileSync('/tmp/webui-rc.conf', 'set $rc_upstream "' + upstream + '";\n', { mode: 0o600 })
+} catch (_) {
+  throw Error('Cannot load WebUI RC upstream; check RC_WEBUI_UPSTREAM and host-gateway mapping')
+}
+
+try {
   const path = process.env.RC_WEBUI_CONFIG_PATH || '/run/robot-control-webui/config.json'
   const content = fs.readFileSync(path, 'utf8')
   if (content.length > 65536) throw Error('oversized config')

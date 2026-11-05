@@ -13,7 +13,7 @@ IMAGE = os.environ.get('RC_WEBUI_TEST_IMAGE')
 pytestmark = pytest.mark.skipif(not IMAGE, reason='set RC_WEBUI_TEST_IMAGE for real njs/Nginx configuration checks')
 
 
-def render(tmp_path, config, *, raw=False):
+def render(tmp_path, config, *, raw=False, upstream=None, hosts=None):
     path = tmp_path / 'config.json'
     path.write_text(config if raw else json.dumps(config, ensure_ascii=False))
     path.chmod(0o600)
@@ -25,12 +25,20 @@ envsubst '${RC_MCP_AUTHORIZATION}' < /etc/nginx/rc.conf.template > /tmp/rc-nginx
 nginx -t -c /tmp/rc-nginx.conf
 test ! -e /usr/share/nginx/html/config.json
 test "$(stat -c %a /tmp/webui-ai.conf)" = 600
+test "$(stat -c %a /tmp/webui-rc.conf)" = 600
 cat /tmp/webui-public.json
 """
+    options = []
+    if upstream is not None:
+        options += ['--env', f'RC_WEBUI_UPSTREAM={upstream}']
+    if hosts is not None:
+        hosts_path = tmp_path / 'hosts'
+        hosts_path.write_text(hosts)
+        options += ['--mount', f'type=bind,source={hosts_path},target=/etc/hosts,readonly']
     return subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--read-only',
         '--user', f'{os.getuid()}:{os.getgid()}', '--tmpfs', '/tmp:rw,mode=1777',
         '--mount', f'type=bind,source={path},target=/run/robot-control-webui/config.json,readonly',
-        '--entrypoint', 'sh', IMAGE, '-c', command], text=True, capture_output=True, timeout=15)
+        *options, '--entrypoint', 'sh', IMAGE, '-c', command], text=True, capture_output=True, timeout=15)
 
 
 @pytest.mark.parametrize('endpoint,model', [('', ''), ('https://model.example:8443/v1/chat/completions', '模型'),
@@ -65,3 +73,24 @@ def test_direct_mode_needs_no_provider_config(tmp_path):
     result = render(tmp_path, {'llm': False})
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == dict(llm=False, enabled=False, model='', timeout_s=30)
+
+
+def test_real_host_gateway_render_keeps_upstream_out_of_public_config(tmp_path):
+    result = render(tmp_path, {'llm': False}, upstream='http://host.docker.internal:4000',
+                    hosts='127.0.0.1 localhost\n192.0.2.1 host.docker.internal\n')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == dict(llm=False, enabled=False, model='', timeout_s=30)
+    assert '192.0.2.1' not in result.stdout and 'host.docker.internal' not in result.stdout
+
+
+@pytest.mark.parametrize('upstream,hosts', [
+    ('http://host.docker.internal:4000', '127.0.0.1 localhost\n'),
+    ('http://user:private-upstream-canary@rc:4000', None),
+    ('http://rc:4000;private-upstream-canary', None),
+    ('http://rc:4000\nprivate-upstream-canary', None),
+])
+def test_real_invalid_rc_upstream_fails_before_nginx_without_echo(tmp_path, upstream, hosts):
+    result = render(tmp_path, {'llm': False}, upstream=upstream, hosts=hosts)
+    assert result.returncode != 0
+    assert 'Cannot load WebUI RC upstream' in result.stderr
+    assert 'private-upstream-canary' not in result.stdout + result.stderr

@@ -27,7 +27,7 @@ http {
         server_name localhost 127.0.0.1;
         if ($host !~ "^(localhost|127\\.0\\.0\\.1)$") { return 421; }
         root /usr/share/nginx/html;
-        set $rc_upstream robot-control:4000;
+        include /tmp/webui-rc.conf;
         set $webui_origin "$scheme://$http_host";
         client_max_body_size 256k;
         location = /mcp {

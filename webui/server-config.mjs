@@ -91,4 +91,32 @@ location = /_webui_ai_error.json {
 `
 }
 
-export default { parseConfig, publicConfig, nginxLocation }
+function ipv4(value) {
+  return /^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$/.test(value)
+    && value.split('.').every(part => Number(part) <= 255)
+}
+
+// RC uses plain HTTP. Keep the service hostname dynamic for Docker DNS, but
+// resolve host-gateway from /etc/hosts: nginx's resolver does not consult it.
+function rcUpstream(value, hosts) {
+  // The pinned njs CLI does not support default function parameters.
+  if (value === undefined) value = 'http://robot-control:4000'
+  if (hosts === undefined) hosts = ''
+  const reject = () => { throw Error('Invalid WebUI RC upstream') }
+  if (typeof value !== 'string') reject()
+  const match = /^http:\/\/([A-Za-z0-9.-]+):([0-9]+)$/.exec(value)
+  if (!match || match[0] !== value || !(Number(match[2]) >= 1 && Number(match[2]) <= 65535)) reject()
+  let host = match[1].toLowerCase()
+  if (host.length > 253 || !host.split('.').every(label =>
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) reject()
+  if (/^[0-9.]+$/.test(host) && !ipv4(host)) reject()
+  if (host === 'host.docker.internal') {
+    const rows = hosts.split(/\r?\n/).map(line => line.split('#')[0].trim().split(/\s+/))
+    const entry = rows.find(row => ipv4(row[0]) && row.slice(1).some(alias => alias.toLowerCase() === host))
+    if (!entry) reject()
+    host = entry[0]
+  }
+  return host + ':' + Number(match[2])
+}
+
+export default { parseConfig, publicConfig, nginxLocation, rcUpstream }
