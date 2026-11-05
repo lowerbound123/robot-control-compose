@@ -51,10 +51,15 @@ def test_request_phases_and_byte_sizes_measure_actual_operations(tmp_path, monke
             assert initial['send_samples'] == initial['decode_samples'] == 0
             monkeypatch.setattr(metrics, 'perf_counter', lambda: now[0], raising=False)
             original_pack, original_unpack = backend.pack, backend.unpack
+            original_resize = backend.resize_rgb
             original_send, original_recv = model._ws.send, model._ws.recv
             def pack(value):
                 result = original_pack(value)
                 now[0] += .002
+                return result
+            def resize(value):
+                result = original_resize(value)
+                now[0] += .001
                 return result
             async def send(frame):
                 sent.append(len(frame))
@@ -70,18 +75,20 @@ def test_request_phases_and_byte_sizes_measure_actual_operations(tmp_path, monke
                 now[0] += .003
                 return result
             monkeypatch.setattr(backend, 'pack', pack)
+            monkeypatch.setattr(backend, 'resize_rgb', resize)
             monkeypatch.setattr(backend, 'unpack', unpack)
             monkeypatch.setattr(model._ws, 'send', send)
             monkeypatch.setattr(model._ws, 'recv', recv)
             result = model.predict(np.zeros(14, np.float32), images(), 'task')
             assert result.shape == (50, 14)
             snapshot = model.monitor()
-            for name, expected in (('pack', 2.), ('send', 4.), ('response_wait', 50.), ('decode', 3.), ('server', 1.25)):
+            for name, expected in (('resize', 3.), ('prepare', 3.), ('pack', 2.), ('send', 4.), ('response_wait', 50.), ('decode', 3.), ('server', 1.25)):
                 assert snapshot[f'last_{name}_ms'] == pytest.approx(expected)
                 assert snapshot[f'avg_{name}_ms'] == pytest.approx(expected)
                 assert snapshot[f'{name}_samples'] == 1
             assert snapshot['dispatch_samples'] == snapshot['prepare_samples'] == snapshot['validate_samples'] == 1
-            assert snapshot['last_image_bytes'] == 54
+            assert snapshot['last_source_image_bytes'] == 54
+            assert snapshot['last_image_bytes'] == 451584
             assert snapshot['last_request_bytes'] == sent[0]
             assert snapshot['last_response_bytes'] == received[0]
             assert snapshot['failed_requests'] == 0

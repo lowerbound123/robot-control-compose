@@ -49,6 +49,16 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 证据：`/private/tmp/rc-mcp-management-interface-final.log`、`/private/tmp/rc-mcp-management-linux-final.log`、`/private/tmp/rc-mcp-management-docker-final/{result.json,cleanup.json}`。最终资源复核另存 `/private/tmp/rc-mcp-management-cleanup-final.json`。
 
+## InternVLA MaaS 224×224 图像发送（2026-11-05）
+
+按用户确认的方式，在 MaaS 后端发送前用双线性插值等比缩放、居中补黑边，三路输出固定为 RGB `uint8[224,224,3]` ndarray。原始观测、RC/SDK 契约、相机映射和动作逻辑不变。新增 `resize` 分项及 `last_source_image_bytes`，`last_image_bytes` 统计实际发送图像，固定为 451,584 字节。
+
+- 缩放专项 **12 failed → 12 passed**，覆盖横竖图、奇数尺寸、极窄图、非连续数组、只读输入、RGB 通道和已为 224×224 时像素保持；真实本地 WebSocket 验证三路完整 224×224 数据和消息大小。已知时钟确认三路 resize 合计 3 ms 并计入 prepare。
+- 受影响的 MaaS 图像、backend、timing、monitor、runtime、worker、部署发现七个文件 **71 passed**，4.65 秒。没有运行全量回归、ROS、Docker 或真实 MaaS/硬件。
+- 新增策略依赖 Pillow 12.3.0 及哈希锁，其余依赖版本不变。Python 3.11 环境通过离线、哈希校验的安装 dry-run（5 个包，无需变更）。本次未重建镜像；部署需执行 `./setup.sh --policies internvla_maas` 后冷重载策略。
+
+证据：`/private/tmp/rc-maas-resize-red.log`、`/private/tmp/rc-maas-resize-green.log`、`/private/tmp/rc-maas-resize-targeted.log`、`/private/tmp/rc-maas-resize-lock.log`。
+
 ## InternVLA MaaS 策略内分阶段计时（2026-11-05）
 
 在原有请求总延迟和失败次数之外，增加 14 个阶段的平均耗时、最近耗时和样本数，以及图像/请求/响应字节数。覆盖快照提交、网络线程派发、准备、打包、发送、响应等待、解码、校验、服务端自报时间、后台推理、结果就绪等待、结果收集、夹爪后处理和完整回调。复用 SDK 原调度实现及完成时间戳，不修改 RC/SDK 公共接口。

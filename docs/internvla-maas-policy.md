@@ -83,7 +83,8 @@ resume
 | --- | --- |
 | `snapshot_submit` | SDK 创建自有观测快照的整个调用，包含状态/图像校验、三路图像复制和提交后台任务；不是单独的内存复制时间。 |
 | `dispatch` | 后端向网络事件循环提交协程，到该协程开始运行的派发等待。 |
-| `prepare` | 网络请求中的状态转换、偏移、图像校验和消息字段准备。 |
+| `prepare` | 网络请求中的状态转换、偏移、图像校验、缩放和消息字段准备；包含 `resize`。 |
+| `resize` | 三路图像合计的等比缩放和居中补黑边耗时，输出固定为 224×224。 |
 | `pack` | 完整观测的 MessagePack 编码，包含 ndarray 转字节。 |
 | `send` | `WebSocket.send()` 调用耗时，含客户端写入/背压等待，不代表服务端已经收完数据。 |
 | `response_wait` | 发送调用结束后，等待完整响应帧返回的时间；包含网络与服务端处理，不能当作纯网络延迟。 |
@@ -96,7 +97,7 @@ resume
 | `postprocess` | MaaS 输出副本及夹爪补偿；属于 `collect` 的一部分。 |
 | `callback` | 每次策略 `step()` 回调总耗时，包括仅返回缓存的回调。 |
 
-还提供 `last_image_bytes`（最近准备的三路原始图像字节总数）、`last_request_bytes`（最近编码的观测消息字节数）、`last_response_bytes`（最近收到的二进制响应帧字节数）。这些是应用层大小，不含 WebSocket/TCP/TLS 开销。
+还提供 `last_source_image_bytes`（缩放前的三路 RGB 图像字节总数）、`last_image_bytes`（缩放后实际发送的图像字节总数，固定 451,584 字节）、`last_request_bytes`（最近编码的完整观测消息字节数）、`last_response_bytes`（最近收到的二进制响应帧字节数）。这些是应用层大小，不含 WebSocket/TCP/TLS 开销。
 
 分段统计记录实际到达的阶段，失败或主动取消时也保留该阶段已经花费的时间；未到达的阶段不增加样本。它们与原有“排除主动取消”的请求总延迟口径不同，且 `predict`、`collect`、`callback` 等存在包含或并行关系，不能把所有平均值直接相加。每项最近值属于最近一次执行该阶段的调用，也可能不是同一请求；可结合样本数判断。
 
@@ -108,11 +109,13 @@ resume
 
 数组元数据固定为字节键。接收端在校验 dtype、shape 和字节长度后，用 `frombuffer(...).reshape(...).copy()` 还原独立持有数据的 ndarray。只支持普通数值和布尔类型，拒绝对象、结构化、复数及畸形数据，不使用 pickle。输入消息上限为 4 MiB，WebSocket 与解码器一致；输出原始图像不受此入站上限限制。
 
-不接受旧的 `msgpack-numpy`（`nd/type/kind/shape/data`）编码，也不自动回退。运行依赖为 NumPy、msgpack、websockets 及 SDK 所需依赖，已移除 `msgpack-numpy`。更新后应重建本策略镜像，并冷重载使用它的实例。
+不接受旧的 `msgpack-numpy`（`nd/type/kind/shape/data`）编码，也不自动回退。运行依赖为 NumPy、msgpack、websockets、Pillow 及 SDK 所需依赖，已移除 `msgpack-numpy`。224×224 缩放新增了锁定的 Pillow 12.3.0；更新后运行 `./setup.sh --policies internvla_maas` 重建本策略镜像，再冷重载使用它的实例。
 
 握手顺序是 `server_hello → robot_hello → ready`。校验模型、协议、相机角色、`joint_pos` 状态和动作字段、50 行 horizon 及执行频率。机器人声明 14 自由度、raw 图像和绝对关节动作空间。
 
-相机映射为 `head → front`、`left_wrist → wrist_left`、`right_wrist → wrist_right`。图像以原始尺寸的 RGB uint8 HWC 发送，服务负责模型所需的缩放；状态顺序保持左臂 6 关节、左夹爪、右臂 6 关节、右夹爪，不换算单位。观测含递增 seq、秒级时间戳、新会话 episode_id 和任务文本。
+相机映射为 `head → front`、`left_wrist → wrist_left`、`right_wrist → wrist_right`。发送前按比例将长边缩放至 224，短边四舍五入且至少保留 1 像素，使用双线性插值，再居中补黑边到 224×224；奇数余量多出的 1 像素留在下侧或右侧。已经是 224×224 的图像保留全部像素。不会拉伸、裁剪、交换 RGB 通道或修改输入图像；每路仍发送 RGB `uint8[224,224,3]` 的 ndarray，不做 JPEG 编码。
+
+每张像素数据为 150,528 字节，三张合计 451,584 字节（441 KiB，约 0.43 MiB），完整请求另含状态、任务文本和少量 MessagePack 元数据。RC 与 SDK 的原始图像和共享内存契约保持不变，缩放仅发生在 MaaS 网络后端。状态顺序保持左臂 6 关节、左夹爪、右臂 6 关节、右夹爪，不换算单位。观测含递增 seq、秒级时间戳、新会话 episode_id 和任务文本。
 
 只接受有限的浮点 `[50,14]`、`space=joint_pos`、`mode=absolute` 动作。客户端不做反归一化或 delta 累加。重叠区手臂采用原 Qwen 指数平滑，夹爪保留旧计划；补偿只加在输出副本上，不累计到 canonical 缓存。仅 RC 控制线程发送和消费动作。
 

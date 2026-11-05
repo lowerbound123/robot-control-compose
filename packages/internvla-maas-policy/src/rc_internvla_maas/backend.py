@@ -16,6 +16,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from .codec import MAX_MESSAGE_BYTES, pack, unpack
+from .images import resize_rgb
 from .metrics import RequestMetrics, StageTimings
 
 CAMERAS = {'head': 'front', 'left_wrist': 'wrist_left', 'right_wrist': 'wrist_right'}
@@ -40,8 +41,8 @@ class MaasBackend:
         self._episode = None
         self._metrics = RequestMetrics()
         self._timings = StageTimings(
-            ('dispatch', 'prepare', 'pack', 'send', 'response_wait', 'decode', 'validate', 'server'),
-            last_image_bytes='—', last_request_bytes='—', last_response_bytes='—')
+            ('dispatch', 'prepare', 'resize', 'pack', 'send', 'response_wait', 'decode', 'validate', 'server'),
+            last_source_image_bytes='—', last_image_bytes='—', last_request_bytes='—', last_response_bytes='—')
         # websockets DEBUG includes Authorization headers and payloads. Never
         # propagate its transport logger into the worker's captured root logger.
         self._logger = logging.Logger('internvla-maas.transport', logging.CRITICAL + 1)
@@ -239,7 +240,11 @@ class MaasBackend:
                     if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8 or not frame.size:
                         raise MaasError('MaaS images must be nonempty RGB uint8 HWC')
                     frames[role] = frame
-                self._timings.set_values(last_image_bytes=sum(frame.nbytes for frame in frames.values()))
+                source_bytes = sum(frame.nbytes for frame in frames.values())
+                with self._timings.measure('resize'):
+                    frames = {role: resize_rgb(frame) for role, frame in frames.items()}
+                self._timings.set_values(last_source_image_bytes=source_bytes,
+                                        last_image_bytes=sum(frame.nbytes for frame in frames.values()))
                 message = dict(type='obs', seq=self._seq, t=time.time(), episode_id=self._episode,
                                instruction=instruction, images=frames, state={'joint_pos': state})
                 self._seq += 1

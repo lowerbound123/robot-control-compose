@@ -43,9 +43,9 @@ def test_real_handshake_raw_rgb_state_offsets_and_absolute_actions(tmp_path):
             assert request['seq'] == 0 and request['instruction'] == 'instruction'
             assert request['t'] > 0 and request['episode_id']
             assert set(request['images']) == {'front', 'wrist_left', 'wrist_right'}
-            assert request['images']['front'].shape == (2, 3, 3)
+            assert request['images']['front'].shape == (224, 224, 3)
             assert request['images']['front'].dtype == np.uint8
-            assert request['images']['wrist_right'][0, 0, 0] == 3
+            assert request['images']['wrist_right'][112, 112, 0] == 3
             model.predict(state, images(), 'next')
             assert server.requests[1]['seq'] == 1
             assert server.requests[1]['episode_id'] == request['episode_id']
@@ -53,6 +53,33 @@ def test_real_handshake_raw_rgb_state_offsets_and_absolute_actions(tmp_path):
             model.close()
             model.close()
         wait(lambda: not server.connections)
+
+
+def test_three_camera_frames_are_resized_before_ndarray_transmission(tmp_path):
+    with model_server() as server:
+        model = backend(configured(tmp_path, settings(server.address)))
+        frames = {name: np.full((480, 640, 3), color, np.uint8)
+                  for name, color in (('head', (255, 0, 0)), ('left_wrist', (0, 255, 0)), ('right_wrist', (0, 0, 255)))}
+        originals = {name: frame.copy() for name, frame in frames.items()}
+        try:
+            model.load()
+            model.predict(np.zeros(14, np.float32), frames, 'task')
+            request = server.requests[0]
+            for role, color in (('front', (255, 0, 0)), ('wrist_left', (0, 255, 0)), ('wrist_right', (0, 0, 255))):
+                frame = request['images'][role]
+                assert isinstance(frame, np.ndarray) and frame.shape == (224, 224, 3)
+                assert frame.dtype == np.uint8
+                assert not np.any(frame[:28]) and not np.any(frame[196:])
+                assert np.all(frame[28:196] == color)
+            for name in frames:
+                np.testing.assert_array_equal(frames[name], originals[name])
+            snapshot = model.monitor()
+            assert snapshot['last_source_image_bytes'] == 2764800
+            assert snapshot['last_image_bytes'] == 451584
+            assert 451584 < snapshot['last_request_bytes'] < 453000
+            assert snapshot['resize_samples'] == 1 and snapshot['last_resize_ms'] >= 0
+        finally:
+            model.close()
 
 
 @pytest.mark.parametrize('patch', [

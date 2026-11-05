@@ -19,4 +19,4 @@ FROM runtime AS test
 COPY --from=policy-deps /test-requirements.lock /tmp/test.lock
 RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/test.lock && python -m pip check
 ENTRYPOINT ["python", "-m", "pytest"]
-CMD ["-q", "tests/test_internvla_maas_configuration.py", "tests/test_internvla_maas_codec.py", "tests/test_internvla_maas_backend.py", "tests/test_internvla_maas_runtime.py"]
+CMD ["-q", "tests/test_internvla_maas_configuration.py", "tests/test_internvla_maas_codec.py", "tests/test_internvla_maas_images.py", "tests/test_internvla_maas_backend.py", "tests/test_internvla_maas_runtime.py"]

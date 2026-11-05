@@ -51,7 +51,7 @@ def test_real_worker_releases_shared_images_and_reopens_context(tmp_path, monkey
             actions = np.asarray(response['actions'])
             assert actions.shape == (50, 14)
             np.testing.assert_allclose(actions[:, [6, 13]], -.85)
-            assert server.requests[0]['images']['front'][0, 0, 0] == 1
+            assert server.requests[0]['images']['front'][112, 112, 0] == 1
             worker.reset_context()
             worker.submit({**request, 'request_id': 2, 'generation': 2,
                            'runtime': {'observation_id': 'maas-two', 'control_epoch': 2, 'consumed_actions': 7}})

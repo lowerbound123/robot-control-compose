@@ -42,7 +42,7 @@ def test_prefetch_trim_blend_and_apply_gripper_compensation_only_once(tmp_path):
             old = step(context, old[1:], 21, frames=frames)
             frames['head'][:] = 99
             wait(lambda: len(server.requests) == 2)
-            assert server.requests[-1]['images']['front'][0, 0, 0] == 1
+            assert server.requests[-1]['images']['front'][112, 112, 0] == 1
             old = step(context, old[1:], 22, frames={})
             assert len(server.requests) == 2
             gate.set()
