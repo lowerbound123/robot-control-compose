@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { McpGateway } from '@/lib/mcp'
-import { PlanExecutor, type CommandPlan, type Payload, type RcStatus } from '@/lib/commands'
+import { PlanExecutor, type Payload, type RcStatus } from '@/lib/commands'
 import { readConfig, type ApiConfig } from '@/lib/translator'
 import { useCommandPresentation } from '@/lib/command-presentation'
 import { runAgent } from '@/lib/agent'
@@ -35,7 +35,7 @@ export const useControlStore = defineStore('control', () => {
   const directMode = computed(() => config.value?.llm === false)
   const inputReady = computed(() => !!config.value && (directMode.value || apiReady.value))
   const canReset = computed(() => connected.value && (!busy.value || translating.value) && !unresolved.value && !uncertain.value)
-  const policyRunning = computed(() => status.value?.state === 'running' && status.value.control_owner === 'policy')
+  const policyRunning = computed(() => status.value?.state === 'running')
   const canTogglePause = computed(() => canReset.value && !status.value?.returning && ['running', 'paused'].includes(status.value?.state || ''))
   let translation: AbortController | null = null
   let serial = 0
@@ -236,10 +236,11 @@ export const useControlStore = defineStore('control', () => {
     details.value = []
     message.value = `正在${label}…`
     try {
-      const plan: CommandPlan = { message: label, steps: [{ action }] }
       const original = await gateway.status()
       if (token !== serial || token === cancelledSerial) throw Error('已停止提交，未发送新指令。')
-      await executor.run(plan, original, value => { if (token === serial) emit(value) })
+      // An explicit toolbar click is human input, like direct command mode.
+      // Keep the shared receipt/guard handling, without an implicit MCP take.
+      await executor.runText(action, original, value => { if (token === serial) emit(value) })
       if (token !== serial) return
       message.value = action === 'reset' ? '复位指令已完成 · 保持暂停' : action === 'pause' ? '已暂停策略运行' : '已恢复策略运行'
       presentation.finish('success', message.value)

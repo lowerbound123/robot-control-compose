@@ -69,6 +69,24 @@ it('polls policy episodes with get_policy_result and preserves terminated busine
   expect(g.call.mock.calls.some(([name]) => name === 'get_operation')).toBe(false)
 })
 
+it('ordinary no-wait return confirms only the handoff while a continuous policy keeps running', async () => {
+  const g = fixtureGateway(); g.state.control_owner = 'mcp'
+  const snapshot = await discoverCapabilities(g), executor = new PlanExecutor(g, { pollMs: 1 })
+  g.call.mockImplementation(async (name, args) => {
+    if (name === 'return') {
+      expect(args?.wait).toBe(false)
+      return { operation_id: 'handoff', status: 'running' }
+    }
+    expect(name).toBe('get_operation')
+    g.state.control_owner = 'policy'; g.state.state = 'running'; g.state.control_epoch++
+    return receipt(g.state, { operation_id: 'handoff' })
+  })
+  const result = await executor.runTool(prepareToolCall(decision('return').tool_call, snapshot), snapshot.status)
+  expect(result.control).toMatchObject({ state: 'running', control_owner: 'policy' })
+  expect(executor.unresolvedOperation).toBeNull()
+  expect(g.call.mock.calls.some(([name]) => name === 'get_policy_result' || name === 'return_and_wait')).toBe(false)
+})
+
 it('keeps a timed-out episode recoverable with the right query kind', async () => {
   const g = fixtureGateway(); g.state.control_owner = 'mcp'
   const snapshot = await discoverCapabilities(g), executor = new PlanExecutor(g, { pollMs: 1, receiptTimeoutMs: 5 })

@@ -53,3 +53,19 @@ it('uses the configured effort once and refuses model tools in final-only mode',
     fetcher: async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"message":"再查一次","tool_call":{"name":"status","arguments":{}}}' } }] })),
   })).rejects.toThrow(/上限|总结/)
 })
+
+it('bases policy result waiting on the active policy capabilities and defaults continuous policies to return', async () => {
+  const gateway = fixtureGateway()
+  const snapshot = await discoverCapabilities(gateway)
+  const body = buildAgentRequest({ llm: true, enabled: true, model: 'test', timeout_s: 30 }, {
+    input: '运行当前策略', snapshot, history: [], exchanges: [],
+  })
+  const instructions = body.messages[0]!.content
+  expect(instructions).toContain('默认选择 return（no wait）')
+  expect(instructions).toContain('当前实际运行的 policy 或原生链成员')
+  expect(instructions).toContain('明确支持本次任务的 completed/terminated 结果回传')
+  expect(instructions).toContain('没有可等待的 policy，或能力说明不足以确认')
+  expect(instructions).toContain('timeout_s=0 仍会创建业务等待任务')
+  expect(instructions).toContain('归还操作回执')
+  expect(instructions).not.toContain('明确要求运行后 return_and_wait')
+})

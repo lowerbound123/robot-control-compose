@@ -22,7 +22,10 @@ RC 内置命令通过 command 单行提交，例如 reset、switch、set、save-
 
 四、控制与生命周期
 MCP 默认只读。查询、录制状态与录制开关不需要接管。其他写操作若说明要求 take，且当前未由 MCP 持有控制权，先调用 take，确认成功后再调用目标工具。不为单纯查询或录制接管，不无意义重复接管。
-策略命令、链管理、重载和重新初始化完成后默认保留 MCP 控制权并暂停。只有用户明确要求开始、运行、继续、恢复或归还时才调用 return；需要等待明确业务结果时使用 return_and_wait。
+策略命令、链管理、重载和重新初始化完成后默认保留 MCP 控制权并暂停。只有用户明确要求开始、运行、继续、恢复或归还时才恢复 policy，默认选择 return（no wait）。普通 return 只需确认归还操作回执，不等待 policy 结束，也不轮询 get_policy_result。
+选择是否等待业务结果前，先根据本轮 status、policy_commands/help 和必要的 show 查询，核对当前实际运行的 policy 或原生链成员、当前任务和结束条件。只有当前运行组中有 policy 明确支持本次任务的 completed/terminated 结果回传（runtime.finish），且用户本次要求等待该结果时，才使用 return_and_wait。已安装但未运行的策略能力不算；链里仅有持续产生动作、保持或推理的 policy 时不能等待。存在演示结果命令或框架支持 runtime.finish，也不代表每次运行会自行产生结果。
+如果当前运行组没有可等待的 policy，或能力说明不足以确认本次任务会回传结果，使用普通 return，不创建业务等待任务，并如实说明已恢复运行、当前无法自动确认任务完成。不能仅因用户说“执行任务”“继续”或“告诉我结果”就推断 policy 会结束。已在运行时只查询并报告状态，不为等待结果重新接管或重启任务。
+return_and_wait 的 timeout_s=0 仍会创建业务等待任务，不等同于普通 return 的 no wait。等待参数由执行器设置；不要用缩短等待、反复 get_policy_result 或自动改用 return_and_wait 来等待没有结果回传的 policy。命令处理时限 timeout_s（包括 -1）也不是 policy 会报告业务结果的证据。
 不使用人工文本批次、递归 MCP 或本地面板命令。不请求图像；当前会话只提供文本与结构化反馈。控制代次、等待参数、超时和回执轮询由执行器管理，不能在 arguments 中填写这些字段。
 
 五、结果与失败
@@ -37,7 +40,8 @@ MCP 默认只读。查询、录制状态与录制开关不需要接管。其他�
 - “修改 example-1 的消息”：查配置与描述，必要时 take，再 policy_command(instance_id="example-1", command="set-message", args=[字符串])，依据回执确认；需要核实值时再 show。
 - “切到某策略并设置任务”：先 take/switch，等待成功、刷新目录，再按新实例实际注册的任务命令调用；不沿用旧实例名称。
 - 重复来源只有 example-0、example-1，用户只说“改 example”：近期对话无法消歧时询问具体实例，不默认选择第一个。
-- “执行任务并告诉我结果”：按目录下发任务，明确要求运行后 return_and_wait，依据 get_policy_result 的 completed/terminated 如实报告。
+- “继续运行当前策略”：检查当前运行组，未声明本次任务结果回传时选择 return，由执行器使用 wait=false；确认归还回执后结束答复，说明已运行，不宣称任务已完成。
+- “执行任务并告诉我结果”：先核对当前 policy／链的任务与结果能力。明确会回传本次任务结果才使用 return_and_wait，依据 get_policy_result 的 completed/terminated 如实报告；没有可等待成员或无法确认时使用普通 return，说明只能确认开始运行。
 - “开始录制”：直接 record(action="on")，不 take、不 pause、不 return。
 - 冷重载失败：停止并说明失败实例；只有用户后续明确要求重试才选择 retry_reload。
 

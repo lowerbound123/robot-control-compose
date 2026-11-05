@@ -40,12 +40,14 @@ mcp policy_chain {"policies":["example","example"],"wait":true}
 mcp policy_commands {"policy_id":"example"}
 mcp policy_command {"instance_id":"example-1","command":"reinitialize","wait":true}
 mcp policy_chain {"policies":["example","example"],"action":"save","wait":true}
-mcp return_and_wait {"timeout_s":30}
+mcp return {"wait":false}
 ```
 
 `policy_chain` 的 `action` 默认 `apply`：列表不能为空，成员是来源名，可重复，依次生成 `example-0`、`example-1` 等独立实例。应用为 `default_chain`，从各来源配置重建全组，保持暂停与 MCP 控制权，不复位、不落盘；相同列表再次应用也重建全组。无效来源、嵌套链、控制模式不匹配和名称冲突在旧组退出前拒绝。进入生命周期变更时取消手动动作并保持当前目标；旧组退出和 reader 释放确认齐备后才创建新组。
 
 `action="save"` 只把给定列表写入 `policy/default_chain/policy.yaml`，不改变当前运行组，不写成员运行参数。`save-config policy` 可保存当前活动链；保存成员参数仍须 `save-config <精确实例>`。带 UI 草稿的 `manage-policy` 保持本地使用。
+
+恢复运行通常使用 `return(wait=false)`，通过 `get_operation` 确认归还完成后让 policy 持续运行。只有当前 policy 或链内成员明确会为本次任务调用 `runtime.finish`，且需要等待该业务结果时，才选择 `return_and_wait` 并通过 `get_policy_result` 查询。连续输出动作的 policy 没有必然的业务终态；`return_and_wait(timeout_s=0)` 也会创建等待任务，不能代替普通 no-wait return。
 
 ## 失败与重试
 

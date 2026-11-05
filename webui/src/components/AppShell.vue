@@ -31,7 +31,7 @@ onBeforeUnmount(control.stop)
           <span class="status-dot" /><span class="connection-label">{{ connection }}</span>
         </span>
         <Button variant="outline" size="sm" :disabled="!control.canTogglePause"
-          :title="control.policyRunning ? '暂停当前策略运行' : '归还控制并恢复策略运行'" @click="control.togglePause">
+          :title="control.policyRunning ? '暂停当前策略运行' : '恢复策略运行'" @click="control.togglePause">
           <FontAwesomeIcon :icon="control.policyRunning ? faPause : faPlay" />{{ control.policyRunning ? '暂停' : '恢复' }}
         </Button>
         <Button variant="outline" size="sm" :disabled="!control.canReset" title="移动到配置的复位姿态，并保持暂停" @click="control.reset">

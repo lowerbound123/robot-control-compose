@@ -41,6 +41,8 @@ beforeEach(() => {
     if (name === 'take') state = { ...state, control_owner: 'mcp', control_epoch: state.control_epoch + 1, generation: state.generation + 1 }
     if (name === 'command') state = { ...state, state: 'paused', generation: state.generation + 1 }
     if (name === 'return') state = { ...state, state: 'running', control_owner: 'policy', control_epoch: state.control_epoch + 1, generation: state.generation + 1 }
+    if (name === 'tui_command') state = { ...state, state: args?.text === 'resume' ? 'running' : 'paused',
+      control_owner: args?.text === 'resume' ? 'policy' : state.control_owner, generation: state.generation + 1 }
     const operation_id = `op-${++id}`
     pending.set(operation_id, false)
     return { operation_id, status: 'queued' }
@@ -181,26 +183,26 @@ it('preserves the unknown operation record while read-only queries remain availa
   expect(store.history[1].outcome).toBe('success')
 })
 
-it('toolbar pause and resume use the guarded executor without calling AI', async () => {
-  await store.start()
-  state = { ...state, state: 'running' }
-  await vi.advanceTimersByTimeAsync(1000)
-  expect(store.policyRunning).toBe(true)
-  expect(store.canTogglePause).toBe(true)
-  const pausing = store.togglePause(); await flush()
-  expect(store.phase).toBe('executing')
-  pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200)
-  pending.set('op-2', true); await vi.advanceTimersByTimeAsync(200); await pausing
-  expect(mock.call).toHaveBeenCalledWith('command', expect.objectContaining({ line: 'pause' }), expect.anything())
-  await vi.advanceTimersByTimeAsync(1000)
-  expect(store.policyRunning).toBe(false)
-  const resuming = store.togglePause(); await flush()
-  pending.set('op-3', true); await vi.advanceTimersByTimeAsync(200); await resuming
-  expect(mock.call).toHaveBeenCalledWith('return', expect.anything(), expect.anything())
-  expect(store.phase).toBe('success')
-  expect(mock.translate).not.toHaveBeenCalled()
-  expect(store.history).toEqual([])
-})
+for (const owner of ['policy', 'mcp']) for (const llm of [true, false]) {
+  it.each(['pause', 'resume', 'reset'] as const)(`toolbar %s uses one human TUI command (owner=${owner}, llm=${llm})`, async action => {
+    direct = !llm
+    state = { ...state, state: action === 'resume' ? 'paused' : 'running', control_owner: owner }
+    const before = { ...state }
+    await store.start(); await flush()
+    expect(store.canReset).toBe(true)
+    expect(store.canTogglePause).toBe(true)
+    const running = action === 'reset' ? store.reset() : store.togglePause(); await flush()
+    expect(store.phase).toBe('executing')
+    expect(mock.call).toHaveBeenCalledWith('tui_command', { text: action, wait: false }, before)
+    pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200); await running
+    expect(mock.call.mock.calls.filter(([name]) => ['take', 'return', 'command', 'return_and_wait'].includes(name))).toEqual([])
+    expect(mock.call.mock.calls.filter(([name]) => name === 'tui_command')).toHaveLength(1)
+    expect(store.phase).toBe('success')
+    expect(mock.translate).not.toHaveBeenCalled()
+    expect(store.history).toEqual([])
+    expect(state.control_owner).toBe(action === 'resume' ? 'policy' : owner)
+  })
+}
 
 it('manual pause supersedes in-flight AI without allowing its late reset plan to execute', async () => {
   state = { ...state, state: 'running' }
@@ -213,9 +215,9 @@ it('manual pause supersedes in-flight AI without allowing its late reset plan to
   progress({ kind: 'message', text: '过期复位指令' }); finish(plan); await translating
   expect(store.phase).toBe('executing')
   expect(store.history[0]).toMatchObject({ outcome: 'cancelled', message: '' })
-  pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200)
-  pending.set('op-2', true); await vi.advanceTimersByTimeAsync(200); await pausing
-  expect(mock.call.mock.calls.filter(([name]) => name === 'command').map(([, args]) => args.line)).toEqual(['pause'])
+  pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200); await pausing
+  expect(mock.call.mock.calls.filter(([name]) => name === 'tui_command').map(([, args]) => args.text)).toEqual(['pause'])
+  expect(mock.call.mock.calls.some(([name]) => name === 'take' || name === 'command')).toBe(false)
 })
 
 it('a failed RC receipt ends in error without completing later actions', async () => {

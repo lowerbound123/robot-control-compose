@@ -403,3 +403,9 @@ Python 3.11 example 基线 78 通过、1 项因缺少 ROS 环境跳过（不计�
 验收使用本地 API 替身、隔离测试配置和 mock 机器人，没有访问真实模型、厂商驱动或硬件，没有改用户私有凭据。临时部署清理证据位于 `/private/tmp/rc-webui-agent-production/cleanup.json` 与 `/private/tmp/rc-webui-agent-production-final/cleanup.json`；没有提交任务账本或运行产物。
 
 两个临时项目均清理退出 0，容器、policy 实例与卷为空。测试镜像已移除，Docker 恢复初始停止状态，汇总 `/private/tmp/rc-webui-agent-cleanup-final.json`。改动保留在原工作区，未提交或推送。
+
+## WebUI policy 等待选择与人工工具栏修正（2026-11-05）
+
+提示词默认使用普通 `return(wait=false)`，只有当前实际运行的 policy／链成员明确会回传本次任务结果且用户需要该结果时才选择 `return_and_wait`。明确区分归还回执与业务终态，说明 `timeout_s=0` 仍创建业务等待任务。暂停／恢复／复位按钮改为共用执行器的单行 `tui_command`，不自动 take；按运行状态选择暂停或恢复，保留原提交代次、忙碌与待确认保护。
+
+沿用用户“不重新测试”的要求，本轮未运行单测、浏览器或后端测试，也未启动 Docker 或连接模型／硬件。已更新提示词、普通归还回执、两种控制归属／LLM 模式的三个按钮及迟到模型响应的回归用例，尚未执行，不能计为通过。`npm run build`（含 `vue-tsc --noEmit`）通过，日志 `/private/tmp/rc-webui-human-toolbar-build.log`；`git diff --check` 通过。RC、SDK 和 policy 实现未改变。

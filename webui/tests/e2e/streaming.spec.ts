@@ -110,6 +110,13 @@ test('direct mode has no AI region and reduced motion disables the rotating effe
 
 for (const llm of [true, false]) test(`toolbar pause/resume works without AI requests (llm=${llm})`, async ({ page, request }, info) => {
   if (!llm) await page.route('**/config.json', route => route.fulfill({ json: { llm: false, enabled: false, model: '', timeout_s: 3 } }))
+  const calls: { name: string; arguments: Record<string, unknown> }[] = []
+  page.on('request', req => {
+    if (req.url().endsWith('/mcp') && req.method() === 'POST') {
+      const body = req.postDataJSON()
+      if (body.method === 'tools/call') calls.push(body.params)
+    }
+  })
   await page.goto('/monitor')
   await page.getByRole('button', { name: '恢复', exact: true }).click()
   await expect(page.getByRole('status')).toContainText('已恢复策略运行')
@@ -119,7 +126,12 @@ for (const llm of [true, false]) test(`toolbar pause/resume works without AI req
   await expect(page.getByRole('status')).toContainText('已暂停策略运行')
   const after = await (await request.get(`${rc}/health`)).json()
   expect(after.state).toBe('paused')
-  expect(after.control_owner).toBe('mcp')
+  expect(after.control_owner).toBe('policy')
+  await page.getByRole('button', { name: '复位', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('复位指令已完成')
+  expect((await (await request.get(`${rc}/health`)).json()).control_owner).toBe('policy')
+  expect(calls.filter(call => call.name === 'tui_command').map(call => call.arguments.text)).toEqual(['resume', 'pause', 'reset'])
+  expect(calls.filter(call => ['take', 'return', 'command', 'return_and_wait'].includes(call.name))).toEqual([])
   expect((await (await request.get(`${api}/test/requests`)).json())).toEqual([])
   await page.setViewportSize({ width: 320, height: 740 })
   await expect(page.getByRole('button', { name: '恢复', exact: true })).toBeInViewport()
