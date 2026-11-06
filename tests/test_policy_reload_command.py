@@ -15,6 +15,10 @@ SOURCE = '''
 import json, os, time
 from pathlib import Path
 
+def configure(context, candidate, key, value, callback):
+    if key != "params.hot": raise ValueError("unsupported configuration key")
+    candidate["params"]["hot"] = json.loads(value)
+
 def initialize(config):
     root = Path(config["params"]["root"])
     model = json.loads(Path(config["params"]["model_config_path"]).read_text())
@@ -87,12 +91,12 @@ def test_reload_effect_manifest_is_preserved_and_unknown_effect_rejected(effect)
 def test_same_path_forces_new_model_exit_then_initialize_and_paused_receipt(reload_controller):
     controller, root, model = reload_controller
     old_worker = controller._worker
-    old_pid = completed(controller, controller.submit("current"))["result"]["pid"]
+    old_pid = completed(controller, controller.submit("policy first current"))["result"]["pid"]
     completed(controller, controller.submit("resume"))
     until(lambda: controller.status()["consumed"] > 1)
     (root / "reset").unlink()
     model.write_text(json.dumps({"name": "new", "load_delay": .4}))
-    call = controller.submit(f"switch-model {model}")
+    call = controller.submit(f"policy first switch-model {model}")
     until(lambda: "load:new" in (root / "events").read_text())
     assert controller.get_operation(call)["status"] == "running"
     assert not old_worker.alive
@@ -102,7 +106,7 @@ def test_same_path_forces_new_model_exit_then_initialize_and_paused_receipt(relo
     assert controller.status()["state"] == "paused"
     assert controller.registry.get("first").version == 2
     assert not (root / "reset").exists()
-    current = completed(controller, controller.submit("current"))["result"]
+    current = completed(controller, controller.submit("policy first current"))["result"]
     assert current["name"] == "new" and current["pid"] != old_pid
     assert (root / "events").read_text().splitlines() == ["load:old", "release:old", "load:new"]
 
@@ -111,14 +115,14 @@ def test_cancel_during_new_initialize_does_not_commit_late_ready(reload_controll
     controller, root, model = reload_controller
     old = controller._worker
     model.write_text(json.dumps({'name':'candidate', 'load_delay':.4}))
-    reload_id = controller.submit(f'switch-model {model}')
+    reload_id = controller.submit(f'policy first switch-model {model}')
     until(lambda: 'load:candidate' in (root / 'events').read_text())
     completed(controller, controller.submit('pause'))
     assert completed(controller, reload_id)['status'] == 'cancelled'
     assert old.cleanup_confirmed and controller._worker is None
     assert controller.registry.get('first').version == 1
-    assert controller.status()['retry_reload_command'] == 'retry-reload first'
-    assert completed(controller, controller.submit('retry-reload first'))['status'] == 'succeeded'
+    assert controller.status()['retry_reload_command'] == 'policy first retry'
+    assert completed(controller, controller.submit('policy first retry'))['status'] == 'succeeded'
 
 
 @pytest.mark.parametrize("patch", [{}, [], {"params.missing": 1}, {"params.hot": 2}, {"id": "other"},
@@ -127,7 +131,7 @@ def test_invalid_reload_patch_preserves_worker(reload_controller, patch):
     import shlex
     controller, root, _ = reload_controller
     worker = controller._worker
-    result = completed(controller, controller.submit("patch " + shlex.quote(json.dumps(patch))))
+    result = completed(controller, controller.submit("policy first patch " + shlex.quote(json.dumps(patch))))
     assert result["status"] == "failed"
     assert controller._worker is worker and worker.alive
     assert controller.registry.get("first").version == 1
@@ -138,9 +142,9 @@ def test_handler_validation_failure_preserves_old_model(reload_controller):
     controller, root, model = reload_controller
     model.write_text(json.dumps({"invalid": True}))
     worker = controller._worker
-    assert completed(controller, controller.submit(f"switch-model {model}"))["status"] == "failed"
+    assert completed(controller, controller.submit(f"policy first switch-model {model}"))["status"] == "failed"
     assert controller._worker is worker and worker.alive
-    assert completed(controller, controller.submit("current"))["result"]["name"] == "old"
+    assert completed(controller, controller.submit("policy first current"))["result"]["name"] == "old"
 
 
 @pytest.mark.parametrize("interruption", ["pause", "take", "exit"])
@@ -148,9 +152,9 @@ def test_result_after_control_interruption_cannot_reload(reload_controller, inte
     controller, root, model = reload_controller
     worker = controller._worker
     model.write_text(json.dumps({"name": "new", "validation_delay": .15}))
-    call = controller.submit(f"switch-model {model}")
+    call = controller.submit(f"policy first switch-model {model}")
     until(lambda: (root / "validating").exists())
-    completed(controller, controller.submit(interruption))
+    completed(controller, (controller.submit_control(interruption) if interruption in ("take", "return") else controller.submit(interruption)))
     assert completed(controller, call)["status"] == "cancelled"
     assert "load:new" not in (root / "events").read_text()
     if interruption != "exit": assert controller._worker is worker and worker.alive
@@ -159,11 +163,11 @@ def test_result_after_control_interruption_cannot_reload(reload_controller, inte
 def test_reload_is_rejected_during_mcp_takeover_and_queued_before_take(reload_controller):
     controller, root, model = reload_controller
     with controller._lock:
-        call = controller.submit(f"switch-model {model}")
-        take = controller.submit("take")
+        call = controller.submit(f"policy first switch-model {model}")
+        take = controller.submit_control("take")
     completed(controller, take)
     assert completed(controller, call)["status"] == "cancelled"
-    assert completed(controller, controller.submit(f"switch-model {model}"))["status"] == "failed"
+    assert completed(controller, controller.submit(f"policy first switch-model {model}"))["status"] == "failed"
     assert not (root / "validating").exists()
 
 
@@ -173,7 +177,7 @@ def test_new_initialization_failure_or_timeout_faults_without_rollback(reload_co
     controller, root, model = reload_controller
     worker = controller._worker
     model.write_text(json.dumps(model_config))
-    result = completed(controller, controller.submit(f"switch-model {model}"), 7)
+    result = completed(controller, controller.submit(f"policy first switch-model {model}"), 7)
     assert result["status"] == "failed"
     assert controller.status()["state"] == "fault"
     assert not worker.alive
@@ -181,8 +185,8 @@ def test_new_initialization_failure_or_timeout_faults_without_rollback(reload_co
     assert (root / "events").read_text().count("load:old") == 1
     assert controller.status()['retry_reload_instance'] == 'first'
     model.write_text(json.dumps({"name": "repaired"}))
-    assert completed(controller, controller.submit('retry-reload first'), 7)['status'] == 'succeeded'
-    assert completed(controller, controller.submit('current'))['result']['name'] == 'repaired'
+    assert completed(controller, controller.submit('policy first retry'), 7)['status'] == 'succeeded'
+    assert completed(controller, controller.submit('policy first current'))['result']['name'] == 'repaired'
 
 
 @pytest.mark.parametrize('effect', ['reload_policy', 'reload_all_policy', None])
@@ -222,7 +226,7 @@ def test_reload_validation_timeout_kills_worker_and_never_loads_new_model(reload
     controller, root, model = reload_controller
     worker = controller._worker
     model.write_text(json.dumps({"name": "new", "validation_delay": 2}))
-    result = completed(controller, controller.submit(f"switch-model {model}"))
+    result = completed(controller, controller.submit(f"policy first switch-model {model}"))
     assert result["status"] == "failed" and "timeout" in result["error"]
     until(lambda: controller._worker is None, 8)
     assert not worker.alive
@@ -233,9 +237,9 @@ def test_reload_validation_timeout_kills_worker_and_never_loads_new_model(reload
 def test_explicit_switch_during_validation_cannot_apply_stale_reload(reload_controller):
     controller, root, model = reload_controller
     model.write_text(json.dumps({"name": "new", "validation_delay": .15}))
-    call = controller.submit(f"switch-model {model}")
+    call = controller.submit(f"policy first switch-model {model}")
     until(lambda: (root / "validating").exists())
-    switched = controller.submit("switch first")
+    switched = controller.submit("policy switch first")
     assert completed(controller, switched)["status"] == "succeeded"
     assert completed(controller, call)["status"] == "cancelled"
     assert controller.registry.get("first").version == 2
@@ -246,7 +250,7 @@ def test_multiple_reload_results_only_apply_one_lifecycle(reload_controller):
     controller, root, model = reload_controller
     model.write_text(json.dumps({"name": "new", "validation_delay": .12}))
     with controller._lock:
-        calls = [controller.submit(f"switch-model {model}") for _ in range(2)]
+        calls = [controller.submit(f"policy first switch-model {model}") for _ in range(2)]
     results = [completed(controller, call)["status"] for call in calls]
     assert sorted(results) == ["cancelled", "succeeded"]
     assert controller.registry.get("first").version == 2
@@ -259,9 +263,9 @@ def test_hot_config_lifecycle_cancels_reload_result_from_previous_version(reload
     # The hot transaction must have enough time to drain the active validator.
     worker.inference_timeout_s = 1
     model.write_text(json.dumps({"name": "new", "validation_delay": .15}))
-    call = controller.submit(f"switch-model {model}")
+    call = controller.submit(f"policy first switch-model {model}")
     until(lambda: (root / "validating").exists())
-    update = controller.submit("set policy.params.hot 2")
+    update = controller.submit("policy first config set params.hot 2")
     assert completed(controller, update)["status"] == "succeeded"
     assert completed(controller, call)["status"] == "cancelled"
     assert controller._worker is worker and worker.alive
@@ -276,8 +280,8 @@ def test_failed_reload_dispatch_releases_pending_snapshot(reload_controller):
     # gate sent by an earlier operation. Failed receipts must retain no request.
     with controller._lock:
         worker.stop_commands()
-        call = controller.submit(f"switch-model {model}")
+        call = controller.submit(f"policy first switch-model {model}")
     assert completed(controller, call)["status"] == "failed"
     assert call not in controller._policy_reloads
     worker.resume_commands()
-    assert completed(controller, controller.submit("current"))["result"]["name"] == "old"
+    assert completed(controller, controller.submit("policy first current"))["result"]["name"] == "old"

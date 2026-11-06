@@ -11,7 +11,39 @@ tui_commands:
   switch-model:
     handler: switch_model
     args:
-      - str
+    - name: config_path
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
     help: 验证本地 LeRobot checkpoint 配置并完整重载；成功后等待 resume
     timeout_s: 30
     effect: reload_policy
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.model_config_path:
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数；此策略固定为 1
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停

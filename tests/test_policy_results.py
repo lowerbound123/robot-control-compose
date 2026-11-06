@@ -74,14 +74,14 @@ def test_wait_does_not_complete_on_an_ordinary_inference_and_rejects_duplicates(
     assert result['status'] == 'succeeded'
 
 
-@pytest.mark.parametrize('action', ['pause', 'take', 'reset', 'resume', 'switch second', 'save manual'])
+@pytest.mark.parametrize('action', ['pause', 'take', 'reset', 'resume', 'policy switch second', 'pose save manual'])
 def test_manual_intervention_cancels_wait_and_fences_late_finish(setup_controller, action):
     controller, _, _ = setup_controller
     worker = ready(controller)
     identity = begin(controller)
     until(lambda: len(worker.requests) == 1)
     request = worker.requests[-1]
-    intervention = controller.submit(action)
+    intervention = (controller.submit_control(action) if action in ("take", "return") else controller.submit(action))
     until(lambda: controller.get_operation(identity)['status'] == 'cancelled')
     assert controller.get_policy_result(identity)['reason'] == '人工接管'
     report(worker, request=request)
@@ -256,7 +256,7 @@ def test_hot_patch_keeps_episode_and_uses_confirmed_version(setup_controller):
     worker = ready(controller)
     identity = begin(controller)
     until(lambda: worker.requests)
-    patch = controller.submit('set policy.params.value 2')
+    patch = controller.submit('policy first config set params.value 2')
     until(lambda: controller._operation is not None)
     worker.finish([[.1] * 14] * 4)
     assert controller.wait_operation(patch, 2)['status'] == 'succeeded'
@@ -295,7 +295,7 @@ def test_ordinary_return_still_waits_only_for_handoff_during_policy_wait(setup_c
     try:
         episode = controller.submit_policy_wait()
         assert entered.wait(2)
-        handoff = controller.submit('return', origin='mcp')
+        handoff = controller.submit_control('return')
         assert handoff != episode, 'ordinary return must not reuse the business result receipt'
         release.set()
         result = controller.wait_operation(handoff, 2)
@@ -312,8 +312,7 @@ def test_ordinary_return_still_waits_only_for_handoff_during_policy_wait(setup_c
 def test_mcp_internal_command_does_not_strand_a_plain_terminal_command(setup_controller):
     controller, _, _ = setup_controller
     ready(controller)
-    identity = controller.submit('return_and_wait')
-    result = controller.wait_operation(identity, .5)
-    assert result['status'] == 'failed', result
+    with pytest.raises(ValueError):
+        controller.submit('return_and_wait')
     assert controller.status()['control_owner'] == 'policy'
     assert not controller.status()['policy_wait_operation_id']

@@ -43,20 +43,20 @@ def test_public_configuration_and_pending_status_hide_keys_but_save_preserves_th
     record = controller.registry.get(controller._identity)
     record.config['params']['provider'] = {'api_key': 'private-saved-key'}
     controller._pending_config = {'path': 'params.provider.api_key', 'value': 'private-pending-key', 'hot': False}
-    public = controller.query('show policy')
+    public = controller.query('policy first config show')
     assert public['params']['provider']['api_key'] == '***'
     assert 'private-pending-key' not in json.dumps(controller.status())
-    controller.submit('show policy')
+    controller.submit('policy first config show')
     path = controller.registry.save(controller._identity)
     assert read_config(path)['params']['provider']['api_key'] == 'private-saved-key'
     assert record.config['params']['provider']['api_key'] == 'private-saved-key'
 
 
 @pytest.mark.parametrize('line', [
-    'set policy.params.provider.api_key "hidden-key"',
-    'set policy.params.provider {"api_key":"hidden-key"}',
+    'policy first config set params.provider.api_key "hidden-key"',
+    'policy first config set params.provider {"api_key":"hidden-key"}',
     'mcp command set policy.params.provider.api_key "hidden-key"',
-    'mcp command ' + json.dumps({'line': 'set policy.params.provider.api_key "hidden-key"'}),
+    'mcp command ' + json.dumps({'line': 'policy first config set params.provider.api_key "hidden-key"'}),
 ])
 def test_secret_edits_are_rejected_before_history_or_receipts(line, setup_controller):
     from robot_control.terminal_commands import TerminalCommandRouter
@@ -80,7 +80,7 @@ def test_controller_direct_submission_rejects_key_before_receipt(setup_controlle
     controller, _, _ = setup_controller
     ready(controller)
     with pytest.raises(ValueError, match='配置文件'):
-        controller.submit('set policy.params.provider.api_key "hidden-key"', origin='mcp')
+        controller.submit('policy first config set params.provider.api_key "hidden-key"', origin='mcp')
     assert not controller.operations._items
 
 
@@ -103,7 +103,7 @@ async def test_tui_secret_submission_is_not_echoed_or_remembered(setup_controlle
     app = RobotControlApp(controller, start_controller=False)
     async with app.run_test(size=(100, 30)) as pilot:
         command = app.query_one(CommandInput)
-        command.value = 'set policy.params.provider.api_key "typed-secret"'
+        command.value = 'policy first config set params.provider.api_key "typed-secret"'
         await pilot.press('enter')
         assert command.history == []
         assert 'typed-secret' not in str(app.query_one(StructuredLog).records)

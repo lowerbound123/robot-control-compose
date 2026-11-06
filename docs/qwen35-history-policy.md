@@ -15,7 +15,7 @@
 `model.vlm_model_name_or_path` 默认 `Qwen/Qwen3.5-4B`，也可以填写容器内本地路径。模型和 processor 使用同一个地址，覆盖训练配置中原训练机的绝对路径。所有资产须提前准备在模型目录或缓存中；启动不安装依赖或下载模型。相对 checkpoint/本地基础模型路径以 model.json 所在目录解析。
 
 ```text
-switch qwen35_history
+policy switch qwen35_history
 resume
 pause
 policy qwen35_history switch-task "新的任务"
@@ -23,7 +23,7 @@ policy qwen35_history switch-model model_alt.json
 resume
 ```
 
-任务覆盖值在 manifest 的 `params.task` 中；`null` 恢复 model.json 的 `runtime.instruction`。可使用 `set qwen35_history.params.task "新任务"`，重复实例使用精确实例名。任务改变时等待旧后台推理退出，清空历史和动作计划，模型保持加载。冷重载成功后暂停。MCP 命令继续遵循 take/return 和实例代次检查；本策略不自动接管、复位或恢复运动。
+任务覆盖值在 manifest 的 `params.task` 中；`null` 恢复 model.json 的 `runtime.instruction`。可使用 `policy qwen35_history config set params.task "新任务"`，重复实例使用精确实例名。配置入口的 task 修改请求 reset：等待旧后台推理退出、清空历史和动作计划，保留模型并暂停，随后显式 resume。注册的 switch-task 热更新仍保留原运行状态。冷重载成功后暂停。MCP 命令继续遵循 take/return 和实例代次检查；本策略不自动接管、复位或恢复运动。
 
 ## X、回调模式与模型流水线
 

@@ -9,7 +9,7 @@ from test_control_ownership import call
 from robot_control.direct_commands import parse_commands
 
 
-@pytest.mark.parametrize("line", ["reset", "save-config policy", "exit"])
+@pytest.mark.parametrize("line", ["reset", "policy first config save", "exit"])
 def test_all_mcp_writes_are_readonly_until_take(setup_controller, line):
     controller, _, _ = setup_controller
     ready(controller)
@@ -24,9 +24,9 @@ def test_return_waits_for_old_request_and_repeated_return_shares_receipt(setup_c
     controller.submit("resume")
     until(lambda: len(worker.requests) == 1)
     call(controller, "take")
-    first = controller.submit("return", origin="mcp")
+    first = controller.submit_control("return")
     until(lambda: controller.status()["returning"])
-    second = controller.submit("return", origin="mcp")
+    second = controller.submit_control("return")
     assert second == first
     assert controller.get_operation(first)["status"] not in ("succeeded", "failed")
     with pytest.raises(PermissionError):
@@ -102,7 +102,7 @@ def test_pause_cancels_deferred_return_receipt_and_allows_take_again(setup_contr
     controller.submit("resume")
     until(lambda: len(worker.requests) == 1)
     call(controller, "take")
-    returning = controller.submit("return", origin="mcp")
+    returning = controller.submit_control("return")
     until(lambda: controller._operation is not None and controller._operation["kind"] == "reset_context")
     pause = controller.submit("pause")
     assert controller.wait_operation(pause, 2)["status"] == "succeeded"
@@ -129,14 +129,18 @@ def test_partial_publish_failure_does_not_consume_and_is_not_retried(setup_contr
     assert len(count) == 1
 
 
-@pytest.mark.parametrize("line", ["pause extra", "load nonexistent"])
+@pytest.mark.parametrize("line", ["pause extra", "pose restore nonexistent"])
 def test_rejected_command_does_not_cancel_accepted_motion(setup_controller, line):
     controller, _, _ = setup_controller
     ready(controller)
     call(controller, "take")
     move = controller.submit_direct(parse_commands("left:up:0.02@slow"))
     until(lambda: controller.direct.active is not None)
-    assert call(controller, line)["status"] == "failed"
+    if line == "pause extra":
+        with pytest.raises(ValueError):
+            call(controller, line)
+    else:
+        assert call(controller, line)["status"] == "failed"
     assert controller.wait_operation(move, 2)["status"] == "succeeded"
 
 
@@ -156,7 +160,7 @@ def test_full_command_queue_cannot_block_exit(setup_controller):
     ready(controller)
     with controller._lock:
         for _ in range(controller.operations.max_pending):
-            controller.submit("set policy.params.value 2")
+            controller.submit("policy first config set params.value 2")
         exit_operation = controller.submit("exit")
     assert controller.done.wait(2)
     assert controller.get_operation(exit_operation)["status"] == "succeeded"
@@ -168,7 +172,7 @@ def test_local_reset_waits_for_return_lifecycle_and_remains_paused(setup_control
     controller.submit("resume")
     until(lambda: len(worker.requests) == 1)
     call(controller, "take")
-    returning = controller.submit("return", origin="mcp")
+    returning = controller.submit_control("return")
     until(lambda: controller._operation is not None)
     resetting = controller.submit("reset")
     assert controller.wait_operation(resetting, .05)["status"] == "queued"
@@ -192,7 +196,7 @@ def test_return_feedback_failure_finishes_receipt_and_can_recover(setup_controll
         reset_context(**kwargs)
         lost["feedback"] = True
     robot.read_state, worker.reset_context = read, reset
-    operation = controller.submit("return", origin="mcp")
+    operation = controller.submit_control("return")
     result = controller.wait_operation(operation, .3)
     assert result["status"] == "failed", result
     assert controller.status()["state"] == "paused"
@@ -208,10 +212,10 @@ def test_queued_take_cannot_undo_return_readonly_gate(setup_controller):
     controller, _, _ = setup_controller
     ready(controller)
     with controller._lock:
-        take = controller.submit("take", origin="mcp")
+        take = controller.submit_control("take")
         for _ in range(20):
-            controller.submit("take", origin="mcp")
-        returning = controller.submit("return", origin="mcp")
+            controller.submit_control("take")
+        returning = controller.submit_control("return")
     assert controller.wait_operation(take, 1)["status"] == "succeeded"
     with pytest.raises(PermissionError):
         controller.submit_direct(parse_commands("left:up:0.01@fast"))
@@ -227,8 +231,8 @@ def test_pending_return_stops_advancing_active_manual_trajectory(setup_controlle
     with controller._lock:
         before = robot.read_state()["eef"][2]
         for _ in range(20):
-            controller.submit("take", origin="mcp")
-        returning = controller.submit("return", origin="mcp")
+            controller.submit_control("take")
+        returning = controller.submit_control("return")
     assert controller.wait_operation(returning, 2)["status"] == "succeeded"
     assert controller.get_operation(motion)["status"] == "cancelled"
     assert robot.read_state()["eef"][2] == pytest.approx(before, abs=1e-9, rel=0)

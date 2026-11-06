@@ -63,10 +63,13 @@ def test_invalid_logging_settings_are_rejected(rc, settings):
         load_rc(rc.config_path)
 
 
-def test_default_logging_is_info_and_cannot_be_hot_edited(rc):
+def test_default_logging_is_info_and_edit_only_changes_cold_draft(rc):
     assert rc.config['logging'] == {'level': 'INFO'}
-    with pytest.raises(ValueError, match='冷参数'):
-        rc._command('set rc.logging.level "TRACE"')
+    identity = rc.submit('config rc set logging.level "TRACE"')
+    assert rc._dispatch_human(rc._commands.get_nowait())
+    assert rc.get_operation(identity)["status"] == "succeeded"
+    assert rc.config["logging"]["level"] == "INFO"
+    assert rc.query("config rc show")["draft"]["logging"]["level"] == "TRACE"
 
 
 @pytest.mark.parametrize('level, expected', [
@@ -145,12 +148,12 @@ def test_command_replies_bypass_threshold_without_matching_their_text(rc):
     assert rc.events.empty()
     rc.submit('status')
     rc.submit('help')
-    TerminalCommandRouter(rc).submit('help snapshot')
+    TerminalCommandRouter(rc).submit('help')
     events = rc.read_events()['events']
     assert len(events) == 3
     assert json.loads(events[0]['message'])['state'] == 'created'
-    assert 'set rc.path' in events[1]['message']
-    assert events[2]['message'].startswith('snapshot：')
+    assert 'config rc' in events[1]['message']
+    assert 'snapshot' in events[2]['message']
     assert not rc._recorder.shutdown(time.monotonic()+5)
     disk = [json.loads(line) for line in (rc.outputs/'logs'/f'rc_{rc.run_id}.jsonl').read_text().splitlines()]
     assert [row['message'] for row in disk] == [row['message'] for row in events]
@@ -160,8 +163,8 @@ def test_policy_command_replies_survive_critical_threshold(command_controller):
     controller, _ = command_controller
     controller.config['logging'] = {'level': 'CRITICAL'}
     cursor = controller.read_events()['next_seq']
-    good = controller.submit('unlimited visible .01')
-    bad = controller.submit('bad')
+    good = controller.submit('policy first unlimited visible .01')
+    bad = controller.submit('policy first bad')
     assert completed(controller, good)['status'] == 'succeeded'
     assert completed(controller, bad)['status'] == 'failed'
     with controller._lock:

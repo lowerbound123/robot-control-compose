@@ -38,7 +38,7 @@ def change(context, value): return {{'params.value': value}}
     operation(controller, controller.manage_policy('apply', ['a', 'b', 'a'], token=token))
     worker = controller._worker
     if waiting:
-        operation(controller, controller.submit('take', origin='mcp'))
+        operation(controller, controller.submit_control('take'))
         identity = controller.submit_policy_wait()
     else:
         operation(controller, controller.submit('resume'))

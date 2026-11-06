@@ -8,9 +8,17 @@ from rc_policy_sdk.images import ImagePool
 from host_helpers import LocalPolicyProcess as PolicyProcess
 
 SOURCE = '''
+import json
 import threading
 import time
 from pathlib import Path
+
+def configure(context, candidate, key, value, callback):
+    parts = key.split('.')
+    node = candidate
+    for part in parts[:-1]: node = node[part]
+    if parts[-1] not in node: raise ValueError("unknown config field")
+    node[parts[-1]] = json.loads(value)
 
 def initialize(config):
     return {"barrier": threading.Barrier(3), "root": Path(config["params"]["root"])}

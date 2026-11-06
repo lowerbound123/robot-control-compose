@@ -6,6 +6,7 @@ import pytest
 from robot_control.log_tui import StructuredLog
 
 from test_controller import setup_controller as setup_controller, until
+from test_tui import wait_completion
 from test_mcp_local import local_service as local_service, local_call
 
 
@@ -20,17 +21,27 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
     async with app.run_test() as pilot:
         command = app.query_one(CommandInput)
         for prefix, expected in (("mc", "mcp "), ("mcp se", "mcp send_command "),
-                                 ("mcp ret", "mcp ret"), ("mcp retu", "mcp return"),
                                  ("mcp retry", "mcp retry_reload "), ("mcp return_", "mcp return_and_wait "),
                                  ("mcp get_pol", "mcp get_policy_result ")):
             command.value = prefix
+            command.cursor_position = len(command.value)
             await pilot.press("tab")
+            assert command.value == prefix and command.menu_open
+            await wait_completion(pilot, command, [expected.strip().split()[-1]])
+            await pilot.press("enter")
             assert command.value == expected
+        for prefix, labels in (("mcp ret", ["return", "return_and_wait", "retry_reload"]),
+                               ("mcp retu", ["return", "return_and_wait"])):
+            command.value = prefix; command.cursor_position = len(prefix)
+            await pilot.press("tab")
+            await wait_completion(pilot, command, labels)
+            assert command.value == prefix
+            await pilot.press("escape")
         line = 'mcp send_command {"commands":"left:up&forward:0.01 | right:hold","wait":true}'
         command.value = line
         await pilot.press("tab")
         assert command.value == line
-        await pilot.press("enter")
+        await pilot.press("escape", "enter")
         await asyncio.to_thread(until, lambda: not router.pending)
         await pilot.pause(.08)
         assert controller.status()["control_owner"] == "policy"
@@ -40,7 +51,7 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
         command.value = 'mcp state {"broken":'
         await pilot.press("enter")
         assert app.is_running and app.query_one(StructuredLog).records
-        command.value = "help mcp"
+        command.value = "mcp help"
         await pilot.press("enter")
         assert any("mcp send_command" in event["message"] for event in controller.read_events()["events"])
         command.value = "exit"
@@ -114,7 +125,7 @@ def test_headless_handles_errors_and_waits_without_blocking_input(local_service)
     assert controller.done.is_set() and not router.pending
 
 
-def test_cli_wires_router_to_headless_and_mcp_quit_cleans_up(setup_controller, monkeypatch):
+def test_cli_wires_router_to_headless_and_mcp_exit_cleans_up(setup_controller, monkeypatch):
     from robot_control import cli
     from robot_control.mcp_server import MCPService
 
@@ -129,7 +140,7 @@ def test_cli_wires_router_to_headless_and_mcp_quit_cleans_up(setup_controller, m
             yield "mcp take"
             until(lambda: any("MCP take:" in item["message"] and '"succeeded"' in item["message"]
                               for item in controller.read_events()["events"]))
-            yield "mcp command quit"
+            yield 'mcp command {"line":"exit"}'
             # Keep stdin open, like an interactive session. Remote/local quit
             # must terminate the CLI without requiring another line or EOF.
             assert controller.done.wait(3)

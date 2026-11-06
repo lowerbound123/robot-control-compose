@@ -14,6 +14,9 @@ INSTANCE_IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
 def policy_id(value):
     if not isinstance(value, str) or not IDENTITY.fullmatch(value):
         raise ValueError('policy ID must match [a-z0-9][a-z0-9_-]{0,47}')
+    from rc_policy_sdk.command_syntax import POLICY_ROOT_RESERVED
+    if value in POLICY_ROOT_RESERVED:
+        raise ValueError(f'{value}: reserved policy command namespace')
     return value
 
 
@@ -69,6 +72,8 @@ def validate_policy(config, identity=None):
     commands = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(commands)
     commands.command_specs(config)
+    from rc_policy_sdk.argument_hints import normalize_config_hints
+    normalize_config_hints(config.get('config_hints'))
     paths = config.get('hot_reloadable', [])
     if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
         raise ValueError('hot_reloadable must be field paths')

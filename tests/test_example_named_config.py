@@ -17,7 +17,7 @@ def activate(rc, mode):
     manifest = read_config(directory / 'policy.yaml')
     manifest['policies'] = ['example'] * (2 if mode == 'repeated' else 1)
     (directory / 'policy.yaml').write_text(json.dumps(manifest))
-    command(rc, 'switch example_chain')
+    command(rc, 'policy switch example_chain')
     return 'example-1' if mode == 'repeated' else 'example'
 
 
@@ -34,7 +34,7 @@ def test_named_set_preserves_context_and_updates_only_selected_instance(example_
     command(rc, 'resume')
     until(lambda: rc.status()['consumed'] >= 3)
     message = '新的 "task"，包含空格'
-    command(rc, f'set {target}.params.message {json.dumps(message)}')
+    command(rc, f'policy {target} config set params.message {json.dumps(message)}')
     assert rc._worker is group and rc.status()['state'] == 'running'
     assert group.config_version == version + 1
     for name, worker in workers.items():
@@ -44,40 +44,35 @@ def test_named_set_preserves_context_and_updates_only_selected_instance(example_
         assert worker.config is configs[name]
         assert current['message'] == (message if name == target else before[name]['message'])
         assert worker.config_version == versions[name] + (name == target)
-    command(rc, f'save-config policy {target}')
+    command(rc, f'policy {target} config save')
     assert read_config(rc.registry.directory / 'example/policy.yaml')['params']['message'] == message
-    command(rc, f'set {target}.params.log_every_n_calls 7')
+    command(rc, f'policy {target} config set params.log_every_n_calls 7')
     assert command(rc, f'policy {target} example')['log_every_n_calls'] == 7
 
 
-def test_named_set_transports_nullable_task_without_interpreting_json(example_rc):
+def test_named_set_transports_raw_text_and_policy_rejects_invalid_null(example_rc):
     rc = example_rc
-    path = rc.registry.directory / 'example/policy.yaml'
-    manifest = read_config(path)
-    # Test-only nullable leaf, exercising RC/SDK transport with the shipped example.
-    manifest['params']['task'] = None
-    manifest['hot_reloadable'].append('params.task')
-    path.write_text(json.dumps(manifest))
     target = activate(rc, 'repeated')
     group = rc._worker
     workers = group.member_workers()
-    command(rc, f'set {target}.params.task "task text"')
-    assert workers[target].config['params']['task'] == 'task text'
-    command(rc, f'set {target}.params.task null')
-    assert workers[target].config['params']['task'] is None
-    assert workers['example-0'].config['params']['task'] is None
+    command(rc, f'policy {target} config set params.message raw text with spaces')
+    assert workers[target].config['params']['message'] == 'raw text with spaces'
+    version = workers[target].config_version
+    command(rc, f'policy {target} config set params.message null', status='failed')
+    assert workers[target].config['params']['message'] == 'raw text with spaces'
+    assert workers[target].config_version == version
+    assert workers['example-0'].config['params']['message'] == 'example'
     assert group is rc._worker and group.member_workers() == workers
 
 
 @pytest.mark.parametrize('line,detail', [
-    ('set example.params.message "ambiguous"', 'ambiguous'),
-    ('set missing.params.message "unknown"', 'not_running'),
-    ('set example-2.params.message "unknown"', 'not_running'),
-    ('set policy.params.message "ambiguous"', '实例'),
-    ('set example-1.params.chunk_size 9', '冷'),
-    ('set example-1.params.unknown 9', '未知配置字段'),
+    ('policy example config set params.message "ambiguous"', 'ambiguous'),
+    ('policy missing config set params.message "unknown"', 'not_running'),
+    ('policy example-2 config set params.message "unknown"', 'not_running'),
+    ('policy example-1 config set params.chunk_size -1', 'chunk_size'),
+    ('policy example-1 config set params.unknown 9', 'unsupported configuration key'),
 ])
-def test_invalid_named_target_or_cold_chain_edit_keeps_all_instances(example_rc, line, detail):
+def test_invalid_named_target_or_value_keeps_all_instances(example_rc, line, detail):
     rc = example_rc
     activate(rc, 'repeated')
     group = rc._worker
@@ -90,34 +85,37 @@ def test_invalid_named_target_or_cold_chain_edit_keeps_all_instances(example_rc,
     assert all(worker.config['params']['message'] == 'example' for worker in workers.values())
 
 
-@pytest.mark.parametrize('interruption', ['pause', 'take', 'switch example'])
+@pytest.mark.parametrize('interruption', ['pause', 'take', 'policy switch example'])
 def test_named_set_cannot_retarget_after_queued_control_change(example_rc, interruption):
     rc = example_rc
     with rc._lock:
-        if interruption.startswith('switch'):
-            changing = rc.submit(interruption)
-            edit = rc.submit('set example.params.message "stale"')
+        if interruption.startswith('policy switch'):
+            changing = (rc.submit_control(interruption) if interruption in ("take", "return") else rc.submit(interruption))
+            edit = rc.submit('policy example config set params.message "stale"')
         else:
-            edit = rc.submit('set example.params.message "stale"')
-            changing = rc.submit(interruption)
+            edit = rc.submit('policy example config set params.message "stale"')
+            changing = (rc.submit_control(interruption) if interruption in ("take", "return") else rc.submit(interruption))
     assert rc.wait_operation(changing, 10)['status'] == 'succeeded'
     assert rc.wait_operation(edit, 10)['status'] == 'cancelled'
     assert rc._worker.config['params']['message'] == 'example'
 
 
-def test_named_set_keeps_standalone_cold_edit_behavior(example_rc):
+def test_named_set_reinitializes_standalone_context_without_replacing_worker(example_rc):
     rc = example_rc
     old = rc._worker
-    command(rc, 'set example.params.chunk_size 6')
-    assert old.cleanup_confirmed and rc._worker is not old
-    assert command(rc, 'example')['chunk_size'] == 6
+    before = command(rc, 'policy example example')
+    command(rc, 'policy example config set params.chunk_size 6')
+    after = command(rc, 'policy example example')
+    assert rc._worker is old and old.alive
+    assert after['context_id'] != before['context_id'] and after['module_id'] == before['module_id']
+    assert command(rc, 'policy example example')['chunk_size'] == 6
     assert rc.status()['state'] == 'paused'
 
 
 def test_named_set_through_mcp_requires_take_and_preserves_paused_owner(example_rc, example_mcp):
     rc = example_rc
     target = activate(rc, 'repeated')
-    line = f'set {target}.params.message "MCP update"'
+    line = f'policy {target} config set params.message "MCP update"'
     assert example_mcp.submit_tool('command', {'line': line}).result(5).is_error
     tool(example_mcp, 'take')
     group = rc._worker

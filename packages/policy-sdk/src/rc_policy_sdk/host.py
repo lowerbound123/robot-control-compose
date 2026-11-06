@@ -22,6 +22,8 @@ from .supervisor import _cleanup
 from .outbox import PriorityOutbox
 from .monitor import MONITOR_IDENTITY
 from .wire import encode_message, receive_message, send_message
+from .argument_hints import path_parameter
+from .path_completion import list_paths, path_error
 
 PROTOCOL_VERSION = 1
 IMAGE_PROTOCOL_VERSION = 1
@@ -32,6 +34,9 @@ class Peer:
         self.connection = connection
         self.outbox = PriorityOutbox(64)
         self.owner = None
+        self._path_reply_lock = threading.Lock()
+        self._path_reply_marker = object()
+        self._latest_path_reply = None
         threading.Thread(target=self._write, daemon=True).start()
 
     def send(self, message):
@@ -56,8 +61,19 @@ class Peer:
             while True:
                 packet = self.outbox.get()
                 if packet is None: return
+                if packet is self._path_reply_marker:
+                    with self._path_reply_lock:
+                        packet, self._latest_path_reply = self._latest_path_reply, None
+                    if packet is None:
+                        continue
                 self.connection.sendall(packet)
         except OSError: self.close()
+
+    def send_path_result(self, message):
+        # Advice uses one best-effort slot, never the lifecycle/control queue.
+        with self._path_reply_lock:
+            self._latest_path_reply = encode_message(message)
+            return self.outbox.put_monitor('path-completion', self._path_reply_marker)
 
     def close(self):
         try: self.connection.shutdown(socket.SHUT_RDWR)
@@ -91,7 +107,80 @@ class PolicyHost:
         self.revoked_owners = set()
         self.closing = False
         self.shutting_down = False
+        self._path_condition = threading.Condition()
+        self._path_pending = None
+        self._path_thread = None
+        self._path_cache = OrderedDict()
         threading.Thread(target=self._watch, daemon=True).start()
+
+    def _path_request(self, peer, message):
+        """Validate only in-memory identity/metadata, without filesystem work."""
+        with self.condition:
+            if self.closing or self.shutting_down or self.cleanup_failed:
+                raise ValueError('path completion unavailable while host is closing')
+            if (not peer.owner or peer.owner != self.owner or peer.owner in self.revoked_owners
+                    or message.get('host_id') != self.host_id or message.get('host_instance_id') != self.instance_id
+                    or message.get('runtime_id') != self.runtime_id):
+                raise ValueError('stale path completion host/runtime/owner')
+            record = self.sessions.get(message.get('session_id'))
+            if record is None or record['closed'] or record['peer'] is not peer:
+                raise ValueError('stale path completion session')
+            if type(message.get('prefix')) is not str or len(message['prefix']) > 4096:
+                raise ValueError('invalid path prefix')
+            parameter = path_parameter(record['path_config'], message.get('selector'))
+            return parameter, record['directory']
+
+    def _path_reply(self, peer, message, result):
+        response = {**result, 'host_id': self.host_id, 'host_instance_id': self.instance_id,
+                    **{key: message.get(key) for key in ('runtime_id', 'session_id', 'context_id', 'config_version')}}
+        try:
+            peer.send_path_result({'type': 'rpc_result', 'rpc_id': message['rpc_id'], 'result': response})
+        except (OSError, ValueError):
+            pass
+
+    def _queue_paths(self, peer, message):
+        try:
+            parameter, directory = self._path_request(peer, message)
+        except (ValueError, TypeError, KeyError) as exc:
+            self._path_reply(peer, message, path_error(exc))
+            return
+        key = (message['session_id'], json.dumps(message['selector'], sort_keys=True), message['prefix'])
+        with self._path_condition:
+            cached = self._path_cache.get(key)
+            if cached is not None and time.monotonic() - cached[0] < 1:
+                self._path_reply(peer, message, cached[1])
+                return
+            # One active OS scan and only the latest pending request per host instance.
+            self._path_pending = (peer, message, parameter, directory, key, time.monotonic() + 1)
+            if self._path_thread is None:
+                self._path_thread = threading.Thread(target=self._path_work, name='host-path-completion', daemon=True)
+                self._path_thread.start()
+            self._path_condition.notify_all()
+
+    def _path_work(self):
+        while not self.shutting_down:
+            with self._path_condition:
+                while self._path_pending is None and not self.shutting_down:
+                    self._path_condition.wait(.2)
+                if self.shutting_down:
+                    return
+                peer, message, parameter, directory, key, deadline = self._path_pending
+                self._path_pending = None
+            try:
+                self._path_request(peer, message)
+                result = list_paths(parameter, message['prefix'], directory, timeout=max(0, deadline - time.monotonic()))
+                self._path_request(peer, message)
+                if time.monotonic() > deadline:
+                    result = path_error('path completion timed out')
+                elif result.get('error') is None:
+                    with self._path_condition:
+                        self._path_cache[key] = (time.monotonic(), result)
+                        self._path_cache.move_to_end(key)
+                        while len(self._path_cache) > 32:
+                            self._path_cache.popitem(last=False)
+            except Exception as exc:
+                result = path_error(exc)
+            self._path_reply(peer, message, result)
 
     def preflight(self, policy_id):
         if policy_id != self.host_id:
@@ -249,7 +338,8 @@ class PolicyHost:
                     'protocol_version': PROTOCOL_VERSION, 'image_protocol_version': IMAGE_PROTOCOL_VERSION,
                     'python': sys.version.split()[0], 'policy_id': self.host_id,
                     'deployment_id': self.deployment_id, 'run_id': self.run_id, 'generation': self.generation,
-                    'healthy': not (self.closing or self.shutting_down or self.cleanup_failed), 'reinitialize_policy': True}
+                    'healthy': not (self.closing or self.shutting_down or self.cleanup_failed), 'reinitialize_policy': True,
+                    'configure': True, 'list_paths': True}
         if not peer.owner: raise ValueError('hello required')
         if kind == 'ping':
             if self.owner == peer.owner:
@@ -281,6 +371,7 @@ class PolicyHost:
                 if sid in self.sessions or any(r['policy_id'] == message['policy_id'] for r in self.sessions.values()):
                     raise ValueError('policy already loaded in this runtime')
                 self.sessions[sid] = dict(peer=peer, policy_id=message['policy_id'],
+                    directory=directory, path_config={key: message['event']['config'].get(key, {}) for key in ('tui_commands', 'config_hints')},
                     closed=False, release_error=None, timeouts=message['timeouts'], commands={},
                     deadlines={'initialize': time.monotonic() + message['timeouts']['initialize']})
                 self._send_runtime({'type': 'load', 'session_id': sid, 'directory': directory, 'event': message['event']})
@@ -290,7 +381,8 @@ class PolicyHost:
             record = self.sessions[message['session_id']]
             if record['closed']: raise RuntimeError('policy session closed')
             event = message['event']; event_kind = event['type']
-            if event_kind in ('infer', 'observe', 'update_config', 'reset_context', 'reinit_validate', 'reinit_release', 'reinit_initialize'):
+            if event_kind in ('infer', 'observe', 'update_config', 'reset_context', 'reinit_validate', 'reinit_release', 'reinit_initialize',
+                              'configure_prepare', 'configure_apply', 'configure_commit', 'configure_abort'):
                 key = event_kind if event_kind in ('infer', 'observe') else 'operation'
                 timeout = message.get('operation_timeout_s', record['timeouts']['inference'])
                 if isinstance(timeout, bool) or not isinstance(timeout, (int,float)) or not math.isfinite(timeout) or timeout <= 0:
@@ -372,6 +464,9 @@ class PolicyHost:
             while True:
                 message = receive_message(connection)
                 try:
+                    if message.get('type') == 'list_paths' and 'rpc_id' in message:
+                        self._queue_paths(peer, message)
+                        continue
                     if message.get('type') == 'stop' and 'rpc_id' in message:
                         if stop_pending.is_set():
                             raise RuntimeError('stop already pending')

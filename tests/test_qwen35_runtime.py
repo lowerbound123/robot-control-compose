@@ -3,7 +3,7 @@ import importlib
 from pathlib import Path
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from types import SimpleNamespace
 
 import numpy as np
@@ -238,7 +238,7 @@ def test_hot_task_drains_old_prediction_and_replaces_cached_actions_without_load
             future = caller.submit(next_step)
             try:
                 assert entered.wait(1)
-                with pytest.raises(TimeoutError):
+                with pytest.raises(FutureTimeoutError):
                     future.result(.03)
                 assert not any(event == 'reset' for event, _ in model.events)
             finally:

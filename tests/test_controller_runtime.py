@@ -49,7 +49,7 @@ def ready(case):
 
 
 def operation(controller,command,expected='succeeded'):
-    receipt=controller.submit(command)
+    receipt=controller.submit_control(command) if command in ("take", "return") else controller.submit(command)
     until(lambda:controller.get_operation(receipt)['status'] in ('succeeded','failed','cancelled'),8)
     result=controller.get_operation(receipt)
     assert result['status']==expected,result
@@ -60,7 +60,7 @@ def test_old_container_removed_before_same_policy_new_create(runtime_controller)
     controller,engine,_=ready(runtime_controller)
     old=controller._worker
     before=len(engine.events)
-    operation(controller,'switch first')
+    operation(controller,'policy switch first')
     assert controller._worker is not old
     kinds=[kind for kind,_ in engine.events[before:]]
     removed=[index for index,kind in enumerate(kinds) if kind in ('stop','rm')]
@@ -74,7 +74,7 @@ def test_sdk_failure_still_removes_container_and_preserves_forced_fact(runtime_c
     controller,engine,_=ready(runtime_controller)
     controller._worker.config['params']['release_fail']=True
     before=len(engine.events)
-    operation(controller,'switch second')
+    operation(controller,'policy switch second')
     kinds=[kind for kind,_ in engine.events[before:]]
     removed=[index for index,kind in enumerate(kinds) if kind in ('stop','rm')]
     created=[index for index,kind in enumerate(kinds) if kind=='create']
@@ -87,7 +87,7 @@ def test_sdk_failure_still_removes_container_and_preserves_forced_fact(runtime_c
 def test_new_initialize_failure_cleans_container_and_leaves_empty(runtime_controller):
     controller,engine,root=ready(runtime_controller)
     path=root/'policy/second/policy.yaml';value=read_config(path);value['params']['init_fail']=True;path.write_text(json.dumps(value))
-    operation(controller,'switch second','failed')
+    operation(controller,'policy switch second','failed')
     assert not engine.containers
     assert controller.status()['policy'] is None
     assert controller.status()['runtime']['phase']=='FAULT_EMPTY'
@@ -100,7 +100,7 @@ def test_unconfirmed_cleanup_blocks_new_group_and_keeps_mcp_owner(runtime_contro
     original=controller.runtime.stop_and_remove
     def fail(*a):raise RuntimeError('daemon lost during cleanup')
     controller.runtime.stop_and_remove=fail
-    operation(controller,'switch second','failed')
+    operation(controller,'policy switch second','failed')
     assert len(engine.containers)==1
     assert controller.status()['runtime']['phase']=='BLOCKED_CLEANUP'
     assert controller.control_owner=='mcp'
@@ -111,10 +111,10 @@ def test_chain_intersection_is_destroyed_and_each_occurrence_has_a_container(run
     controller,engine,root=ready(runtime_controller)
     directory=root/'policy/default_chain';directory.mkdir()
     path=directory/'policy.yaml';path.write_text(json.dumps(dict(schema_version=3,kind='chain',policies=['first','second','first'])))
-    operation(controller,'switch default_chain')
+    operation(controller,'policy switch default_chain')
     assert len(engine.containers)==3
     old_ids=set(engine.containers)
-    operation(controller,'switch default_chain')
+    operation(controller,'policy switch default_chain')
     assert not old_ids & set(engine.containers)
     removed=[i for i,e in enumerate(engine.events) if e[0]=='rm' and e[1] in old_ids]
     created=[i for i,e in enumerate(engine.events) if e[0]=='create' and e[1] in engine.containers]
@@ -126,7 +126,7 @@ def test_anchor_change_stops_old_group_and_blocks_new_start(runtime_controller):
     controller,engine,_=ready(runtime_controller)
     def broken(deadline, **kwargs):raise BlockedInfrastructure('anchor changed')
     controller.runtime.check_infrastructure=broken
-    operation(controller,'switch second','failed')
+    operation(controller,'policy switch second','failed')
     assert controller.status()['runtime']['phase']=='BLOCKED_INFRA'
     assert not engine.containers
     assert controller.status()['policy'] is None
@@ -139,5 +139,5 @@ def test_failed_startup_recovery_blocks_manual_switch(runtime_controller):
     controller.start()
     until(lambda:controller.status()['state']=='fault')
     assert controller.status()['runtime']['phase']=='BLOCKED_CLEANUP'
-    operation(controller,'switch second','failed')
+    operation(controller,'policy switch second','failed')
     assert not engine.containers

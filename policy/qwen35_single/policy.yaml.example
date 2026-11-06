@@ -6,20 +6,55 @@ execution:
   control_mode: qpos
 params:
   model_config_path: model.json
-  task: null # null 沿用 model.json 的 runtime.instruction；非空字符串覆盖任务
+  task:      # null 沿用 model.json 的 runtime.instruction；非空字符串覆盖任务
 hot_reloadable:
-  - params.task
+- params.task
 tui_commands:
   switch-task:
     handler: switch_task
-    args: [str]
+    args: [{name: task, type: str, help: 新的任务文本}]
     help: 热更新任务文本，保留容器和已加载模型
     effect: update_config
     timeout_s: 5
   switch-model:
     handler: switch_model
     args:
-      - str
+    - name: config_path
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
     help: 读取独立模型配置，强制卸载并重载 checkpoint；完成后等待 resume
     timeout_s: 30
     effect: reload_policy
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.model_config_path:
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
+    params.task:
+      type: str
+      help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数；此策略固定为 1
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停

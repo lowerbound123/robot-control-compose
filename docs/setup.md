@@ -31,7 +31,7 @@ RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生�
 
 YAML 使用 1.2 语义，数据仍限于字符串、有限数字、布尔值、null、列表和字符串键字典。重复键、多文档、YAML 1.1 指令、自定义标签、合并键和循环引用均拒绝；日期文本需加引号。普通别名按独立值进入运行时。错误只给出文件、位置与类别，不打印配置原文。
 
-`save-config` 和 manage-policy 保存保留未改动节点的注释、键顺序、引号及多行文本样式；列表评论按值及出现次序匹配。setup 只补缺失默认键，保留当前列表和显式 null；运行时保存完整有效快照。保存前重新解析输出并严格校验类型，再逐文件原子替换。终端 `set` 和 MCP 参数仍采用 JSON 语法。宿主 `compose.sh down` 无需 YAML 库，也不会触发依赖安装。
+`config rc save`、`policy <实例> config save` 和 `policy manage save`保留未改动节点的注释、键顺序、引号及多行文本样式；列表评论按值及出现次序匹配。setup 只补缺失默认键，保留当前列表和显式 null；运行时保存完整有效快照。保存前重新解析输出并严格校验类型，再逐文件原子替换。RC 草稿和全局字段采用 JSON；策略 config set 的值保留原文，由 configure 解析。宿主 `compose.sh down` 无需 YAML 库，也不会触发依赖安装。
 
 ## 依赖镜像与只读源码
 
@@ -42,7 +42,7 @@ RC 从 `/workspace/src` 导入，SDK 从 `/workspace/packages/policy-sdk/src` �
 | 修改内容 | 生效操作 |
 | --- | --- |
 | RC、SDK、基础 entrypoint 或 anchor | 正常 `down` 后重新 `up -d --no-build`，连同策略运行组一起重新创建 |
-| 策略 main.py 或实现包 | `switch <当前策略>`；在链中则 `switch <当前链>` |
+| 策略 main.py 或实现包 | `policy switch <当前策略>`；在链中则 `policy switch <当前链>` |
 | Qwen vendor 或 Transformers 补丁 | 重新 switch，创建新的策略容器 |
 | Python ROS 仿真程序 | 重新创建 ros-sim 容器 |
 | 第三方依赖、Python/CUDA/系统环境 | 修改对应依赖声明并重建相关镜像 |
@@ -88,10 +88,25 @@ RC 的 `timeouts.shutdown_s` 默认 115 秒，基础 stop_grace_period 为 125 �
 
 ## 从 RC/SDK 0.11 迁移重载命令
 
-RC 与 SDK 一起升级到 0.12，策略清单仍为 schema 3。旧清单中的 `effect: reload_policy` 现在只替换命令目标实例。需要原先整链重建行为的自定义命令，在其来源策略清单中改用 `effect: reload_all_policy`。`retry-reload` 已保留为本地 RC 命令，策略已有同名命令时需更名。setup 保留已有本地配置，请按需同步模板。初始化和 ready 握手双向协商 `tui_command_effects_v2`，使用重载 effect 的策略在版本不匹配时会报告升级错误。
+RC 与 SDK 一起升级到 0.12，策略清单仍为 schema 3。旧清单中的 `effect: reload_policy` 现在只替换命令目标实例。需要原先整链重建行为的自定义命令，在其来源策略清单中改用 `effect: reload_all_policy`。重试统一使用 `policy <实例> retry`，固定命令树关键字禁止注册为自定义命令。setup 保留已有本地配置，请按需同步模板。初始化和 ready 握手双向协商 `tui_command_effects_v2`，使用重载 effect 的策略在版本不匹配时会报告升级错误。
 
 ## 从 0.12 升级到 0.13
 
 需要在原进程重新初始化的命令可在 schema 3 清单中声明 `effect: reinitialize_policy`。同时更新 RC、策略 SDK 和 host，显式切换一次以启动新 host。RC 在 host 握手中检查此操作和期限支持，RC 与 SDK 在 `tui_command_effects_v2` 中双向协商。只声明旧 effect 的清单沿用已有握手。已有 `switch-model` 和 `switch-provider` 继续冷重建命令目标实例。
 
 旧 RC 配置省略 `logging.level` 时采用 INFO。需要保留每次动作请求的普通文本记录时，在 RC YAML 设为 TRACE 后重启 RC。任务级的供应商失败记录及显式命令回执使用各自的记录通道。
+
+
+## 从 0.13 升级到 0.14
+
+RC 和 SDK 同步升级到 0.14，主配置保持 schema 3。命令按 [统一命令树](commands.md) 迁移，旧文本语法不再作为执行别名；HTTP MCP 原有结构化工具名保留，并新增 `policy_config`。`resume` 不再代替 MCP 归还，使用 `mcp return`。
+
+内置策略均提供 `configure(context, config, key, value, callback)`；外部策略未实现时仍可运行，但新的配置设置入口会明确拒绝。设置项和值由策略解析，普通修改保持受管配置引用，reset/reinitialize 回调在函数返回后执行。新接口通过独立 capability 握手；更新 RC/SDK 后完整重建运行组，避免沿用已导入旧 SDK 的执行进程。仅本次 Python 源码和接口变更无需重建第三方依赖镜像。
+
+`config rc set` 只编辑草稿，`config rc save` 落盘后重启生效；退出会丢弃未保存草稿。实例配置保存只使用已确认快照，失败候选不写入来源文件。
+
+## 从 0.14 升级到 0.15
+
+RC 与 SDK 同步升级到 0.15.0，清单仍为 schema 3。更新源码后完整重建运行组以加载新 host；本次没有新增第三方依赖。旧 `args: [str, int]` 继续执行，新增对象参数和 `config_hints` 可按 [策略编写说明](policy-authoring.md#参数提示与路径补全015) 逐步添加。setup 保留已有本地 YAML，不自动覆盖用户声明；九个内置来源的示例清单已补齐提示。
+
+本地 TUI 增加跨重启历史虚影、显式确认的 Tab 菜单及非阻塞格式提示，按键说明见 [输入辅助](commands.md#输入辅助rcsdk-015)。HTTP 能力查询增加参数提示元数据，原结构化命令的基础参数类型及执行约束不变。历史按配置文件隔离保存在 outputs 下，不进入来源清单或模型配置。

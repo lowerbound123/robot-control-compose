@@ -1,5 +1,6 @@
 """Remote policy session; liveness never substitutes for reader exit proof."""
 from collections import OrderedDict, deque
+import copy
 import math
 from pathlib import Path
 import threading
@@ -7,7 +8,7 @@ import time
 import uuid
 
 from rc_policy_sdk.commands import COMMAND_EFFECTS, check_command_effects, command_specs, validate_arguments
-from rc_policy_sdk.configuration import apply_patch, prepare_patch
+from rc_policy_sdk.configuration import apply_candidate, apply_patch, prepare_patch, same_config, validate_candidate
 from rc_policy_sdk.control import RUNTIME_TOOLS, control_requests, runtime_tools
 from rc_policy_sdk.wire import encode_message
 from .host_client import HostClient
@@ -83,6 +84,7 @@ class PolicyProcess(MonitorClient):
         self._pid = None
         self._condition = threading.Condition(threading.RLock())
         self._operation_lock = threading.Lock()
+        self._path_completion_lock = threading.Lock()
         self._launch_lock = threading.Lock()
         self._close_lock = threading.Lock()
         self._state = 'new'
@@ -94,12 +96,16 @@ class PolicyProcess(MonitorClient):
         self.resources = None
         self.command_specs = command_specs(config)
         self._reinitialize_enabled = any(spec.get("effect") == "reinitialize_policy" for spec in self.command_specs.values())
-        self.context_id = uuid.uuid4().hex if self._reinitialize_enabled else None
+        self.context_id = uuid.uuid4().hex
         self._context_enabled = True
         self._reinitializing = False
         self.release_dispatched = False
         self._release_confirmed = False
         self.supports_commands = self.supports_observe = False
+        self.supports_configure = False
+        self._configure_fenced = self._configure_failed = self._configure_committed = False
+        self._configure_prepared = None
+        self._configure_applied_version = None
         self.runtime_tools = frozenset()
         self._commands_blocked = self._command_fatal = False
         self._inflight = self._observation = None
@@ -117,7 +123,7 @@ class PolicyProcess(MonitorClient):
     def has_readers(self): return self._submitted_load and not self.cleanup_confirmed
 
     @property
-    def runnable(self): return self._state == 'running' and not self._failure and not self.cleanup_confirmed
+    def runnable(self): return self._state == 'running' and not self._failure and not self._configure_failed and not self.cleanup_confirmed
 
     @property
     def alive(self): return self.has_readers
@@ -182,7 +188,8 @@ class PolicyProcess(MonitorClient):
                     timeouts=dict(initialize=self.init_timeout_s,inference=self.inference_timeout_s,release=self.release_timeout_s),
                     event=dict(type='initialize',config=self.config,config_version=self.config_version,
                                tui_command_effects_v2=list(COMMAND_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
-                               global_state=global_descriptor, **({"context_id": self.context_id} if self._reinitialize_enabled else {})))
+                               global_state=global_descriptor, context_id=self.context_id,
+                               configure=getattr(self.host, 'configure', False)))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
             with self._condition:
@@ -205,7 +212,7 @@ class PolicyProcess(MonitorClient):
 
     def _enqueue(self, event):
         packet = dict(type='dispatch', runtime_id=self.runtime_id, session_id=self.session_id, event=event)
-        if event['type'] in ('infer','observe','update_config','reset_context'):
+        if event['type'] in ('infer','observe','update_config','reset_context', 'configure_prepare', 'configure_apply', 'configure_commit', 'configure_abort'):
             packet['operation_timeout_s'] = self.inference_timeout_s
         if event['type'] in ('reinit_validate', 'reinit_release', 'reinit_initialize'):
             packet['operation_timeout_s'] = (self.release_timeout_s if event['type'] == 'reinit_release' else self.init_timeout_s if event['type'] == 'reinit_initialize' else self.inference_timeout_s)
@@ -230,6 +237,11 @@ class PolicyProcess(MonitorClient):
                 if mode not in message.get('action_modes', ['qpos']):
                     self._record_failure('policy SDK does not support ' + mode); return
                 self.supports_commands = message.get('tui_commands', False)
+                self.supports_configure = message.get('configure') is True and getattr(self.host, 'configure', False)
+                if self.supports_configure and (message.get('context_id') != self.context_id or
+                        type(message.get('config_version')) is not int or message['config_version'] != self.config_version):
+                    self._record_failure('stale configure capability acknowledgement'); return
+                self._reinitialize_enabled = self._reinitialize_enabled or self.supports_configure
                 if self.command_specs and not self.supports_commands:
                     self._record_failure('upgrade rc-policy-sdk: missing TUI commands'); return
                 try:
@@ -366,7 +378,7 @@ class PolicyProcess(MonitorClient):
         with self._condition:
             if self._state != "running" or self._failure:
                 raise RuntimeError(self._failure or "policy process is not ready")
-            if self._inflight is not None or self._pending_operation or self._reinitializing:
+            if self._inflight is not None or self._pending_operation or self._reinitializing or self._configure_fenced:
                 raise RuntimeError("policy already has an operation in flight")
             if request["config_version"] != self.config_version:
                 raise ValueError("inference config version differs from supervisor")
@@ -381,7 +393,7 @@ class PolicyProcess(MonitorClient):
 
     def observe(self, request):
         with self._condition:
-            if self._state != 'running' or self._failure or self._pending_operation or self._reinitializing or self._observation is not None:
+            if self._state != 'running' or self._failure or self._pending_operation or self._reinitializing or self._configure_fenced or self._observation is not None:
                 return False
             self._enqueue({**request, 'type':'observe'})
             self._observation = {k:request[k] for k in ('request_id', 'generation', 'config_version')}
@@ -409,9 +421,172 @@ class PolicyProcess(MonitorClient):
         with self._condition:
             return self._responses.popleft() if self._responses else None
 
+    def submit_monitor(self, epoch):
+        with self._condition:
+            if self._configure_fenced:
+                return False
+            return super().submit_monitor(epoch)
+
+    def complete_path(self, selector, prefix, timeout=1):
+        """Read metadata-declared container paths without entering worker lanes."""
+        from rc_policy_sdk.path_completion import path_error
+        if not self._path_completion_lock.acquire(blocking=False):
+            return path_error('path completion busy; retry the latest input')
+        try:
+            if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+                return path_error('invalid path completion timeout')
+            with self._condition:
+                host = self.host
+                if host is None or not getattr(host, 'list_paths', False) or self.cleanup_confirmed:
+                    return path_error('policy host does not support path completion')
+                identity = dict(host_id=self.config['id'], host_instance_id=host.instance_id,
+                                runtime_id=self.runtime_id, session_id=self.session_id,
+                                context_id=self.context_id, config_version=self.config_version)
+            reply = host.request('list_paths', timeout=min(timeout, 1.), **identity, selector=selector, prefix=prefix)
+            with self._condition:
+                current = dict(host_id=self.config['id'], host_instance_id=host.instance_id,
+                               runtime_id=self.runtime_id, session_id=self.session_id,
+                               context_id=self.context_id, config_version=self.config_version)
+                if (self.host is not host or self.cleanup_confirmed or current != identity or type(reply) is not dict
+                        or any(reply.get(key) != value for key, value in identity.items())):
+                    return path_error('stale path completion result')
+            if (type(reply.get('items')) is not list or len(reply['items']) > 200 or type(reply.get('truncated')) is not bool
+                    or reply.get('error') is not None and type(reply['error']) is not str):
+                return path_error('invalid path completion response')
+            for item in reply['items']:
+                if (type(item) is not dict or type(item.get('text')) is not str or type(item.get('name')) is not str
+                        or item.get('kind') not in ('file', 'directory')):
+                    return path_error('invalid path completion candidate')
+            return {key: reply[key] for key in ('items', 'truncated', 'error')}
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            return path_error(exc)
+        finally:
+            self._path_completion_lock.release()
+
+    def mark_config_failed(self):
+        """Permanently fence uncertain configuration without I/O or replacement."""
+        with self._condition:
+            self._configure_failed = self._configure_fenced = True
+            self._commands_blocked = True
+            self._condition.notify_all()
+
+    def _configure_operation(self, kind, extras, cancel):
+        """Keep all callback lanes fenced until explicit publish and resume."""
+        with self._operation_lock:
+            with self._condition:
+                if self._configure_failed or not self.runnable:
+                    raise RuntimeError(self._failure or 'configure requires a cold policy retry')
+                if self._inflight is not None or self._observation is not None:
+                    raise RuntimeError('configure requires inference and observation completion')
+                self._check_wait(time.monotonic() + self.inference_timeout_s, cancel, kind)
+                self.stop_commands()
+                self._configure_fenced = True
+                self._pending_operation = True
+                self._operation_number += 1
+                operation_id = self._operation_number
+                identity = dict(config_version=self.config_version, context_id=self.context_id)
+            try:
+                self._enqueue(dict(type=kind, operation_id=operation_id, **identity, **extras))
+                deadline = time.monotonic() + self.inference_timeout_s
+                with self._condition:
+                    while True:
+                        self._check_wait(deadline, cancel, kind)
+                        if operation_id in self._acks:
+                            reply = self._acks.pop(operation_id)
+                            expected_version = (identity['config_version'] if reply.get('type') == 'error'
+                                                else extras.get('new_config_version', identity['config_version']))
+                            if (reply.get('context_id') != identity['context_id'] or
+                                    type(reply.get('config_version')) is not int or reply['config_version'] != expected_version):
+                                raise RuntimeError('stale configure acknowledgement')
+                            if reply.get('type') == 'error':
+                                if kind == 'configure_prepare' and reply.get('error_type') == 'candidate_rejected':
+                                    raise CandidateRejected(reply.get('error', 'configure candidate rejected'))
+                                raise RuntimeError(reply.get('error', 'configure operation failed'))
+                            if reply.get('type') != 'ack':
+                                raise RuntimeError('invalid configure acknowledgement')
+                            return reply
+                        self._condition.wait(.05)
+            except CandidateRejected:
+                raise
+            except BaseException:
+                # A missing ACK cannot establish whether user code or apply ran.
+                self.mark_config_failed()
+                raise
+            finally:
+                with self._condition:
+                    self._pending_operation = False
+
+    def prepare_config(self, key, value, cancel=None):
+        with self._condition:
+            if not self.supports_configure:
+                raise CandidateRejected('policy SDK/module does not support configure')
+            if self._configure_fenced:
+                raise RuntimeError('configure transaction already in progress')
+            if type(key) is not str or not key or type(value) is not str:
+                raise ValueError('configure requires a key and raw text value')
+        reply = self._configure_operation('configure_prepare', dict(key=key, value=value), cancel)
+        try:
+            candidate, action = reply['config'], reply['action']
+            validate_candidate(self.config, candidate, action)
+            from rc_policy_sdk.catalog import validate_runtime_policy
+            validate_runtime_policy(candidate, self.policy_dir.name, self.config['id'])
+            with self._condition:
+                self._configure_prepared = (copy.deepcopy(candidate), action)
+            return dict(config=copy.deepcopy(candidate), action=action)
+        except BaseException:
+            self.mark_config_failed()
+            raise
+
+    def apply_config(self, config, next_version, action, cancel=None):
+        with self._condition:
+            if (self._configure_prepared is None or not same_config(self._configure_prepared[0], config)
+                    or self._configure_prepared[1] != action or action == 'reinitialize'
+                    or self._configure_applied_version is not None or type(next_version) is not int
+                    or next_version <= self.config_version):
+                raise ValueError('invalid prepared configure application')
+        self._configure_operation('configure_apply', dict(config=config, action=action, new_config_version=next_version), cancel)
+        with self._condition:
+            self._configure_applied_version = next_version
+
+    def commit_config(self, config, version, cancel=None):
+        """Confirm worker commit; publication remains a separate non-I/O step."""
+        with self._condition:
+            if (self._configure_prepared is None or not same_config(self._configure_prepared[0], config)
+                    or self._configure_applied_version != version):
+                raise ValueError('configure commit differs from applied candidate')
+        self._configure_operation('configure_commit', dict(new_config_version=version), cancel)
+        with self._condition:
+            self._configure_committed = True
+
+    def publish_config(self, config, version):
+        """Publish under the controller's final generation guard, without I/O."""
+        with self._condition:
+            if (self._configure_failed or not self._configure_committed or self._configure_prepared is None
+                    or not same_config(self._configure_prepared[0], config) or self._configure_applied_version != version):
+                raise RuntimeError('configure commit is not confirmed')
+            apply_candidate(self.config, config)
+            self.config_version = version
+            self._configure_prepared = None
+            self._configure_applied_version = None
+            self._configure_fenced = self._configure_committed = False
+            self._monitor_pending = self._monitor_response = None
+
+    def abort_config(self, cancel=None):
+        with self._condition:
+            if self._configure_failed or self._configure_applied_version is not None:
+                raise RuntimeError('configure state is uncertain or applied; cold retry required')
+            if not self._configure_fenced:
+                return
+        self._configure_operation('configure_abort', {}, cancel)
+        with self._condition:
+            self._configure_prepared = None
+            self._configure_fenced = False
+
     def _operation(self, kind, extras, cancel_event):
         with self._operation_lock:
             with self._condition:
+                if self._configure_fenced:
+                    raise RuntimeError('configure transaction blocks legacy lifecycle operations')
                 if self._state != "running" or self._failure:
                     raise RuntimeError(self._failure or "policy process is not ready")
                 if self._inflight is not None:
@@ -455,6 +630,8 @@ class PolicyProcess(MonitorClient):
         changing_context = kind != 'reinit_validate'
         with self._operation_lock:
             with self._condition:
+                if self._configure_failed:
+                    raise RuntimeError('configure state is uncertain; cold retry required')
                 if not self._reinitialize_enabled or self._state != 'running' or self._failure:
                     raise RuntimeError(self._failure or 'policy reinitialization unavailable')
                 if changing_context and self._inflight is not None:
@@ -553,12 +730,17 @@ class PolicyProcess(MonitorClient):
 
     def commit_reinitialize(self, config, version, flags):
         with self._condition:
+            if self._configure_failed:
+                raise RuntimeError('configure state is uncertain; cold retry required')
             self.config = config
             self.config_version = version
             self.command_specs = command_specs(config)
             self.supports_observe = flags['observe']
             self.supports_monitor = flags['monitor']
             self._reinitializing = False
+            self._configure_prepared = None
+            self._configure_applied_version = None
+            self._configure_fenced = self._configure_failed = self._configure_committed = False
             self._monitor_pending = self._monitor_response = None
 
     def submit_command(self, identity, name, args):
@@ -589,7 +771,7 @@ class PolicyProcess(MonitorClient):
         """Undo a gate only when no context-changing operation was launched."""
         with self._condition:
             if (self._state != "running" or self._failure or self._pending_operation
-                    or self._command_fatal or self._reinitializing or not self.runnable):
+                    or self._command_fatal or self._reinitializing or self._configure_fenced or not self.runnable):
                 return False
             if self.supports_commands:
                 self._enqueue({"type": "command_resume"})

@@ -7,7 +7,7 @@
 - SDK 仅依赖 NumPy 与 posix-ipc，不引入 ROS/TUI/模型框架。
 - `reinitialize_policy` 在原执行进程和已加载模块中交接目标 context。先暂停并收齐读者确认，再在旧绑定上 release、新绑定上 initialize。初始化或提交失败只能手动冷重试该实例。普通动作请求摘要进状态栏，逐条输出使用 TRACE。
 - 只有控制线程发送动作并修改缓存；成功发送完整目标才消费。UI 不执行 socket I/O、推理或生命周期操作。
-- RC 参数冷改；policy 仅 manifest 白名单叶字段热改，配置引用保持不变，版本两端同时确认。
+- RC 参数冷改：`config rc set` 编辑草稿，`config rc save` 落盘、重启生效。`policy <实例> config set` 的设置项与原始值全部交由 policy 的 `configure(context, config, key, value, callback)` 解析，候选仅可修改 params/execution；callback("reset"/"reinitialize") 延迟执行。旧自定义命令 update_config effect 继续使用 manifest 白名单叶字段。普通提交保持配置引用不变，版本两端同时确认。
 - MCP 默认只读；录制开关是明确例外，无需接管且不改变运动、控制权或 policy 等待任务。链应用/保存、策略命令和重试需先 take，完成后保留 MCP 控制权并暂停 policy。接管、归还及生命周期提交保持代次复核语义。policy 故障不抢夺 MCP 已持有的控制权。
 - 人工文本入口 `tui_command` 是另一明确例外：无需 take，按 TUI 语义执行；Agent 应使用原结构化工具。仅文本批次 FIFO 排队；真实本地 TUI 的非空提交清除批次未开始的行及等待批次，已开始的行按原生命周期收尾。禁止递归 MCP 和本地面板命令；HTTP 断连不取消批次。
 - 图像为只读 POSIX 共享内存；租约只有明确释放确认或旧执行进程树退出证明才可回收。断连不是证明。

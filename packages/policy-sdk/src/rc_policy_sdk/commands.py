@@ -4,11 +4,10 @@ import math
 import re
 import shlex
 
-BUILTIN_COMMANDS = (
-    "set", "unset", "show", "save-config", "reset", "r", "save", "load", "pause",
-    "resume", "policies", "switch", "status", "help", "exit", "quit", "take", "return", "mcp",
-    "camera", "monitor", "manage-policy", "snapshot", "policy", "record", "retry-reload",
-)
+from rc_policy_sdk.command_syntax import ROOT_COMMANDS, POLICY_COMMAND_RESERVED
+from rc_policy_sdk.argument_hints import executable_type, normalize_parameter
+
+BUILTIN_COMMANDS = ROOT_COMMANDS
 RELOAD_EFFECTS = ("reload_policy", "reload_all_policy", "reinitialize_policy")
 COMMAND_EFFECTS = (*RELOAD_EFFECTS, "update_config")
 _TYPES = {"str": "", "int": 0, "float": 0., "bool": False}
@@ -31,15 +30,16 @@ def command_specs(config):
         raise ValueError("tui_commands must be an object")
     result = {}
     for name, entry in raw.items():
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) or name in BUILTIN_COMMANDS or name.startswith("monitor-"):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) or name in POLICY_COMMAND_RESERVED:
             raise ValueError(f"invalid or reserved TUI command name: {name}")
         if not isinstance(entry, dict) or set(entry) - {"handler", "args", "help", "timeout_s", "effect"}:
             raise ValueError(f"invalid command declaration: {name}")
         handler, args = entry.get("handler"), entry.get("args")
         if not isinstance(handler, str) or not handler.isidentifier():
             raise ValueError(f"{name}: handler must name a callable in main.py")
-        if not isinstance(args, list) or any(not isinstance(arg, str) or arg not in _TYPES for arg in args):
-            raise ValueError(f"{name}: args must list str/int/float/bool")
+        if not isinstance(args, list) or len(args) > 64:
+            raise ValueError(f"{name}: args must be a bounded list")
+        parameters = [normalize_parameter(arg) for arg in args]
         timeout = entry.get("timeout_s", -1)
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or (timeout != -1 and timeout <= 0):
             raise ValueError(f"{name}: timeout_s must be -1 or a positive finite number")
@@ -48,14 +48,16 @@ def command_specs(config):
             raise ValueError(f"{name}: help must be a string")
         if "effect" in entry and entry["effect"] not in COMMAND_EFFECTS:
             raise ValueError(f"{name}: expected one of {COMMAND_EFFECTS} for effect")
-        result[name] = {"handler": handler, "args": list(args), "help": help_text, "timeout_s": timeout}
+        result[name] = {"handler": handler, "args": [executable_type(p) for p in parameters],
+                        "parameters": parameters, "help": help_text, "timeout_s": timeout}
         if "effect" in entry:
             result[name]["effect"] = entry["effect"]
     return result
 
 
 def command_usage(name, spec):
-    return " ".join([name, *(f"<{arg}>" for arg in spec["args"])])
+    names = [p['name'] for p in spec['parameters']] if 'parameters' in spec else spec['args']
+    return " ".join([name, *(f"<{arg}>" for arg in names)])
 
 
 def validate_arguments(args, spec):

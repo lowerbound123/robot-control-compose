@@ -33,6 +33,10 @@ class HostClient:
         self.condition = threading.Condition(threading.RLock())
         self.outbox = PriorityOutbox(32)
         self.results = {}
+        self._pending_rpcs = set()
+        self._path_rpcs = {}
+        self._path_request_marker = object()
+        self._latest_path_request = None
         self.serial = 0
         self.closed = False
         self.failure = None
@@ -43,6 +47,8 @@ class HostClient:
             info = self._hello(self.connection)
             self.instance_id = info['host_instance_id']
             self.reinitialize_policy = info.get('reinitialize_policy') is True
+            self.configure = info.get('configure') is True
+            self.list_paths = info.get('list_paths') is True
             self.connection.settimeout(None)
         except BaseException:
             self.connection.close(); raise
@@ -98,14 +104,38 @@ class HostClient:
         with self.condition:
             self.serial += 1
             identity = self.serial
-            self.enqueue({'type':kind, 'rpc_id':identity, **payload})
-            deadline = time.monotonic() + timeout
-            while identity not in self.results:
-                if self.failure or self.closed: raise RuntimeError(self.failure or 'host disconnected')
-                remaining = deadline - time.monotonic()
-                if remaining <= 0: raise TimeoutError(f'host {kind} timeout')
-                self.condition.wait(min(.05, remaining))
-            result = self.results.pop(identity)
+            if kind == 'list_paths':
+                timeout = min(timeout, 1.)
+                while len(self._path_rpcs) >= 2:
+                    old = next(iter(self._path_rpcs))
+                    self._path_rpcs.pop(old)
+                    self._pending_rpcs.discard(old)
+                    self.results.pop(old, None)
+                self._path_rpcs[identity] = True
+                self.condition.notify_all()
+            self._pending_rpcs.add(identity)
+            try:
+                packet = {'type':kind, 'rpc_id':identity, **payload}
+                if kind == 'list_paths':
+                    if self.closed or self.failure:
+                        raise RuntimeError(self.failure or 'host disconnected')
+                    self._latest_path_request = encode_message(packet)
+                    self.outbox.put_monitor('path-completion', self._path_request_marker)
+                else:
+                    self.enqueue(packet)
+                deadline = time.monotonic() + timeout
+                while identity not in self.results:
+                    if self.failure or self.closed: raise RuntimeError(self.failure or 'host disconnected')
+                    if identity not in self._pending_rpcs:
+                        raise TimeoutError('path completion superseded by newer input')
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0: raise TimeoutError(f'host {kind} timeout')
+                    self.condition.wait(min(.05, remaining))
+                result = self.results.pop(identity)
+            finally:
+                self._pending_rpcs.discard(identity)
+                self._path_rpcs.pop(identity, None)
+                self.results.pop(identity, None)
         if result.get('error'): raise RuntimeError(result['error'])
         return result.get('result')
 
@@ -124,6 +154,11 @@ class HostClient:
             while True:
                 framed = self.outbox.get()
                 if framed is None: return
+                if framed is self._path_request_marker:
+                    with self.condition:
+                        framed, self._latest_path_request = self._latest_path_request, None
+                    if framed is None:
+                        continue
                 self.connection.sendall(framed)
         except OSError as exc: self._fail(f'host write failed: {exc}')
 
@@ -134,8 +169,9 @@ class HostClient:
                 kind = message.get('type')
                 if kind == 'rpc_result':
                     with self.condition:
-                        self.results[message['rpc_id']] = message
-                        self.condition.notify_all()
+                        if message.get('rpc_id') in self._pending_rpcs:
+                            self.results[message['rpc_id']] = message
+                            self.condition.notify_all()
                     continue
                 if message.get('host_instance_id') != self.instance_id:
                     raise ValueError('stale host instance')

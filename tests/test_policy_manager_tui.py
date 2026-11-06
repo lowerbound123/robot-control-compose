@@ -57,7 +57,7 @@ async def test_editor_numbers_occurrences_but_saves_source_ids():
     controller = EditorController()
     app = RobotControlApp(controller)
     async with app.run_test(size=(100, 30)) as pilot:
-        app.router.submit('manage-policy')
+        app.router.submit('policy manage')
         panel = app.query_one('#policy-manager')
         left = app.query_one('#chain-cells', OptionList)
         await eventually(pilot, lambda: panel.display and left.has_focus)
@@ -77,7 +77,7 @@ async def test_editor_disables_candidate_with_colliding_instance_name():
     controller = EditorController()
     app = RobotControlApp(controller)
     async with app.run_test(size=(100, 30)) as pilot:
-        app.router.submit('manage-policy')
+        app.router.submit('policy manage')
         panel = app.query_one('#policy-manager')
         left = app.query_one('#chain-cells', OptionList)
         await eventually(pilot, lambda: panel.display and left.has_focus)
@@ -95,7 +95,7 @@ async def test_two_columns_insert_above_below_replace_delete_and_cancel():
     controller = EditorController()
     app = RobotControlApp(controller)
     async with app.run_test(size=(100, 30)) as pilot:
-        app.router.submit('manage-policy')
+        app.router.submit('policy manage')
         panel = app.query_one('#policy-manager')
         left, right = app.query_one('#chain-cells', OptionList), app.query_one('#chain-available', OptionList)
         await eventually(pilot, lambda: panel.display and left.has_focus)
@@ -118,7 +118,7 @@ async def test_two_columns_insert_above_below_replace_delete_and_cancel():
         assert panel.policies == ['a','a']
         await pilot.press('escape')
         assert not panel.display and app.query_one(CommandInput).has_focus
-        app.router.submit('manage-policy')
+        app.router.submit('policy manage')
         await eventually(pilot, lambda: panel.display and left.has_focus)
         assert panel.policies == ['a','a']
         controller.done.set()
@@ -132,7 +132,7 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
     controller = EditorController()
     app = RobotControlApp(controller)
     async with app.run_test(size=(60, 24)) as pilot:
-        app.router.submit('manage-policy')
+        app.router.submit('policy manage')
         await pilot.pause(.1)
         panel = app.query_one('#policy-manager')
         await pilot.press('delete')
@@ -172,11 +172,11 @@ async def test_save_apply_failure_empty_draft_and_shortcuts_do_not_capture_comma
 def test_manage_policy_reserved_and_headless_help_and_rejection():
     from rc_policy_sdk.commands import command_specs
     with pytest.raises(ValueError, match='reserved'):
-        command_specs({'tui_commands':{'manage-policy':{'handler':'test','args':[]}}})
+        command_specs({'tui_commands':{'manage':{'handler':'test','args':[]}}})
     controller = EditorController()
     router = TerminalCommandRouter(controller)
     with pytest.raises(ValueError, match='TUI'):
-        router.submit('manage-policy')
+        router.submit('policy manage')
 
 
 @pytest.mark.asyncio
@@ -186,9 +186,9 @@ async def test_editor_stays_above_command_with_preview_panels_and_small_terminal
     app = RobotControlApp(controller, graphics=GraphicsSupport('kitty'))
     app._write_graphics = lambda text: None
     async with app.run_test(size=(60, 24)) as pilot:
-        app.router.submit('camera on')
-        app.router.submit('monitor on')
-        app.router.submit('manage-policy')
+        app.router.submit('camera show')
+        app.router.submit('monitor')
+        app.router.submit('policy manage')
         await pilot.pause(.1)
         for size in ((60,24), (80,18)):
             await pilot.resize_terminal(*size)

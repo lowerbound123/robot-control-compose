@@ -10,7 +10,7 @@ from test_controller import setup_controller, ready, until
 
 
 def command(controller, line, origin='tui', status='succeeded'):
-    identity = controller.submit(line, origin=origin)
+    identity = controller.submit_control(line) if line in ("take", "return") else controller.submit(line, origin=origin)
     until(lambda: controller.get_operation(identity)['status'] in ('succeeded', 'failed', 'cancelled'))
     result = controller.get_operation(identity)
     assert result['status'] == status, result
@@ -22,13 +22,13 @@ def test_global_commands_survive_switch_and_exit(setup_controller):
     (root / 'global.env').write_text('initial=3\n')
     ready(controller)
     assert controller.globals['initial'] == 3
-    command(controller, 'set global.task {"phase":"hello world", "nested":[1,true]}')
-    command(controller, 'set global.ready true')
-    assert controller.query('show global task') == {'phase': 'hello world', 'nested': [1, True]}
-    command(controller, 'switch second')
+    command(controller, 'global set task {"phase":"hello world", "nested":[1,true]}')
+    command(controller, 'global set ready true')
+    assert controller.query('global show task') == {'phase': 'hello world', 'nested': [1, True]}
+    command(controller, 'policy switch second')
     assert controller.globals['ready']
-    command(controller, 'unset global.initial')
-    command(controller, 'unset global.missing', status='failed')
+    command(controller, 'global remove initial')
+    command(controller, 'global remove missing', status='failed')
     controller.submit('exit')
     assert controller.done.wait(3)
     assert controller.exit_code == 0
@@ -38,11 +38,11 @@ def test_global_commands_survive_switch_and_exit(setup_controller):
 def test_mcp_global_reads_and_write_authority(setup_controller):
     controller, _, _ = setup_controller
     ready(controller)
-    command(controller, 'show global', origin='mcp')
+    command(controller, 'global show', origin='mcp')
     with pytest.raises(PermissionError):
-        controller.submit('set global.item 1', origin='mcp')
+        controller.submit('global set item 1', origin='mcp')
     command(controller, 'take', origin='mcp')
-    command(controller, 'set global.item 1', origin='mcp')
+    command(controller, 'global set item 1', origin='mcp')
     assert controller.globals['item'] == 1
 
 
@@ -65,7 +65,7 @@ def test_mcp_return_revokes_write_queued_behind_reader(setup_controller):
     fd = os.open(controller._global_service.descriptor['lock_path'], os.O_RDONLY)
     fcntl.flock(fd, fcntl.LOCK_SH)
     try:
-        identity = controller.submit('set global.stale 1', origin='mcp')
+        identity = controller.submit('global set stale 1', origin='mcp')
         until(lambda: controller.get_operation(identity)['status'] == 'running')
         command(controller, 'return', origin='mcp')
     finally:

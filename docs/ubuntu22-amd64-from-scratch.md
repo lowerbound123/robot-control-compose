@@ -6,7 +6,7 @@
 2. 将仓库放到稳定路径，在项目根目录用普通用户运行 `python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock`，为宿主 Python 安装 YAML 依赖。再运行 `./setup.sh --config-only`，确认 configs、policy、outputs、snapshot 可由此用户读写。
 3. 编辑 `configs/rc.mock.yaml`，初次建议 startup_policy 为 null；真实配置在 `configs/rc.acone.yaml`。不填旧 host/socket 表。
 4. `./setup.sh --policies hold` 构建基础镜像和 Python 3.14 策略镜像。其他策略按目录选择；Qwen 需先准备 GPU、NVIDIA Container Toolkit、模型和缓存目录，参见 Qwen 文档。
-5. `./scripts/compose.sh up -d --no-build` 启动两个基础容器，再 `./scripts/compose.sh attach robot-control`。先检查 status 和 policies，再 switch hold；初始化后暂停，只有 resume 才推理。
+5. `./scripts/compose.sh up -d --no-build` 启动两个基础容器，再 `./scripts/compose.sh attach robot-control`。先检查 status 和 policy list，再 policy switch hold；初始化后暂停，只有 resume 才推理。
 6. 使用 exit 退出 RC，再 `./scripts/compose.sh down` 完成动态容器与外部资源收尾。
 
 ## ROS 仿真与真机

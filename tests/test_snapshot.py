@@ -141,9 +141,9 @@ def test_snapshot_write_error_cleans_only_its_own_partial_folder(snapshot_router
 
 def test_snapshot_help_and_argument_validation(snapshot_router):
     router, controller, _, _ = snapshot_router
-    router.submit("help snapshot")
-    assert any("snapshot/" in event["message"] for event in controller.read_events()["events"])
-    with pytest.raises(ValueError, match="snapshot"):
+    router.submit("help")
+    assert any("snapshot" in event["message"] for event in controller.read_events()["events"])
+    with pytest.raises(ValueError, match="snapshot|unsupported|不支持"):
         router.submit("snapshot extra")
 
 
@@ -164,8 +164,13 @@ async def test_tui_snapshot_completion_and_command_without_camera_panel(snapshot
     async with app.run_test() as pilot:
         command = app.query_one(CommandInput)
         command.value = "snap"
+        command.cursor_position = len(command.value)
         await pilot.press("tab")
+        assert command.value == "snap" and command.menu_open
+        assert not router.pending
+        await pilot.press("enter")
         assert command.value == "snapshot "
+        assert not command.menu_open and not router.pending
         await pilot.press("enter")
         await asyncio.to_thread(until, lambda: not router.pending)
         assert len(list((working / "snapshot").glob("*/state.json"))) == 1

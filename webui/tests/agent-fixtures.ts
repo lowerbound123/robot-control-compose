@@ -18,6 +18,7 @@ export const tools = [
   tool('record', false, { action: { enum: ['status', 'on', 'off', 'toggle'] } }),
   tool('policy_chain', false, { policies: { type: 'array', items: { type: 'string' } }, action: { enum: ['apply', 'save'] } }, ['policies']),
   tool('policy_command', false, { instance_id: { type: 'string' }, command: { type: 'string' }, args: { type: 'array' } }, ['instance_id', 'command']),
+  tool('policy_config', false, { instance_id: { type: 'string' }, action: { enum: ['show', 'set', 'save'] }, key: { type: 'string' }, value_text: { type: 'string' } }, ['instance_id']),
   tool('retry_reload', false, { instance_id: { type: 'string' } }, ['instance_id']),
   tool('send_command', false, { commands: { type: 'string' }, include_images: { type: 'boolean' } }, ['commands']),
   tool('move_eef', false, { targets: { type: 'object' } }, ['targets']), tool('move_joints', false, { targets: { type: 'object' } }, ['targets']),
@@ -26,8 +27,8 @@ export const tools = [
 export function fixtureGateway() {
   const state = { ...initialStatus }
   const policy_commands = { policies: [0, 1].map(i => ({ source_id: 'example', instance_id: `example-${i}`, loaded: true, runnable: true, commands: [
-    { name: 'set-message', alias: `example-${i}-set-message`, args: ['str'], help: '热更新消息', effect: 'update_config', requires_take: true, timeout_s: 5 },
-    { name: 'set-chunk-size', alias: `example-${i}-set-chunk-size`, args: ['int'], help: '冷重载本实例', effect: 'reload_policy', requires_take: true, timeout_s: 5 },
+    { name: 'set-message', alias: null, args: ['str'], help: '热更新消息', effect: 'update_config', requires_take: true, timeout_s: 5 },
+    { name: 'set-chunk-size', alias: null, args: ['int'], help: '冷重载本实例', effect: 'reload_policy', requires_take: true, timeout_s: 5 },
   ] })), errors: [] }
   const catalog = vi.fn(async () => ({ instructions: 'Read-only until take. Recording needs no take.', tools: structuredClone(tools) }))
   const status = vi.fn(async () => ({ ...state }))

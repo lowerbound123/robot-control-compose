@@ -9,7 +9,7 @@ from test_controller import setup_controller, ready, until
 
 
 def operation(controller, command):
-    identity = controller.submit(command)
+    identity = controller.submit_control(command) if command in ("take", "return") else controller.submit(command)
     until(lambda: controller.get_operation(identity)['status'] in ('succeeded','failed','cancelled'), 8)
     result = controller.get_operation(identity)
     assert result['status']=='succeeded', result
@@ -22,13 +22,13 @@ def test_recording_is_independent_of_control_and_pause_and_mcp(setup_controller,
     controller.config['frequency_hz']=hz
     worker=ready(controller)
     generation=controller.buffer.generation
-    status=operation(controller,'record on')
+    status=operation(controller,'record start')
     assert status['state']=='recording'
     assert controller._worker is worker and controller.buffer.generation==generation
     until(lambda:controller.status()['recording']['samples_written']>=8,5)
     operation(controller,'take')
     until(lambda:controller.status()['recording']['samples_written']>=12,5)
-    status=operation(controller,'record off')
+    status=operation(controller,'record stop')
     assert controller.control_owner=='mcp'
     with (Path(status['path'])/'qpos.csv').open() as f: rows=list(csv.reader(f))
     assert len(rows)>=13
@@ -38,12 +38,12 @@ def test_recording_is_independent_of_control_and_pause_and_mcp(setup_controller,
 def test_inference_images_and_config_and_send_events_are_saved(setup_controller):
     controller,robot,_=setup_controller
     worker=ready(controller)
-    operation(controller,'record on')
+    operation(controller,'record start')
     operation(controller,'resume')
     until(lambda:worker.requests)
     worker.finish([[.1]*14])
     until(lambda:controller.buffer.consumed>0)
-    status=operation(controller,'record off')
+    status=operation(controller,'record stop')
     folder=Path(status['path'])
     policy=[json.loads(x) for x in (folder/'policy.jsonl').read_text().splitlines()]
     observation=next(x for x in policy if x['event']=='policy.observation')
@@ -58,13 +58,13 @@ def test_inference_images_and_config_and_send_events_are_saved(setup_controller)
 def test_recording_keeps_session_across_switch_and_preserves_config_history(setup_controller):
     controller, _, _ = setup_controller
     ready(controller)
-    first = operation(controller, 'record on')
-    operation(controller, 'set policy.params.value 7')
-    operation(controller, 'switch second')
+    first = operation(controller, 'record start')
+    operation(controller, 'policy first config set params.value 7')
+    operation(controller, 'policy switch second')
     assert controller.status()['recording']['session_id'] == first['session_id']
-    operation(controller, 'set global.record_marker 42')
+    operation(controller, 'global set record_marker 42')
     until(lambda:controller._record_global_version == controller._global_service.version)
-    status = operation(controller, 'record off')
+    status = operation(controller, 'record stop')
     configs = [json.loads(path.read_text()) for path in (Path(status['path'])/'configs').glob('*.json')]
     snapshots = [data for data in configs if 'instances' in data]
     assert any(data['instances'][0]['config']['params']['value'] == 1 for data in snapshots)
@@ -77,7 +77,7 @@ def test_recording_mcp_mixed_modes_and_sync_inference_wait(setup_controller):
     from robot_control.direct_commands import structured_step
     controller, _, _ = setup_controller
     worker = ready(controller)
-    operation(controller, 'record on')
+    operation(controller, 'record start')
     operation(controller, 'resume')
     until(lambda: len(worker.requests) == 1)
     before = controller.status()['recording']['samples_written']
@@ -88,7 +88,7 @@ def test_recording_mcp_mixed_modes_and_sync_inference_wait(setup_controller):
     assert controller.wait_operation(identity, 3)['status'] == 'succeeded'
     after = controller.status()['recording']['samples_written']
     until(lambda:controller.status()['recording']['samples_written'] >= after + 3)
-    status = operation(controller, 'record off')
+    status = operation(controller, 'record stop')
     assert controller.control_owner == 'mcp' and controller.buffer.consumed == 0
     rows = {}
     for mode in ('epos','qpos'):
@@ -106,11 +106,11 @@ def test_record_help_status_and_invalid_arguments_do_not_change_generation(setup
     controller, _, _ = setup_controller
     ready(controller)
     generation = controller.buffer.generation
-    assert 'record on/off' in operation(controller, 'help record')
+    assert 'record' in operation(controller, 'help')
     assert operation(controller, 'record status')['state'] == 'idle'
-    for line in ('record invalid', 'record on extra'):
-        identity = controller.submit(line)
-        assert controller.wait_operation(identity, 2)['status'] == 'failed'
+    for line in ('record invalid', 'record start extra', 'record on', 'record off', 'record toggle'):
+        with pytest.raises(ValueError):
+            controller.submit(line)
     assert controller.buffer.generation == generation
 
 
@@ -120,7 +120,7 @@ def test_inference_records_actual_leased_frame_when_image_pool_is_full(setup_con
     from rc_policy_sdk.images import map_images
     controller, robot, _ = setup_controller
     ready(controller)
-    operation(controller, 'record on')
+    operation(controller, 'record start')
     leases = []
     try:
         with controller._lock:
@@ -134,7 +134,7 @@ def test_inference_records_actual_leased_frame_when_image_pool_is_full(setup_con
                 expected = images['head'].copy()
             assert int(expected[0,0,0]) == 3
             before = [slot['leases'] for slots in controller._pool._slots.values() for slot in slots]
-        status = operation(controller, 'record off')
+        status = operation(controller, 'record stop')
         policy = [json.loads(row) for row in (Path(status['path'])/'policy.jsonl').read_text().splitlines()]
         observation = next(row for row in policy if row.get('observation_id') == runtime['observation_id'])
         frame = observation['image_files']['head']

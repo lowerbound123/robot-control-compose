@@ -71,13 +71,13 @@ Decisions 使用单题 226 个联合选项（左右手 15×15，再加完成）�
 首次启动整个项目可在 `up` 增加 `--build`，同时构建主框架与 hold。启动仍为 mock + hold，保持暂停。TUI 中输入：
 
 ```text
-switch llm_direction
-show policy
+policy switch llm_direction
+policy llm_direction config show
 resume
 pause
 ```
 
-使用 默认 switch 保留切换时的当前位置。切换成功仍保持暂停。终端 detach 使用 Ctrl-P、Ctrl-Q；`exit` 会关闭控制器。
+使用 默认 policy switch 保留切换时的当前位置。切换成功仍保持暂停。终端 detach 使用 Ctrl-P、Ctrl-Q；`exit` 会关闭控制器。
 
 ROS 模拟器组合：
 
@@ -97,14 +97,14 @@ ROS_DOMAIN_ID=0 ./scripts/compose.sh -f compose.acone.yaml up -d
 
 ## 配置保存、链与退出
 
-独立运行时可以使用已有冷配置命令：
+配置入口由策略 configure 校验，所有 params 修改请求原进程 reinitialize；成功后暂停，再显式恢复。独立运行时例如：
 
 ```text
 pause
-set policy.params.task "把物体向前移一次，然后停止"
-set policy.params.prompt "根据三张图像选择小步动作，确定完成后停止。"
-set policy.params.request_when_remaining 2
-save-config policy llm_direction
+policy llm_direction config set params.task "把物体向前移一次，然后停止"
+policy llm_direction config set params.prompt "根据三张图像选择小步动作，确定完成后停止。"
+policy llm_direction config set params.request_when_remaining 2
+policy llm_direction config save
 resume
 ```
 
@@ -112,13 +112,13 @@ resume
 
 ```text
 policy llm_direction switch-provider providers/openai.yaml
-save-config policy llm_direction
+policy llm_direction config save
 resume
 ```
 
 候选文件未通过校验时，当前实例继续使用已加载的配置。校验通过后，RC 替换目标实例并暂停整链。更新同一文件里的模型或密钥时，再次执行相同命令即可。RC 的命令回执和配置保存只涉及所选路径。
 
-原生链通过 `manage-policy` 编排，所有成员须为 `epos`。同一策略出现多次时，每个环节各有实例，例如 `policy llm_direction-1 switch-provider provider.yaml`。只重建指定实例并采用新路径，其他成员的模型保持驻留。使用 `save-config policy llm_direction-1` 可将该实例的选择写回来源目录，作为以后加载时的默认值。
+原生链通过 `policy manage` 编排，所有成员须为 `epos`。同一策略出现多次时，每个环节各有实例，例如 `policy llm_direction-1 switch-provider provider.yaml`。只重建指定实例并采用新路径，其他成员的模型保持驻留。使用 `policy llm_direction-1 config save` 可将该实例的选择写回来源目录，作为以后加载时的默认值。
 
 暂停、MCP 接管、配置冷重载和退出都会使旧动作失效。HTTP 请求可能仍需等返回或超时，迟到结果不能恢复动作。用户 `resume` 才允许下一次模型决策；硬超时或 worker 故障后先重新加载 policy。
 

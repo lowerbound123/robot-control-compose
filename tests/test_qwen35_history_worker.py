@@ -90,12 +90,12 @@ def test_hot_task_discards_inflight_work_and_cold_reload_releases_instance(runni
     worker = controller._worker
     assert completed(controller,'resume')['status'] == 'succeeded'
     wait(lambda: controller.status()['consumed'] >= 20)
-    assert completed(controller,'switch-task "new task"')['status'] == 'succeeded'
+    assert completed(controller,'policy qwen35_history switch-task "new task"')['status'] == 'succeeded'
     fresh = wait(lambda: next((r for r in events(root,'predict_end') if r['task']=='new task'), None))
     assert fresh['indices'] == [] and controller._worker is worker
     assert len(events(root,'load')) == 1
     assert completed(controller,'pause')['status'] == 'succeeded'
-    assert completed(controller,f'switch-model "{root / "model.json"}"')['status'] == 'succeeded'
+    assert completed(controller,f'policy qwen35_history switch-model "{root / "model.json"}"')['status'] == 'succeeded'
     assert controller.status()['state'] == 'paused'
     assert worker.cleanup_confirmed and not worker.has_readers
     assert len(events(root,'close')) == 1 and len(events(root,'load')) == 2

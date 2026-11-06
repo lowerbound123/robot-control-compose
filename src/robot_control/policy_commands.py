@@ -4,7 +4,7 @@ import json
 import shlex
 
 from rc_policy_sdk.commands import COMMAND_EFFECTS, parse_command, validate_arguments
-from .operations import ControlRequest, PolicyConfigEdit, PolicySaveTarget
+from .operations import ControlRequest, PolicySaveTarget
 from .config import PolicyRecord, changed_config, dotted_get
 from .policy_capabilities import PolicyCapabilities
 
@@ -27,7 +27,17 @@ class PolicyCommandSupport(PolicyCapabilities):
 
     def local_commands(self):
         with self._lock:
-            return list(self._local_specs())
+            if self._identity is None or self._worker is None:
+                return []
+            record = self.registry.get(self._identity)
+            members = record.members if record.is_chain else (record,)
+            from rc_policy_sdk.commands import command_specs
+            paths = []
+            for member in members:
+                prefix = f'policy {member.instance_id} '
+                paths.extend(prefix + tail for tail in ('config show', 'config set', 'config save', 'retry'))
+                paths.extend(prefix + name for name in command_specs(member.config))
+            return paths
 
     def declared_commands(self):
         from .policy_catalog import read_descriptor
@@ -180,59 +190,6 @@ class PolicyCommandSupport(PolicyCapabilities):
         self._operation_start('hot_patch', wait_inflight=True, worker=request.policy_worker,
             target_worker=worker, record=record, member=member, patch=patch,
             command_request=request, public_id=request.operation_id, origin=request.origin)
-
-    def _policy_set_request(self, identity, line, origin, expected_control=None):
-        parts = line.split(maxsplit=2)
-        if not parts or parts[0] != 'set' or len(parts) < 2:
-            return None
-        scope, separator, path = parts[1].partition('.')
-        if scope in ('rc', 'global', 'policy'):
-            return None  # Preserve the existing special scopes and standalone alias.
-        if len(parts) != 3 or not separator or not path:
-            raise ValueError('用法：set <实例ID>.<配置字段> <JSON值>')
-        worker = self._worker
-        if (self._identity is None or worker is None or self._retry_candidate is not None
-                or not getattr(worker, 'runnable', worker.alive)):
-            raise ValueError('需要已激活的 policy')
-        if self._operation is not None:
-            raise RuntimeError('busy: policy lifecycle operation')
-        if not self._policy_control_current(origin, self._control_epoch):
-            raise PermissionError('policy control ownership changed; MCP config edits require take')
-        record = self.registry.get(self._identity)
-        if record.is_chain:
-            target = self.registry.resolve_member(record, scope)
-        elif scope == record.instance_id:
-            target = record
-        else:
-            raise ValueError(f'{scope}: not_running')
-        edit = PolicyConfigEdit(target.instance_id, path, json.loads(parts[2]))
-        return ControlRequest(identity, line, origin, self._control_epoch,
-            policy_worker=worker, policy_version=worker.config_version,
-            generation=self.buffer.generation, config_edit=edit,
-            expected_control=copy.deepcopy(expected_control))
-
-    def _dispatch_policy_set(self, request):
-        if not self._reload_is_current(request, request.generation):
-            self.operations.update(request.operation_id, 'cancelled', error='policy/control state changed before config edit')
-            return
-        record = self.registry.get(self._identity)
-        edit = request.config_edit
-        target = self.registry.resolve_member(record, edit.instance_id) if record.is_chain else record
-        config, hot = changed_config(target.config, edit.path, edit.value)
-        if record.is_chain and not hot:
-            raise ValueError('链成员的冷参数请使用该实例已注册的重载命令；具名 set 仅修改热字段')
-        member = PolicyRecord(target.directory, config, target.version + 1, instance_id=target.instance_id)
-        proposed = member
-        if record.is_chain:
-            members = tuple(member if m.instance_id == target.instance_id else m for m in record.members)
-            proposed = PolicyRecord(record.directory, record.config, record.version + 1, members)
-        self._pending_config = {'instance_id': target.instance_id, 'path': edit.path, 'value': edit.value, 'hot': hot}
-        self._invalidate_policy_editor()
-        if hot:
-            self._start_config_patch(request, proposed, member, {edit.path: edit.value})
-        else:
-            self._operation_start('switch', record=proposed, old_worker=request.policy_worker,
-                                  reset=False, commit=True, version=proposed.version)
 
     def _check_command_hot_patch(self, job, *, applied):
         group, target = job['worker'], job['target_worker']

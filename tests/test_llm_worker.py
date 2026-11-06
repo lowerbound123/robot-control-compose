@@ -255,7 +255,7 @@ def test_switch_provider_reloads_only_selected_chain_config_and_saves_path(setup
 
         manifest_path = source / 'policy.yaml'
         assert read_config(manifest_path)['params']['provider_config_path'] == 'provider.yaml'
-        operation(controller, controller.submit('save-config policy llm_direction-0'))
+        operation(controller, controller.submit('policy llm_direction-0 config save'))
         assert read_config(manifest_path)['params']['provider_config_path'] == relative
         assert 'api_key' not in manifest_path.read_text()
         assert 'alternate-private-key' not in str(controller.read_events())
@@ -264,7 +264,7 @@ def test_switch_provider_reloads_only_selected_chain_config_and_saves_path(setup
         assert controller.done.wait(15)
 
 
-@pytest.mark.parametrize('action', ['pause', 'take', 'set policy.params.task "new task"'])
+@pytest.mark.parametrize('action', ['pause', 'take', 'policy llm_direction config set params.task "new task"'])
 def test_late_http_decision_cannot_override_pause_take_or_reload(setup, tmp_path, monkeypatch, action):
     server = setup[0]
     gate = threading.Event()
@@ -274,7 +274,7 @@ def test_late_http_decision_cannot_override_pause_take_or_reload(setup, tmp_path
     try:
         controller.submit('resume')
         assert server.received.wait(5)
-        operation = controller.submit(action)
+        operation = (controller.submit_control(action) if action in ("take", "return") else controller.submit(action))
         wait(lambda: controller.status()['state'] != 'running')
         gate.set()
         wait(lambda: controller.get_operation(operation)['status'] in ('succeeded', 'failed'))

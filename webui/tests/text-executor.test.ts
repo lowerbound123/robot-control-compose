@@ -20,7 +20,7 @@ function fixture() {
 it('sends the entire raw text once without take, translation or policy discovery', async () => {
   const { gateway, calls } = fixture()
   const executor = new PlanExecutor(gateway, { pollMs: 1 })
-  const text = 'set example.params.message "a \\"quote\\""\nstatus'
+  const text = 'policy example config set params.message "a \\"quote\\""\nstatus'
   await executor.runText(text, status)
   expect(calls).toEqual([['tui_command', { text, wait: false }], ['get_operation', { operation_id: 'batch-id' }]])
   expect(executor.pendingKind).toBeNull()

@@ -76,7 +76,7 @@ def container():
             assert members['producer'].host.instance_id != members['llm_failure'].host.instance_id
             service.start()
             assert not server.requests
-            command('set global.stage "抓取"')
+            command('global set stage "抓取"')
             assert not tool('take').is_error
             receipt = tool('return_and_wait', timeout_s=0).structured_content
             identity = receipt['operation_id']
@@ -118,7 +118,7 @@ def container():
             after = worker.member_workers()
             assert after['producer'] is members['producer'] and after['llm_failure'] is not members['llm_failure']
             assert controller.status()['state'] == 'paused'
-            command('set global.stage "放置"')
+            command('global set stage "放置"')
             gate.clear()
             answer = {'type': 'score', 'name': score['question_name']}
             server.responses.extend([

@@ -58,8 +58,8 @@ def test_local_commands_during_inference_preserve_generation_and_consume(command
     controller.submit("resume")
     until(lambda: controller.status()["in_flight"])
     generation = controller.status()["generation"]
-    first = controller.submit('meet "first value"')
-    second = controller.submit("meet second")
+    first = controller.submit('policy first meet "first value"')
+    second = controller.submit("policy first meet second")
     assert completed(controller, first)["result"] == "first value"
     assert completed(controller, second)["result"] == "second"
     assert controller.status()["generation"] == generation
@@ -70,14 +70,14 @@ def test_local_commands_during_inference_preserve_generation_and_consume(command
 def test_help_and_error_isolation(command_controller):
     controller, _ = command_controller
     assert "meet <str>" in controller.local_help()
-    help_id = controller.submit("help delay")
-    assert "0.15" in completed(controller, help_id)["result"]
-    bad = controller.submit("bad")
-    ok = controller.submit('unlimited "with spaces" .02')
+    help_id = controller.submit("policy help first delay")
+    assert "0.15" in completed(controller, help_id)["result"]["help"]
+    bad = controller.submit("policy first bad")
+    ok = controller.submit('policy first unlimited "with spaces" .02')
     assert completed(controller, bad)["status"] == "failed"
     assert completed(controller, ok)["result"] == "with spaces"
     assert controller.status()["state"] == "paused"
-    invalid = controller.submit("delay label not-a-float")
+    invalid = controller.submit("policy first delay label not-a-float")
     assert completed(controller, invalid)["status"] == "failed"
     assert controller._worker.alive
 
@@ -85,8 +85,8 @@ def test_help_and_error_isolation(command_controller):
 def test_timeout_unloads_worker_cancels_peers_and_requires_switch(command_controller):
     controller, _ = command_controller
     worker = controller._worker
-    slow = controller.submit("delay slow .8")
-    peer = controller.submit("unlimited peer 1")
+    slow = controller.submit("policy first delay slow .8")
+    peer = controller.submit("policy first unlimited peer 1")
     assert completed(controller, slow)["status"] == "failed"
     assert "timeout" in controller.get_operation(slow)["error"]
     assert completed(controller, peer)["status"] == "cancelled"
@@ -100,8 +100,8 @@ def test_timeout_unloads_worker_cancels_peers_and_requires_switch(command_contro
 def test_queued_command_cannot_run_on_replacement_worker(command_controller):
     controller, root = command_controller
     with controller._lock:
-        switch = controller.submit("switch second")
-        old = controller.submit("unlimited stale .01")
+        switch = controller.submit("policy switch second")
+        old = controller.submit("policy first unlimited stale .01")
     assert completed(controller, switch)["status"] == "succeeded"
     assert completed(controller, old)["status"] == "cancelled"
     assert not (root / "policy" / "second" / "stale.start").exists()
@@ -109,10 +109,10 @@ def test_queued_command_cannot_run_on_replacement_worker(command_controller):
 
 def test_pause_and_take_do_not_cancel_active_command(command_controller):
     controller, root = command_controller
-    task = controller.submit("unlimited active .25")
+    task = controller.submit("policy first unlimited active .25")
     until(lambda: (root / "policy" / "first" / "active.start").exists())
     controller.submit("pause")
-    take = controller.submit("take")
+    take = controller.submit_control("take")
     assert completed(controller, take)["status"] == "succeeded"
     assert completed(controller, task)["status"] == "succeeded"
     assert controller.status()["control_owner"] == "mcp"
@@ -130,7 +130,7 @@ def test_mcp_custom_commands_require_take_and_support_targeted_help(command_cont
                 for takeover in (False, True):
                     if takeover:
                         await session.call_tool("take", {})
-                    result = await session.call_tool("command", {"line": "unlimited forbidden .01", "wait": True})
+                    result = await session.call_tool("command", {"line": "policy first unlimited forbidden .01", "wait": True})
                     assert result.is_error is not takeover
                     help_result = await session.call_tool("help", {})
                     assert "unlimited" not in str(help_result)
@@ -144,10 +144,10 @@ def test_mcp_custom_commands_require_take_and_support_targeted_help(command_cont
 
 def test_timeout_during_return_cannot_leave_return_receipt_running(command_controller):
     controller, root = command_controller
-    completed(controller, controller.submit("take"))
-    task = controller.submit("delay active .8")
+    completed(controller, controller.submit_control("take"))
+    task = controller.submit("policy first delay active .8")
     until(lambda: (root / "policy" / "first" / "active.start").exists())
-    returning = controller.submit("return")
+    returning = controller.submit_control("return")
     assert completed(controller, task)["status"] == "failed"
     assert completed(controller, returning)["status"] in ("failed", "cancelled")
     until(lambda: controller._worker is None, 8)
@@ -158,10 +158,10 @@ def test_timeout_during_return_cannot_leave_return_receipt_running(command_contr
 def test_timeout_during_mcp_motion_preserves_owner_and_motion(command_controller):
     from robot_control.direct_commands import structured_step
     controller, _ = command_controller
-    completed(controller, controller.submit("take"))
+    completed(controller, controller.submit_control("take"))
     # A sufficiently distant target stays active while the model is unloaded.
     motion = controller.submit_direct([structured_step(4, {"left": {"end_pos": [.3, 0, 0, 0, 0, 0]}}, "slow")])
-    task = controller.submit("delay slow .4")
+    task = controller.submit("policy first delay slow .4")
     assert completed(controller, task)["status"] == "failed"
     until(lambda: controller._worker is None, 8)
     assert controller.status()["control_owner"] == "mcp"
@@ -170,7 +170,7 @@ def test_timeout_during_mcp_motion_preserves_owner_and_motion(command_controller
 
 def test_shutdown_cancels_queued_and_bounds_unlimited_active_commands(command_controller):
     controller, root = command_controller
-    calls = [controller.submit(f"unlimited hang{i} 30") for i in range(3)]
+    calls = [controller.submit(f"policy first unlimited hang{i} 30") for i in range(3)]
     until(lambda: (root / "policy" / "first" / "hang1.start").exists())
     worker = controller._worker
     started = time.monotonic()
@@ -189,7 +189,7 @@ def test_headless_calls_configured_command(command_controller):
     output = io.StringIO()
     class Input:
         def __iter__(self):
-            yield 'unlimited "local stdin" .01\n'
+            yield 'policy first unlimited "local stdin" .01\n'
             until(lambda: any('succeeded: "local stdin"' in event['message'] for event in controller.read_events()['events']))
             yield 'exit\n'
     run_headless(controller, stdin=Input(), stdout=output)
@@ -198,7 +198,7 @@ def test_headless_calls_configured_command(command_controller):
 
 def test_worker_crash_settles_call_and_removes_commands(command_controller):
     controller, _ = command_controller
-    call = controller.submit("die")
+    call = controller.submit("policy first die")
     assert completed(controller, call)["status"] == "failed"
     until(lambda: controller._worker is None, 5)
     assert controller.local_commands() == []
@@ -209,7 +209,7 @@ def test_timeout_during_running_policy_stops_consuming(command_controller):
     controller, _ = command_controller
     completed(controller, controller.submit("resume"))
     until(lambda: controller.status()["consumed"] > 2)
-    task = controller.submit("delay slow .5")
+    task = controller.submit("policy first delay slow .5")
     assert completed(controller, task)["status"] == "failed"
     until(lambda: controller._worker is None, 8)
     before = controller.status()["consumed"]
@@ -220,8 +220,8 @@ def test_timeout_during_running_policy_stops_consuming(command_controller):
 
 def test_timeout_does_not_reopen_writes_for_queued_return(command_controller, monkeypatch):
     controller, root = command_controller
-    completed(controller, controller.submit("take"))
-    task = controller.submit("delay slow .6")
+    completed(controller, controller.submit_control("take"))
+    task = controller.submit("policy first delay slow .6")
     until(lambda: (root / "policy" / "first" / "slow.start").exists())
     snapshots = []
     original = controller._poll_policy_commands
@@ -231,8 +231,8 @@ def test_timeout_does_not_reopen_writes_for_queued_return(command_controller, mo
             snapshots.append(controller.control_owner != "mcp" or controller._return_requested)
     monkeypatch.setattr(controller, "_poll_policy_commands", poll)
     with controller._lock:
-        controller.submit("take")
-        returning = controller.submit("return")
+        controller.submit_control("take")
+        returning = controller.submit_control("return")
         time.sleep(.2)
     assert completed(controller, returning)["status"] == "failed"
     assert snapshots == [True]
@@ -241,7 +241,7 @@ def test_timeout_does_not_reopen_writes_for_queued_return(command_controller, mo
         controller.submit("reset", origin="mcp")
 
 
-@pytest.mark.parametrize("line", ["resume", "set policy.params.value 2"])
+@pytest.mark.parametrize("line", ["resume", "policy first config set params.value 2"])
 def test_pause_of_deferred_lifecycle_reopens_command_gate(command_controller, line):
     controller, _ = command_controller
     completed(controller, controller.submit("resume"))
@@ -251,7 +251,7 @@ def test_pause_of_deferred_lifecycle_reopens_command_gate(command_controller, li
     completed(controller, controller.submit("pause"))
     assert completed(controller, lifecycle)["status"] == "cancelled"
     # Both commands must reach the still-running inference's three-party barrier.
-    first, second = controller.submit("meet first"), controller.submit("meet second")
+    first, second = controller.submit("policy first meet first"), controller.submit("policy first meet second")
     assert completed(controller, first)["result"] == "first"
     assert completed(controller, second)["result"] == "second"
     assert controller.status()["state"] == "paused"
@@ -262,8 +262,8 @@ def test_switch_preflight_failure_reopens_old_worker_commands(command_controller
     worker = controller._worker
     def invalid(*args): raise ValueError("environment unavailable")
     monkeypatch.setattr(controller.registry, "snapshot", invalid)
-    assert completed(controller, controller.submit("switch second"))["status"] == "failed"
-    call = controller.submit("unlimited recovered .01")
+    assert completed(controller, controller.submit("policy switch second"))["status"] == "failed"
+    call = controller.submit("policy first unlimited recovered .01")
     assert completed(controller, call)["result"] == "recovered"
     assert controller._worker is worker
     assert controller.status()["state"] != "running"
@@ -272,9 +272,9 @@ def test_switch_preflight_failure_reopens_old_worker_commands(command_controller
 def test_duplicate_json_result_only_fails_that_call(command_controller):
     controller, _ = command_controller
     worker = controller._worker
-    call = controller.submit("duplicate")
+    call = controller.submit("policy first duplicate")
     assert completed(controller, call)["status"] == "failed"
-    following = controller.submit("unlimited healthy .01")
+    following = controller.submit("policy first unlimited healthy .01")
     assert completed(controller, following)["result"] == "healthy"
     assert controller._worker is worker and worker.alive
 
@@ -283,18 +283,18 @@ def test_duplicate_json_result_only_fails_that_call(command_controller):
 def test_exception_formatting_cannot_strand_a_command(command_controller, name):
     controller, _ = command_controller
     worker = controller._worker
-    call = controller.submit(name)
+    call = controller.submit(f"policy first {name}")
     result = completed(controller, call, timeout=2)
     assert result["status"] == "failed"
     assert len(result["error"].encode("utf-8")) < 65536
     assert worker.alive
-    following = controller.submit("unlimited healthy .01")
+    following = controller.submit("policy first unlimited healthy .01")
     assert completed(controller, following)["result"] == "healthy"
 
 
 def test_local_direct_name_is_not_cancelled_as_mcp_motion(command_controller):
     controller, _ = command_controller
     with controller._lock:
-        call = controller.submit("direct")
+        call = controller.submit("policy first direct")
         controller.submit("pause")
     assert completed(controller, call)["result"] == "pong"

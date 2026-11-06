@@ -193,7 +193,7 @@ def test_actual_ros_rc_policy_images_pose_switch_and_exit(ros_rc, tmp_path, mode
     assert proof["images"] == ["head", "left_wrist", "right_wrist"]
     assert ros_rc.image_directory.parent == Path("/dev/shm")
 
-    controller.submit("save home")
+    controller.submit("pose save home")
     saved_path = controller.outputs / "state_saves" / "home.json"
     until(lambda: saved_path.exists() and controller.status()["hold_name"] == "home", controller)
     saved = read_config(saved_path)["qpos"]
@@ -201,18 +201,18 @@ def test_actual_ros_rc_policy_images_pose_switch_and_exit(ros_rc, tmp_path, mode
     controller.submit("reset")
     until(lambda: controller.status()["state"] == "paused" and controller.status()["hold_name"] == "reset", controller)
     until(lambda: np.allclose(controller.robot.read_state()["qpos"], controller.config["reset_qpos"], atol=0.005), controller)
-    controller.submit("load home")
+    controller.submit("pose restore home")
     until(lambda: controller.status()["state"] == "paused" and controller.status()["hold_name"] == "home", controller)
     until(lambda: np.allclose(controller.robot.read_state()["qpos"], saved, atol=0.005), controller)
     assert controller.status()["consumed"] == pose_consumed
 
     old = ros_rc.workers[-1]
-    controller.submit("switch delayed_hold")
+    controller.submit("policy switch delayed_hold")
     until(lambda: controller.status()["policy"] == "delayed_hold" and controller.status()["state"] == "paused", controller)
     ros_rc.remember_worker()
     with pytest.raises(ProcessLookupError):
         os.killpg(old.pid, 0)
-    controller.submit(f'set policy.execution.mode "{mode}"')
+    controller.submit(f'policy delayed_hold config set execution.mode "{mode}"')
     until(lambda: controller.status()["config_version"] == 2, controller)
     before = controller.status()["consumed"]
     controller.submit("resume")
@@ -237,7 +237,7 @@ def test_actual_ros_exit_during_pose_movement(ros_rc, tmp_path, motion):
     if motion == "load":
         path = tmp_path / "legacy-pose.json"
         path.write_text(json.dumps({"qpos": [0.3] * 14}))
-        command = "load " + json.dumps(str(path))
+        command = "pose restore " + json.dumps(str(path))
     else:
         command = "reset"
     controller.submit(command)

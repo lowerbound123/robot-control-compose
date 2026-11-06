@@ -136,7 +136,7 @@ def test_cli_mcp_override_and_remote_shutdown_share_cleanup(setup_controller, mo
             async with client(f'http://127.0.0.1:{port}/mcp') as session:
                 taken = await session.call_tool("take", {})
                 assert not taken.is_error, taken
-                response = await session.call_tool("command", {"line": "quit"})
+                response = await session.call_tool("command", {"line": "exit"})
                 assert response.structured_content["status"] == "accepted"
         asyncio.run(scenario())
     monkeypatch.setattr(cli, "run_tui", run_ui)

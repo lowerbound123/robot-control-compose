@@ -7,6 +7,29 @@ execution:
 params:
   chunk_size: 50
 hot_reloadable:
-  - execution.mode
-  - execution.call_every_actions
-  - params.chunk_size
+- execution.mode
+- execution.call_every_actions
+- params.chunk_size
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.chunk_size:
+      type: int
+      help: 输出动作块长度
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      - async
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停

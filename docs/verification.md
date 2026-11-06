@@ -1,5 +1,8 @@
 # Schema 3 动态策略容器验收
 
+当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前公共契约变更须运行 `python3 scripts/test_scope.py --interface`，跳过不计通过。
+
+
 ## WebUI 深浅主题切换（2026-11-06）
 
 顶部太阳／月亮按钮切换深浅主题，默认沿用浅色并记住浏览器偏好；全页面及 Canvas 配色适配，主题切换保持录像、位姿历史和 AI 请求连续。
@@ -462,3 +465,46 @@ Python 3.11 example 基线 78 通过、1 项因缺少 ROS 环境跳过（不计�
 验收使用本机隔离mock RC、example worker和API替身，没有连接真实模型、厂商驱动或机器人。本轮未执行Docker/Nginx容器或真机验收；静态构建验收不替代这些环境。启动浏览器夹具时需让 `PYTHONPATH` 包含本仓库 `src` 与 `packages/policy-sdk/src`，并使用匹配当前Playwright版本的Chromium。
 
 本次独立性能夹具以退出码0完成统一清理，静态测试服务已停止；浏览器回归夹具正常退出，测试端口已释放。未提交或推送代码，任务账本和运行产物均未纳入版本控制。
+
+## TUI 命令树与 policy configure（2026-11-06，RC/SDK 0.14）
+
+命令、帮助、补全和文本批次共用正式命令定义；旧语法不再作为执行别名。RC 配置通过草稿保存后重启生效，全部内置策略通过 `configure(context, config, key, value, callback)` 解析业务与执行设置。协议覆盖候选准备、应用、确认和受代次保护的发布；普通更新保持引用，reset 与原进程 reinitialize 完成后暂停。详细语法见 [统一命令树](commands.md)。
+
+验证结果：
+
+| 范围 | 结果 |
+|---|---|
+| 宿主 Python 3.10：`python3 scripts/test_scope.py --interface` | **1582 passed、76 skipped**；13 条既有 Pillow 弃用警告 |
+| Linux / ROS 2 Humble：example ROS、配置协议及 MCP 专项 | **34 passed、4 skipped**；真实 rclpy example 模拟器通过，4 项旧 Conda 开关用例未启用 |
+| 真实 Docker：example 与 example 自链 | **7 组检查通过**；新增 ordinary/reset/reinitialize 配置证据 |
+| WebUI 单元测试 | **174 passed** |
+| WebUI 类型检查与生产构建 | 通过 |
+| RC/SDK Python 3.10 语法与 diff 空白检查 | 通过 |
+
+独立审查发现并修复了配置发布后人工 pause 被成功收尾覆盖、批次额外解析 policy 原始文本、实例保存回退到未运行来源三个问题，均先复现失败再验证修复。另覆盖内部操作名称不能被自定义命令拦截，以及 RC/global JSON 预检与 policy 原始文本解析的区别。运行时 pause 使受理代次失效时，尚未开始的 configure 取消并保留旧有效配置。
+
+Docker 中 RC 使用 Python 3.10，example 使用 Python 3.14.9。新配置路径只递增目标及逻辑链版本，其他实例保持不变；reinitialize 保留容器、host、执行 PID 与模块并更换 context。本次部署的容器和卷已清理。退出故障注入中发生的强制清理继续准确记录非零退出码，不作为普通安全退出。
+
+证据：`/tmp/rc-tui-interface-verified.log`、`/tmp/rc-tui-linux-ros.log`、`/tmp/rc-tui-example-docker-verified/{result.json,container.log,cleanup.json}`、`/tmp/migration-webui-direct-final.log`、`/tmp/migration-webui-build-final.log`。本轮未调用真实模型供应商、GPU 模型或机器人硬件；跳过不计通过。
+
+## RC/SDK 0.15 输入辅助验收（2026-11-07）
+
+范围为历史虚影、显式确认的候选菜单、静态参数/config_hints、只读容器路径查询及能力元数据；manifest 保持 schema 3。新版不改变注册命令的执行类型约束，policy 配置仍接收原始值。九个内置来源的示例清单均提供提示。
+
+专项覆盖：
+
+- `test_argument_hints.py`、`test_builtin_completion_hints.py`：旧参数声明兼容、元数据校验、能力查询保留基础 args、九来源提示。
+- `test_completion_engine.py`、`test_completion_service.py`：不完整输入、引用与中文、声明顺序、raw 值无额外空格、异步身份失效、超时、缓存和慢来源扫描。
+- `test_path_completion_host.py`：真实 host 查询、root/符号链接限制、目录/后缀/点文件、实例绑定、慢扫描期间心跳与退出、有界待查请求和迟到响应。
+- `test_command_history.py`、`test_history_secret_envelopes.py`：跨进程保存、去重、隔离、0600 原子写入、损坏文件、敏感批次封装、最后一次提交保存和卡死文件系统退出期限。
+- `test_tui_input_assistance.py`、`test_completion_terminal.py`：真实 Textual 和 POSIX PTY；Tab/Space/Enter 两阶段确认、ghost 的 Right/Esc、方向键与窄布局、快速 Ctrl+U 后输入或粘贴、真实非空提交打断批次、候选确认不打断批次。
+
+Docker 使用 `python3 tests/example_docker_smoke.py --evidence-dir /tmp/rc015-example-docker`，完整 8 组通过。测试为两个 example 实例挂载 RC 无法访问的 `/completion-only` 目录，逐个 host 查询，验证只读挂载、文件名规则、中文空格路径、手动字符串不受建议限制，以及容器/host/PID/context/版本保持独立。环境为 RC Python 3.10.12、example Python 3.14.9，最终清理报告无遗留容器或卷。故障注入产生的强制退出非零事实按原契约保留。
+
+Linux/Humble Python 3.10 中，元数据、host、补全分析/服务与 example 真实 rclpy 仿真专项 79 passed；WebUI 174 passed，类型检查和构建通过。无真实模型、GPU 或硬件验证，不能用 mock 或跳过项替代这些验收。
+
+独立 Astra 审查并修复敏感历史封装漏检、无效本地提交的批次打断回归、慢来源扫描冻结实例元数据，以及原始值末尾空格。引号规则按 Python shlex 对照，14,421 个合法字符组合及 49 组插入往返一致；后续参数保持原样。
+
+最终冻结代码执行 `python3 scripts/test_scope.py --interface`：**1706 passed、76 skipped**，584.83 秒；13 条 Pillow 弃用警告及 1 条 multiprocessing resource_tracker 重启告警。跳过项不计通过。最终日志为 `/tmp/rc015-interface-complete.log`；此前因修复而中断的两轮不计完整验收。
+
+其他证据：`/tmp/rc015-example-docker/{result.json,container.log,cleanup.json}`、`/tmp/rc015-linux-ros.log`、`/tmp/rc015-webui-test-verified.log`、`/tmp/rc015-webui-build.log`、`/tmp/rc-input-ui-final.log`、`/tmp/rc015-path-quotes-green.log`。真实 PTY 已验收键码、中文输入、候选布局及方向键；桌面终端窗口的人工视觉复核因原生界面服务不可用未完成，不能用 SVG 导出代替该项。

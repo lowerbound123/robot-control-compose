@@ -18,7 +18,7 @@ vi.mock('../src/lib/agent', () => ({ runAgent: async (options: any) => {
   await options.executor.run(plan, await options.gateway.status(), options.emit)
   return { message: plan.message, executed: plan.steps.length, facts: [], outcome: plan.steps.length ? 'success' : 'neutral' }
 } }))
-let state: RcStatus, store: ReturnType<typeof useControlStore>, pending: Map<string, boolean>, id: number, direct: boolean
+let state: RcStatus, store: ReturnType<typeof useControlStore>, pending: Map<string, boolean>, rejected: Set<string>, id: number, direct: boolean
 const plan = { message: '准备复位', steps: [{ action: 'reset' }] } satisfies CommandPlan
 
 beforeEach(() => {
@@ -26,7 +26,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   setActivePinia(createPinia())
   state = { run_id: 'run', state: 'paused', control_owner: 'policy', control_epoch: 1, generation: 1, returning: false }
-  pending = new Map(); id = 0; direct = false
+  pending = new Map(); rejected = new Set(); id = 0; direct = false
   vi.stubGlobal('window', { location: { origin: 'http://localhost' } })
   vi.stubGlobal('document', { hidden: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
   const saved = new Map()
@@ -38,14 +38,16 @@ beforeEach(() => {
   mock.call.mockImplementation(async (name: string, args?: Payload) => {
     if (name === 'policies') return { result: [{ valid: true, id: 'example' }] }
     if (name === 'status') return { ...state }
-    if (name === 'get_operation') return { operation_id: args!.operation_id, status: pending.get(String(args!.operation_id)) ? 'succeeded' : 'running', result: { ...state } }
+    if (name === 'get_operation') return { operation_id: args!.operation_id, status: pending.get(String(args!.operation_id)) ? (rejected.has(String(args!.operation_id)) ? 'failed' : 'succeeded') : 'running', error: rejected.has(String(args!.operation_id)) ? '请先 mcp return' : undefined, result: { ...state } }
     if (name === 'take') state = { ...state, control_owner: 'mcp', control_epoch: state.control_epoch + 1, generation: state.generation + 1 }
     if (name === 'command') state = { ...state, state: 'paused', generation: state.generation + 1 }
     if (name === 'return') state = { ...state, state: 'running', control_owner: 'policy', control_epoch: state.control_epoch + 1, generation: state.generation + 1 }
-    if (name === 'tui_command') state = { ...state, state: args?.text === 'resume' ? 'running' : 'paused',
-      control_owner: args?.text === 'resume' ? 'policy' : state.control_owner, generation: state.generation + 1 }
+    const resumeDenied = name === 'tui_command' && args?.text === 'resume' && state.control_owner === 'mcp'
+    if (name === 'tui_command' && !resumeDenied) state = { ...state, state: args?.text === 'resume' ? 'running' : 'paused',
+      control_owner: state.control_owner, generation: state.generation + 1 }
     const operation_id = `op-${++id}`
     pending.set(operation_id, false)
+    if (resumeDenied) rejected.add(operation_id)
     return { operation_id, status: 'queued' }
   })
   mock.translate.mockResolvedValue(plan)
@@ -218,10 +220,11 @@ for (const owner of ['policy', 'mcp']) for (const llm of [true, false]) {
     pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200); await running
     expect(mock.call.mock.calls.filter(([name]) => ['take', 'return', 'command', 'return_and_wait'].includes(name))).toEqual([])
     expect(mock.call.mock.calls.filter(([name]) => name === 'tui_command')).toHaveLength(1)
-    expect(store.phase).toBe('success')
+    expect(store.phase).toBe(action === 'resume' && owner === 'mcp' ? 'error' : 'success')
+    if (action === 'resume' && owner === 'mcp') expect(state.state).toBe('paused')
     expect(mock.translate).not.toHaveBeenCalled()
     expect(store.history).toEqual([])
-    expect(state.control_owner).toBe(action === 'resume' ? 'policy' : owner)
+    expect(state.control_owner).toBe(owner)
   })
 }
 

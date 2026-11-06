@@ -85,7 +85,7 @@ def container():
         assert command('policy a-1 info')['python'] == [3, 14]
         assert command('policy b info')['python'] == [3, 11]
         assert all(controller.globals[name+'_initialized'] == 1 for name in ('a_0', 'b', 'a_1'))
-        command('set global.rc_message "hello world"')
+        command('global set rc_message "hello world"')
         command('policy a-0 write')
         data = command('policy b info')['data']
         assert data['rc_message'] == 'hello world' and data['a_0_message']['ok']
@@ -97,11 +97,11 @@ def container():
         wait(lambda: all(controller.globals.get(name+'_inferences', 0) > 0 for name in ('a_0', 'b', 'a_1')))
         command('pause')
         assert all(controller.globals[name+'_reset'] for name in ('a_0', 'b', 'a_1'))
-        command('set global.removed null')
-        command('unset global.removed')
+        command('global set removed null')
+        command('global remove removed')
         assert 'removed' not in controller.globals
         old = {key: worker.endpoint.container_id for key, worker in members.items()}
-        command('switch pair')
+        command('policy switch pair')
         members = controller._worker.monitor_members()
         assert all(worker.endpoint.container_id != old[key] for key, worker in members.items())
         assert all(controller.globals[name+'_initialized'] == 2 for name in ('a_0', 'b', 'a_1'))
@@ -112,10 +112,10 @@ def container():
             service.start()
             response = service.submit_tool('show', {'scope': 'global'}).result(10)
             assert not response.is_error
-            response = service.submit_tool('command', {'line': 'set global.denied true', 'wait': True}).result(10)
+            response = service.submit_tool('command', {'line': 'global set denied true', 'wait': True}).result(10)
             assert response.is_error and 'denied' not in controller.globals
             assert not service.submit_tool('take', {}).result(10).is_error
-            assert not service.submit_tool('command', {'line': 'set global.mcp true', 'wait': True}).result(10).is_error
+            assert not service.submit_tool('command', {'line': 'global set mcp true', 'wait': True}).result(10).is_error
         finally:
             service.close()
     finally:

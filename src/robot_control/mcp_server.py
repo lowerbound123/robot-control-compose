@@ -110,6 +110,9 @@ def create_server(controller):
         "Use policy_commands/help to discover manifest commands without loading models. "
         "policy_chain accepts an ordered source list: apply rebuilds while paused; save only writes default_chain. "
         "policy_command/retry_reload require exact instances and take; lifecycle success keeps MCP ownership. "
+        "policy_config reads an exact instance without take; set/save require take and preserve MCP ownership. "
+        "Use structured take/return tools; command text uses policy list, config rc show, global show, "
+        "policy <instance> config show|set|save, policy <instance> retry, and record start|stop. "
         "Only confirmed operation success means completion; wait timeout does not cancel motion."
     ))
     read = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -178,12 +181,21 @@ def create_server(controller):
     @server.tool(annotations=read)
     async def policies() -> CallToolResult:
         """List valid/invalid installed policy manifests without importing models."""
-        return await query("policies")
+        return await query("policy list")
 
     @server.tool(annotations=read)
     async def show(scope: Literal["rc", "policy", "global"]) -> CallToolResult:
         """Read RC configuration, active policy configuration, or global shared state."""
-        return await query("show " + scope)
+        try:
+            if scope == 'policy':
+                payload = await asyncio.to_thread(controller.show_active_policy_config)
+            elif scope == 'rc':
+                payload = (await asyncio.to_thread(controller.query, 'config rc show'))['active']
+            else:
+                payload = await asyncio.to_thread(controller.query, 'global show')
+            return result(payload)
+        except (ValueError, RuntimeError) as exc:
+            return result({'error': str(exc)}, error=True)
 
     @server.tool(annotations=read)
     async def help(policy_id: str | None = None, command: str | None = None) -> CallToolResult:
@@ -263,16 +275,22 @@ def create_server(controller):
             identity = await asyncio.to_thread(controller.submit, line, origin="mcp",
                 expected_control=expected_control.model_dump() if expected_control is not None else None)
             # Shutdown acknowledges acceptance before the server closes its listener.
-            if line.strip() in ("exit", "quit"):
+            if line.strip() == "exit":
                 return result({"operation_id": identity, "status": "accepted"})
             return await finish_operation(identity, wait, timeout_s)
         except (ValueError, RuntimeError, PermissionError) as exc:
-            return rejected(line if line in ('take', 'return') else 'command', exc)
+            return rejected('command', exc)
 
     @server.tool(annotations=write)
     async def command(line: str, wait: bool = False, timeout_s: Timeout = 30,
                       expected_control: ControlGuard | None = None) -> CallToolResult:
-        """Execute RC/policy commands. Queries and recording need no take; other writes require take. UI commands stay local."""
+        """Execute formal human commands; use help to discover syntax. Old aliases are rejected.
+
+        Examples: policy list; config rc show; global show; policy <instance> config show;
+        policy <instance> config set <key> <raw value>; policy <instance> retry; record start/stop.
+        Queries and recording need no take; other writes require the structured take tool.
+        UI commands stay local. Prefer structured policy_config and policy_command for policy writes.
+        """
         return await submit(line, wait, timeout_s, expected_control)
 
     @server.tool(annotations=write)
@@ -289,7 +307,7 @@ def create_server(controller):
             identity = await asyncio.to_thread(controller.submit_tui_batch, text,
                 expected_control=expected_control.model_dump() if expected_control is not None else None)
             # An exit anywhere at the end of a batch may close the HTTP listener.
-            if text.strip().splitlines()[-1].strip() in ('exit', 'quit'):
+            if text.strip().splitlines()[-1].strip() == 'exit':
                 return result({'operation_id': identity, 'status': 'accepted'})
             return await finish_operation(identity, wait, timeout_s)
         except (ValueError, RuntimeError, PermissionError) as exc:
@@ -339,8 +357,24 @@ def create_server(controller):
         """
         if action == 'status':
             return await query('record status')
-        return await manage('record', controller.submit, 'record' if action == 'toggle' else 'record ' + action,
+        return await manage('record', controller.submit, 'record' if action == 'toggle' else 'record ' + {'on':'start', 'off':'stop'}[action],
                             origin='mcp', mcp_tool='record', wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
+
+    @server.tool(annotations=write)
+    async def policy_config(instance_id: StrictStr, action: Literal['show', 'set', 'save'] = 'show',
+                            key: StrictStr | None = None, value_text: StrictStr | None = None,
+                            wait: bool = False, timeout_s: Timeout = 30,
+                            expected_control: ControlGuard | None = None) -> CallToolResult:
+        """Show one loaded instance's committed configuration without take; set/save require take.
+
+        Set passes key and value_text unchanged to the policy's configure callback; the policy
+        interprets the raw text and chooses ordinary apply, reset, or same-process reinitialize.
+        Save writes that exact instance's committed settings to its source directory.
+        Writes retain MCP ownership and leave policy paused. Wait timeout never cancels the operation.
+        """
+        return await manage('policy_config', controller.submit_policy_config, instance_id, action,
+                            key=key, value_text=value_text, wait=wait, timeout_s=timeout_s,
                             expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=write)
@@ -361,7 +395,7 @@ def create_server(controller):
                            expected_control: ControlGuard | None = None) -> CallToolResult:
         """After take, cold-retry the exact failed instance reported by status.retry_reload_instance; keep MCP ownership."""
         import shlex
-        return await manage('retry_reload', controller.submit, shlex.join(['retry-reload', instance_id]),
+        return await manage('retry_reload', controller.submit, shlex.join(['policy', instance_id, 'retry']),
                             origin='mcp', mcp_tool='retry_reload', wait=wait, timeout_s=timeout_s,
                             expected_control=expected_control.model_dump() if expected_control is not None else None)
 
@@ -369,13 +403,15 @@ def create_server(controller):
     async def take(wait: bool = True, timeout_s: Timeout = 30,
                    expected_control: ControlGuard | None = None) -> CallToolResult:
         """Take control, invalidate policy output and pause new inference while retaining the model."""
-        return await submit("take", wait, timeout_s, expected_control)
+        return await manage('take', controller.submit_control, 'take', wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(name="return", annotations=write)
     async def return_control(wait: bool = False, timeout_s: Timeout = 30,
                              expected_control: ControlGuard | None = None) -> CallToolResult:
         """Cancel manual motion, restore read-only MCP and resume policy after resetting its context."""
-        return await submit("return", wait, timeout_s, expected_control)
+        return await manage('return', controller.submit_control, 'return', wait=wait, timeout_s=timeout_s,
+                            expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=read)
     async def get_policy_result(operation_id: str | None = None) -> CallToolResult:

@@ -6,12 +6,12 @@ import pytest
 @pytest.mark.parametrize(("line", "expected"), [
     ("mcp take", ("take", {})),
     ("  mcp\tstate  ", ("state", {})),
-    ("mcp show rc", ("show", {"scope": "rc"})),
-    ("mcp get_operation op-12", ("get_operation", {"operation_id": "op-12"})),
-    ("mcp send_command left:up&forward:0.01 | right:hold",
+    ('mcp show {"scope":"rc"}', ("show", {"scope": "rc"})),
+    ('mcp get_operation {"operation_id":"op-12"}', ("get_operation", {"operation_id": "op-12"})),
+    ('mcp send_command {"commands":"left:up&forward:0.01 | right:hold"}',
      ("send_command", {"commands": "left:up&forward:0.01 | right:hold"})),
-    ('mcp command set policy.params.label "你好  [bold]"',
-     ("command", {"line": 'set policy.params.label "你好  [bold]"'})),
+    ('mcp command {"line":"policy first config set params.label 你好"}',
+     ("command", {"line": 'policy first config set params.label 你好'})),
     ('mcp send_command {"commands":["left:open","right:close"],"wait":true}',
      ("send_command", {"commands": ["left:open", "right:close"], "wait": True})),
     ('mcp move_eef {"targets":{"left":{"end_pos":[0,0,0,0,0,0]}}}',
@@ -24,6 +24,7 @@ def test_parse_mcp_preserves_arguments(line, expected):
 
 @pytest.mark.parametrize("line", [
     "mcp", "status", "mcp state true", "mcp state []",
+    "mcp show rc", "mcp get_operation op-12", "mcp send_command left:open", "mcp command status",
     'mcp send_command {"commands":', 'mcp state {"wait_for_new":NaN}',
 ])
 def test_parse_mcp_rejects_invalid_argument_forms(line):
@@ -89,7 +90,7 @@ def test_router_reports_async_errors_and_cleans_pending(failure):
 
     controller, service = RecordingController(), DeferredService()
     router = TerminalCommandRouter(controller, service)
-    router.submit("mcp send_command left:open")
+    router.submit('mcp send_command {"commands":"left:open"}')
     if failure == "result":
         service.future.set_result(result({"error": "read-only"}, error=True))
     elif failure == "exception":
@@ -111,7 +112,7 @@ def test_shutdown_receipt_gets_bounded_grace_before_local_cancel(reply):
     from robot_control.terminal_commands import TerminalCommandRouter
     controller, service = RecordingController(), DeferredService()
     router = TerminalCommandRouter(controller, service)
-    router.submit('mcp command quit')
+    router.submit('mcp command {"line":"exit"}')
     router.close()
     assert not service.future.cancelled()
     if reply:
@@ -130,13 +131,13 @@ def test_router_local_help_is_distinct_from_mcp_help():
 
     controller, service = RecordingController(), DeferredService()
     router = TerminalCommandRouter(controller, service)
-    for line in ("mcp", "help mcp", "help"):
-        router.submit(line)
-    assert controller.lines == ["help"]
+    router.submit("mcp help")
     assert service.calls == []
     output = "\n".join(message for _, message in controller.logs)
     assert "send_command" in output and "commands" in output and "wait" in output
-    assert "left:up" in output and "take" in output
-    router.submit("mcp help")
-    assert service.calls == [("help", {})]
+    for line in ("mcp", "help mcp"):
+        with pytest.raises(ValueError):
+            router.submit(line)
+    router.submit("help")
+    assert controller.lines == ["help"]
     router.close()

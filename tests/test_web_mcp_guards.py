@@ -27,7 +27,7 @@ def test_new_web_tools_reject_stale_guard_before_any_acceptance(setup_controller
     service.start()
     try:
         stale = guard(rc)
-        rc.wait_operation(rc.submit('take'), 3)
+        rc.wait_operation(rc.submit_control('take'), 3)
         response = service.submit_tool(name, {**args, 'expected_control': stale}).result(3)
         assert response.is_error
         assert 'control state changed' in str(response.structured_content or response.content)
@@ -74,7 +74,7 @@ def test_guarded_policy_command_accepts_native_typed_arguments(example_rc, examp
 
 def test_receipt_keeps_its_completion_generation_after_later_intervention(example_rc):
     rc = example_rc
-    identity = rc.submit('take', origin='mcp', expected_control=guard(rc))
+    identity = rc.submit_control('take', expected_control=guard(rc))
     completed = rc.wait_operation(identity, 5)
     assert completed['completion_control'] == guard(rc)
     with rc._lock:

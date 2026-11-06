@@ -226,7 +226,7 @@ export class PlanExecutor {
           if (step.action === 'resume' && status.state === 'running' && status.control_owner === 'policy') continue
           if (status.control_owner !== 'mcp') await this.write('take', {}, emit)
           if (step.action === 'resume') await this.write('return', {}, emit)
-          else await this.write('command', { line: step.action === 'switch' ? `switch ${step.policy}` : step.action }, emit)
+          else await this.write('command', { line: step.action === 'switch' ? `policy switch ${step.policy}` : step.action }, emit)
         }
       }
     } finally { this.busy = false }

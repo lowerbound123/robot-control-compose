@@ -41,7 +41,7 @@ it('refreshes instance commands after switching and uses the new exact identity'
     if (name === 'command') g.policy_commands.policies = [{ ...g.policy_commands.policies[0], instance_id: 'example' }]
     return base(name, args, expected)
   })
-  const choices = [decision('take'), decision('command', { line: 'switch example' }), decision('policy_command', { instance_id: 'example', command: 'set-message', args: ['new'] }), finalDecision]
+  const choices = [decision('take'), decision('command', { line: 'policy switch example' }), decision('policy_command', { instance_id: 'example', command: 'set-message', args: ['new'] }), finalDecision]
   const decide = vi.fn(async (_config, prompt) => {
     if (prompt.exchanges.length === 2) expect(prompt.snapshot.policy_commands.policies[0].instance_id).toBe('example')
     return choices.shift()!

@@ -1,5 +1,6 @@
 from config_helpers import read_config
 import json
+import copy
 import queue
 import threading
 import time
@@ -56,6 +57,35 @@ class FakeProcess:
         except queue.Empty:
             return None
 
+    supports_configure = True
+
+    def prepare_config(self, key, value, cancel=None):
+        candidate = copy.deepcopy(self.config)
+        node = candidate
+        parts = key.split('.')
+        for part in parts[:-1]:
+            node = node[part]
+        if parts[-1] not in node:
+            raise ValueError("unknown configuration field")
+        node[parts[-1]] = json.loads(value)
+        return {"config": candidate, "action": "reset" if key == "execution.call_every_actions" else None}
+
+    def apply_config(self, config, next_version, action, cancel=None):
+        if action == "reset":
+            self.reset_context(cancel_event=cancel)
+        self._prepared_config = (copy.deepcopy(config), next_version)
+
+    def commit_config(self, config, version, cancel=None):
+        assert self._prepared_config == (config, version)
+
+    def publish_config(self, config, version):
+        self.config.clear()
+        self.config.update(copy.deepcopy(config))
+        self.config_version = version
+
+    def abort_config(self, cancel=None):
+        self._prepared_config = None
+
     def update_config(self, patch, version, cancel_event=None):
         self.config_version = version
 
@@ -95,7 +125,10 @@ def setup_controller(tmp_path):
 
 def ready(controller):
     controller.start()
-    until(lambda: controller.status()["policy"] == "first" and controller.status()["state"] == "paused")
+    try:
+        until(lambda: controller.status()["policy"] == "first" and controller.status()["state"] == "paused")
+    except AssertionError as exc:
+        raise AssertionError(f"{controller.status()} {controller.read_events()}") from exc
     return FakeProcess.instances[-1]
 
 
@@ -115,7 +148,7 @@ def test_sync_wait_stops_robot_sends_and_exit_remains_responsive(setup_controlle
 def test_async_single_request_and_consumption_progress(setup_controller):
     controller, robot, _ = setup_controller
     process = ready(controller)
-    controller.submit('set policy.execution.mode "async"')
+    controller.submit('policy first config set execution.mode "async"')
     until(lambda: controller.status()["config_version"] == 2)
     controller.submit("resume")
     until(lambda: len(process.requests) == 1)
@@ -141,39 +174,40 @@ def test_stale_result_after_pause_is_discarded_and_resume_resets(setup_controlle
     assert process.resets >= 2
 
 
-def test_cold_reload_unloads_before_start_and_hot_patch_preserves_worker(setup_controller):
+def test_config_callback_reset_and_plain_patch_preserve_worker(setup_controller):
     controller, robot, _ = setup_controller
     process = ready(controller)
-    controller.submit("set policy.params.value 9")
+    controller.submit("policy first config set params.value 9")
     until(lambda: controller.status()["config_version"] == 2)
     assert FakeProcess.instances[-1] is process and not process.closed
-    controller.submit("set policy.execution.call_every_actions 3")
-    until(lambda: len(FakeProcess.instances) == 2 and controller.status()["state"] == "paused")
-    assert process.closed
-    assert FakeProcess.order[:3] == [("start", "first"), ("close", "first"), ("start", "first")]
+    controller.submit("policy first config set execution.call_every_actions 3")
+    until(lambda: controller.status()["config_version"] == 3)
+    assert FakeProcess.instances == [process] and not process.closed
+    assert process.resets == 1
+    assert process.config["execution"]["call_every_actions"] == 3
 
 
 def test_state_save_load_and_fifo_resume_then_load(setup_controller):
     controller, robot, directory = setup_controller
     ready(controller)
     expected = robot.read_state()["qpos"]
-    controller.submit("save pose")
+    controller.submit("pose save pose")
     path = directory / "outputs" / "state_saves" / "pose.json"
     until(path.exists)
     controller.submit("resume")
-    operation = controller.submit("load pose")
+    operation = controller.submit("pose restore pose")
     until(lambda: controller.get_operation(operation)["status"] == "succeeded")
     assert controller.status().get("hold_name") == "pose"
     assert controller.status()["state"] == "paused"
     assert read_config(path)["qpos"] == expected
 
 
-def test_rc_cold_parameter_is_rejected_without_change(setup_controller):
+def test_rc_cold_parameter_changes_draft_without_changing_active(setup_controller):
     controller, robot, _ = setup_controller
     ready(controller)
-    controller.submit("set rc.frequency_hz 5")
-    until(lambda: not controller.events.empty())
-    time.sleep(0.03)
+    receipt = controller.submit("config rc set frequency_hz 5")
+    assert controller.wait_operation(receipt, 3)["status"] == "succeeded"
+    assert controller.query("config rc show")["draft"]["frequency_hz"] == 5
     assert controller.config["frequency_hz"] == 100
 
 
@@ -256,12 +290,12 @@ def test_delayed_command_cannot_burst_slew_steps(setup_controller):
         times.append(time.monotonic())
         execute(action)
     def delayed(line):
-        if line == "save slow":
+        if line == "pose save slow":
             time.sleep(0.035)
         command(line)
     robot.execute = record
     controller._command = delayed
-    controller.submit("save slow")
+    controller.submit("pose save slow")
     until(lambda: len(times) >= 8)
     assert min(np.diff(times)) >= 0.008
 

@@ -25,7 +25,7 @@ class MemberReloadSupport:
         candidate = self._retry_candidate
         try:
             if len(words) != 2:
-                raise ValueError('用法：retry-reload <实例ID>')
+                raise ValueError('用法：policy <实例ID> retry')
             if not self._policy_control_current(origin, self._control_epoch):
                 raise PermissionError('policy control ownership changed; MCP retry requires take')
             if self._operation is not None or candidate is None or words[1] != candidate.member.instance_id:

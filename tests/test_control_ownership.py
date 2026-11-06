@@ -5,7 +5,7 @@ from test_controller import setup_controller as setup_controller, ready, until
 
 
 def call(controller, line):
-    identity = controller.submit(line, origin="mcp")
+    identity = controller.submit_control(line) if line in ("take", "return") else controller.submit(line, origin="mcp")
     return controller.wait_operation(identity, 2)
 
 
@@ -33,17 +33,20 @@ def test_default_readonly_and_take_return_with_inflight(setup_controller):
         controller.submit("pause", origin="mcp")
 
 
-def test_mutating_operations_report_real_result_and_resume_returns_owner(setup_controller):
+def test_mutating_operations_report_result_and_resume_preserves_mcp_owner(setup_controller):
     controller, _, path = setup_controller
     worker = ready(controller)
     call(controller, "take")
-    result = call(controller, "set policy.params.value 7")
+    result = call(controller, "policy first config set params.value 7")
     assert result["status"] == "succeeded"
     assert controller.registry.get("first").version == 2
-    assert call(controller, "save saved")["status"] == "succeeded"
+    assert call(controller, "pose save saved")["status"] == "succeeded"
     assert (path / "outputs/state_saves/saved.json").exists()
-    assert call(controller, "set rc.frequency_hz 50")["status"] == "failed"
-    assert call(controller, "resume")["status"] == "succeeded"
+    assert call(controller, "config rc set frequency_hz 50")["status"] == "succeeded"
+    assert call(controller, "resume")["status"] == "failed"
+    assert controller.status()["control_owner"] == "mcp"
+    assert not worker.requests
+    assert call(controller, "return")["status"] == "succeeded"
     until(lambda: len(worker.requests) == 1)
     assert controller.status()["control_owner"] == "policy"
 
@@ -53,8 +56,8 @@ def test_events_are_nonconsuming_and_invalidated_mcp_request_cannot_execute(setu
     ready(controller)
     call(controller, "take")
     with controller._lock:
-        write = controller.submit("set policy.params.value 42", origin="mcp")
-        returned = controller.submit("return", origin="mcp")
+        write = controller.submit("policy first config set params.value 42", origin="mcp")
+        returned = controller.submit_control("return")
     assert controller.wait_operation(returned, 2)["status"] == "succeeded"
     assert controller.wait_operation(write, 2)["status"] == "cancelled"
     assert controller.registry.get("first").config["params"]["value"] == 1

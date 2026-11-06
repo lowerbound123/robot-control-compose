@@ -6,7 +6,7 @@ from robot_control.log_tui import StructuredLog
 from robot_control.terminal_commands import TerminalCommandRouter
 from robot_control.tui import CommandInput, RobotControlApp
 from robot_control.policy_monitor_tui import PolicyMonitorPanel, PolicyMonitorSidebar
-from test_tui import FakeController
+from test_tui import FakeController, wait_completion
 from test_terminal_commands import RecordingController
 
 
@@ -15,13 +15,12 @@ def test_monitor_commands_toggle_and_have_help():
     router = TerminalCommandRouter(controller)
     calls = []
     router.panel_handler = lambda name, desired: calls.append((name, desired))
-    router.submit("monitor-A")
-    router.submit("monitor-A off")
-    assert calls == [("monitor-A", None), ("monitor-A", False)]
-    with pytest.raises(ValueError): router.submit("monitor-A invalid")
-    router.submit("help monitor-A")
-    assert "monitor-" in controller.logs[-1][1]
-    assert not controller.lines
+    router.submit("monitor A")
+    router.submit("monitor A")
+    assert calls == [("monitor-A", None), ("monitor-A", None)]
+    with pytest.raises(ValueError): router.submit("monitor A invalid")
+    router.submit("help")
+    assert controller.lines == ["help"]
     router.close()
 
 
@@ -59,11 +58,15 @@ async def test_policy_panels_wrap_resize_scroll_and_restore_log_width():
         log = app.query_one(StructuredLog)
         full_width = log.size.width
         command = app.query_one(CommandInput)
-        command.value = "monitor-A"
+        command.value = "monitor A"
+        command.cursor_position = len(command.value)
         await pilot.press("tab")
-        assert command.value == "monitor-A "
+        assert command.value == "monitor A" and command.menu_open
+        await wait_completion(pilot, command, ["A"])
         await pilot.press("enter")
-        app.router.submit("monitor-B on")
+        assert command.value == "monitor A "
+        await pilot.press("enter")
+        app.router.submit("monitor B")
         await pilot.pause(.15)
         sidebar = app.query_one(PolicyMonitorSidebar)
         panels = list(sidebar.query(PolicyMonitorPanel))
@@ -88,8 +91,8 @@ async def test_policy_panels_wrap_resize_scroll_and_restore_log_width():
         await pilot.pause(.1)
         assert panels[0].size.height < expanded
         assert "阶段" not in panels[0].content.plain
-        app.router.submit("monitor-A off")
-        app.router.submit("monitor-B off")
+        app.router.submit("monitor A")
+        app.router.submit("monitor B")
         await pilot.pause(.1)
         assert not sidebar.display
         assert log.size.width > narrow_width

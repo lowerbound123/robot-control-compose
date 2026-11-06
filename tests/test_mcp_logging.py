@@ -129,7 +129,7 @@ def test_rejected_requests_are_logged_without_echoing_secrets(local_service):
     local_call(service, 'take')
     invalid = local_call(service, 'send_command', {'commands': 'left:up:-1'})
     assert invalid.is_error
-    secret = local_call(service, 'command', {'line': 'set global.api_key "do-not-log-this-secret"'})
+    secret = local_call(service, 'command', {'line': 'global set api_key "do-not-log-this-secret"'})
     assert secret.is_error
     messages = [row['message'] for row in controller.read_events()['events']]
     assert any('MCP command rejected:' in message for message in messages)

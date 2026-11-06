@@ -27,23 +27,23 @@ def test_sampling_ignores_control_frequency_and_tracks_lifecycle(setup_controlle
     time.sleep(.45)
     assert hub.snapshot()["first"]["values"]["count"] >= initial + 3
     assert controller.status()["state"] == "paused"
-    with pytest.raises(PermissionError, match="local-only"):
-        controller.submit("monitor-first", origin="mcp")
-    take = controller.submit("take")
+    with pytest.raises(PermissionError, match="local-only|本地"):
+        controller.submit("monitor first", origin="mcp")
+    take = controller.submit_control("take")
     wait_until(lambda: controller.get_operation(take)["status"] == "succeeded", 5)
     initial = hub.snapshot()["first"]["values"]["count"]
     wait_until(lambda: hub.snapshot()["first"]["values"]["count"] > initial)
-    returned = controller.submit("return")
+    returned = controller.submit_control("return")
     wait_until(lambda: controller.get_operation(returned)["status"] == "succeeded", 5)
     controller.submit("pause")
     wait_until(lambda: controller.status()["state"] == "paused")
     old = controller._worker
-    changed = controller.submit("switch first")
+    changed = controller.submit("policy switch first")
     wait_until(lambda: controller.get_operation(changed)["status"] == "succeeded", 6)
     assert controller._worker is not old
     wait_until(lambda: hub.snapshot().get("first", {}).get("values"))
     assert list(hub.snapshot()) == ["first"]
-    changed = controller.submit("switch second")
+    changed = controller.submit("policy switch second")
     wait_until(lambda: controller.get_operation(changed)["status"] == "succeeded", 6)
     wait_until(lambda: not hub.snapshot())
     controller.submit("exit")

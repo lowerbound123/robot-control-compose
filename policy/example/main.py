@@ -1,4 +1,6 @@
 """本地 policy 能力示例：透传上层动作，空输入时按控制模式保持实测姿态。"""
+import copy
+import shlex
 
 from collections.abc import Mapping
 import json
@@ -25,6 +27,9 @@ def validate_config(config):
     interval = params["log_every_n_calls"]
     if type(interval) is not int or interval <= 0:
         raise ValueError("params.log_every_n_calls 必须是正整数")
+    token = params.get("reset_token", 0)
+    if type(token) is not int or token < 0:
+        raise ValueError("params.reset_token 必须是非负整数")
     _chunk_size(params.get("chunk_size", 1))  # 旧的本机 manifest 仍可运行。
     delay = params.get("inference_delay_s", 0)
     if type(delay) not in (int, float) or not 0 <= delay <= 5:
@@ -232,3 +237,48 @@ def release(context):
         context["released"] = True
     # 外部 reader 的退出证明由 RC 收取；这里不能自行释放仍在读取的图像。
     print("example release：本地示例已释放", flush=True)
+
+
+def _configuration_value(raw):
+    """This policy accepts JSON values and bare or single-quoted text."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        if raw.startswith("'"):
+            words = shlex.split(raw)
+            if len(words) != 1:
+                raise ValueError("configuration value must be one quoted string")
+            return words[0]
+        if raw.startswith(('"', '[', '{')):
+            raise ValueError("invalid JSON configuration value") from None
+        return raw
+
+
+def configure(context, config, key, value, callback):
+    """Validate a detached candidate; the SDK applies lifecycle work after return."""
+    allowed_params = {'message', 'log_every_n_calls', 'chunk_size', 'inference_delay_s', 'reader_url', 'reset_token'}
+    execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers'}
+    section, separator, leaf = key.partition('.')
+    if (not separator or (section == 'params' and leaf not in allowed_params)
+            or (section == 'execution' and leaf not in execution_fields)
+            or section not in ('params', 'execution')):
+        raise ValueError(f"unsupported configuration key: {key}")
+    candidate = copy.deepcopy(config)
+    candidate.setdefault(section, {})[leaf] = _configuration_value(value)
+    execution = candidate['execution']
+    if execution.get('mode') not in ('sync', 'async'):
+        raise ValueError('execution.mode must be sync or async')
+    for field in ('call_every_actions', 'tui_command_workers'):
+        count = execution.get(field, 4 if field == 'tui_command_workers' else 1)
+        if type(count) is not int or count <= 0:
+            raise ValueError(f'execution.{field} must be a positive integer')
+    if execution.get('control_mode') not in ('qpos', 'epos', 'mixed'):
+        raise ValueError('execution.control_mode must be qpos, epos or mixed')
+    validate_config(candidate)
+
+    effect = ('reinitialize' if key in {'params.chunk_size', 'params.reader_url',
+                                     'execution.control_mode', 'execution.tui_command_workers'}
+              else 'reset' if key == 'params.reset_token' else None)
+    config.setdefault(section, {})[leaf] = candidate[section][leaf]
+    if effect is not None:
+        callback(effect)

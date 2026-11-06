@@ -20,6 +20,18 @@ def record(kind, **fields):
         stream.write(json.dumps(event) + "\n")
 
 
+def configure(context, candidate, key, value, callback):
+    parts = key.split('.')
+    node = candidate
+    for part in parts[:-1]:
+        node = node[part]
+    if parts[-1] not in node:
+        raise ValueError("unknown config field")
+    node[parts[-1]] = json.loads(value)
+    if key == "execution.call_every_actions":
+        callback("reinitialize")
+
+
 def initialize(config):
     global _config
     _config = config

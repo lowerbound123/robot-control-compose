@@ -6,10 +6,12 @@ After preparing RC, anchor and example images:
 from config_helpers import read_config
 import argparse
 import asyncio
+import copy
 import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,7 +41,9 @@ def mcp_management_checks(controller, report):
     service = MCPService(controller, {'host': '127.0.0.1', 'port': 0}, allow_ephemeral=True)
     service.start()
     async def request(name, arguments):
-        async with httpx2.AsyncClient(trust_env=False) as http:
+        # The MCP tools may wait 30s for a real Docker lifecycle operation.
+        # Keep the HTTP read budget above that receipt budget, not HTTPX's 5s default.
+        async with httpx2.AsyncClient(trust_env=False, timeout=httpx2.Timeout(5, read=45)) as http:
             async with streamable_http_client(service.url, http_client=http) as streams:
                 async with ClientSession(streams[0], streams[1]) as session:
                     await session.initialize()
@@ -66,13 +70,89 @@ def mcp_management_checks(controller, report):
         initial = identities()
         assert not {x['container'] for x in old.values()} & {x['container'] for x in initial.values()}
         assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+
+        # Exercise the new configure protocol through real HTTP MCP, host and
+        # Docker workers. Populate statistics first so reset has visible work.
+        consumed = controller.status()['consumed']
+        call('return', wait=True)
+        wait(lambda: controller.status()['consumed'] > consumed)
+        call('take', wait=True)
+        def callbacks_drained():
+            with controller._lock:
+                return controller._inflight is None and controller._observe_inflight is None
+        wait(callbacks_drained)
+        assert identities() == initial
+
+        def configuration_snapshot():
+            return dict(
+                identities=identities(),
+                contexts={i: context(i) for i in initial},
+                configs={i: call('policy_config', instance_id=i, action='show', wait=True)['result']
+                         for i in initial},
+                group_version=controller._worker.config_version)
+
+        configure_before = configuration_snapshot()
+        assert configure_before['contexts']['example-1']['calls'] > 0
+        assert configure_before['contexts']['example-1']['observations'] > 0
+        configured_steps = []
+        previous_configuration = configure_before
+        raw_message = 'Docker 原始消息 with spaces and [bold]'
+        for action, key, value_text in (
+            ('ordinary', 'params.message', raw_message),
+            ('reset', 'params.reset_token', '1'),
+            ('reinitialize', 'params.chunk_size', '7'),
+        ):
+            if action == 'reset':
+                # The second enqueue below can only succeed if reset cleared
+                # this pending result, without running another inference.
+                call('policy_command', instance_id='example-1', command='next-result',
+                     args=['completed', 'must be cleared by configure reset'], wait=True)
+            with patch.object(controller.runtime, 'runner', side_effect=AssertionError('configure called Docker')):
+                receipt = call('policy_config', instance_id='example-1', action='set',
+                               key=key, value_text=value_text, wait=True)
+            assert receipt['status'] == 'succeeded', receipt
+            current_configuration = configuration_snapshot()
+            old_ids, new_ids = previous_configuration['identities'], current_configuration['identities']
+            assert new_ids['example-0'] == old_ids['example-0']
+            assert new_ids['example-1'] == {**old_ids['example-1'], 'version': old_ids['example-1']['version'] + 1}
+            assert current_configuration['group_version'] == previous_configuration['group_version'] + 1
+            assert current_configuration['configs']['example-0'] == previous_configuration['configs']['example-0']
+            assert current_configuration['contexts']['example-0'] == previous_configuration['contexts']['example-0']
+            before_target = previous_configuration['contexts']['example-1']
+            after_target = current_configuration['contexts']['example-1']
+            assert after_target['module_id'] == before_target['module_id']
+            assert (after_target['context_id'] != before_target['context_id']) == (action == 'reinitialize')
+            assert current_configuration['configs']['example-1']['params']['message'] == raw_message
+            expected_config = copy.deepcopy(previous_configuration['configs']['example-1'])
+            expected_config['params'][key.removeprefix('params.')] = raw_message if action == 'ordinary' else int(value_text)
+            assert current_configuration['configs']['example-1'] == expected_config
+            if action == 'ordinary':
+                assert after_target['message'] == raw_message
+                assert after_target['calls'] == before_target['calls']
+                assert after_target['observations'] == before_target['observations']
+            if action == 'reset':
+                assert current_configuration['configs']['example-1']['params']['reset_token'] == 1
+                assert after_target['calls'] == after_target['observations'] == 0
+                assert call('policy_command', instance_id='example-1', command='next-result',
+                            args=['completed', 'must be cleared by configure reinitialize'], wait=True)['result'] == {'queued': 'completed'}
+            if action == 'reinitialize':
+                assert current_configuration['configs']['example-1']['params']['chunk_size'] == after_target['chunk_size'] == 7
+                assert after_target['calls'] == after_target['observations'] == 0
+            assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+            configured_steps.append(dict(action=action, key=key, value_text=value_text,
+                                         operation_id=receipt['operation_id'], before=previous_configuration,
+                                         after=current_configuration))
+            previous_configuration = current_configuration
+        evidence['configure'] = dict(initial=configure_before, steps=configured_steps)
+        configured = identities()
+
         before_context = {i: context(i) for i in initial}
         with patch.object(controller.runtime, 'runner', side_effect=AssertionError('in-place MCP command called Docker')):
             call('policy_command', instance_id='example-1', command='reinitialize-chunk-size', args=[8], wait=True)
         reinitialized = identities()
         after_context = {i: context(i) for i in initial}
-        assert reinitialized['example-0'] == initial['example-0']
-        assert reinitialized['example-1'] == {**initial['example-1'], 'version': initial['example-1']['version'] + 1}
+        assert reinitialized['example-0'] == configured['example-0']
+        assert reinitialized['example-1'] == {**configured['example-1'], 'version': configured['example-1']['version'] + 1}
         assert before_context['example-0']['context_id'] == after_context['example-0']['context_id']
         assert before_context['example-1']['module_id'] == after_context['example-1']['module_id']
         assert before_context['example-1']['context_id'] != after_context['example-1']['context_id']
@@ -104,11 +184,11 @@ def mcp_management_checks(controller, report):
         epoch = controller._control_epoch
         started = call('record', action='on', wait=True)['result']
         wait(lambda: controller.status()['recording']['samples_written'] >= 3)
-        stopped = call('command', line='record off', wait=True)['result']
+        stopped = call('command', line='record stop', wait=True)['result']
         assert started['session_id'] == stopped['session_id'] and stopped['state'] == 'idle'
         assert controller._control_epoch == epoch and controller.control_owner == 'policy'
         assert not call('get_policy_result', operation_id=episode)['finished']
-        completed = controller.submit('example-1-next-result completed mcp-management')
+        completed = controller.submit('policy example-1 next-result completed mcp-management')
         assert controller.wait_operation(completed, 5)['status'] == 'succeeded'
         assert controller.wait_operation(episode, 10)['status'] == 'succeeded'
         evidence.update(initial=initial, reinitialized=reinitialized, reloaded=reloaded, retried=retried,
@@ -118,6 +198,62 @@ def mcp_management_checks(controller, report):
         report['checks'].append('HTTP MCP chain save/apply, discovery, scoped/all/in-place reload, retry, independent recording and episode handback')
     finally:
         service.close()
+
+
+def path_completion_checks(controller, command, member_ids, report):
+    """Prove lookup happens in each policy container, never in the RC filesystem."""
+    root = '/completion-only'
+    selector = {'command': 'path-echo', 'argument': 0}
+    assert not Path(root).exists() and not Path('/workspace/path-fixture').exists()
+    before = member_ids()
+    contexts = {name: command(f'policy {name} example')['context_id'] for name in before}
+    control = {key: controller.status()[key] for key in ('state', 'control_owner', 'consumed')}
+    generation = controller.buffer.generation
+    assert control['state'] == 'paused'
+    evidence = {}
+    for instance, worker in controller._worker.member_workers().items():
+        assert worker.host.list_paths is True
+        cid = worker.endpoint.container_id
+        mounts = json.loads(controller.runtime._run(['inspect', '--format', '{{json .Mounts}}', cid],
+                                                   time.monotonic() + 10))
+        mount, = [entry for entry in mounts if entry['Destination'] == root]
+        assert mount['Type'] == 'bind' and mount['RW'] is False
+        probe = json.loads(controller.runtime._run(['exec', cid, 'python', '-c',
+            "import json,pathlib; p=pathlib.Path('/completion-only'); "
+            "print(json.dumps({'exists':p.is_dir(),'nested':(p/'nested').is_dir(),'fixture':(p/'中文 空格.json').is_file()}))"],
+            time.monotonic() + 10))
+        assert probe == {'exists': True, 'nested': True, 'fixture': True}
+        listed = worker.complete_path(selector, '')
+        assert listed == {'items': [
+            {'name': 'nested', 'kind': 'directory', 'text': root + '/nested/'},
+            {'name': '中文 空格.json', 'kind': 'file', 'text': root + '/中文 空格.json'},
+        ], 'truncated': False, 'error': None}, listed
+        selected = worker.complete_path(selector, root + '/中')
+        assert selected['items'] == [listed['items'][1]] and selected['error'] is None
+        nested = worker.complete_path(selector, root + '/nested/')
+        assert nested['items'] == [{'name': 'inside.json', 'kind': 'file', 'text': root + '/nested/inside.json'}]
+        hidden = worker.complete_path(selector, root + '/.')
+        assert hidden['items'] == [{'name': '.hidden.json', 'kind': 'file', 'text': root + '/.hidden.json'}]
+        rejected = {prefix: worker.complete_path(selector, prefix)
+                    for prefix in (root + '/../', root + '/escape/')}
+        assert all(value['error'] and not value['items'] for value in rejected.values()), rejected
+        text = selected['items'][0]['text']
+        assert command(f'policy {instance} path-echo ' + shlex.quote(text)) == text
+        # Hints remain advisory: execution still passes any string to the handler.
+        manual = '/manual/not-a-json-file.txt'
+        assert command(f'policy {instance} path-echo ' + shlex.quote(manual)) == manual
+        evidence[instance] = dict(container_probe=probe,
+            mount={key: mount[key] for key in ('Type', 'Source', 'Destination', 'RW')},
+            listed=listed, selected=selected, nested=nested, hidden=hidden, rejected=rejected,
+            echoed=text, arbitrary_string_echo=manual)
+    after = member_ids()
+    assert after == before
+    assert {name: command(f'policy {name} example')['context_id'] for name in before} == contexts
+    assert {key: controller.status()[key] for key in control} == control
+    assert controller.buffer.generation == generation
+    report['path_completion'] = dict(rc_path_exists=False, rc_fixture_source_exists=False,
+        before=before, after=after, contexts=contexts, generation=generation, control=control, instances=evidence)
+    report['checks'].append('container-only readonly path completion: exact instances, directory/suffix/hidden/escape rules, unchanged identities and advisory string execution')
 
 
 def in_container():
@@ -133,7 +269,7 @@ def in_container():
         name.removeprefix("monitor-"), desired)
 
     def command(line, expected='succeeded'):
-        identity = router.submit(line)
+        identity = controller.submit_control(line) if line in ("take", "return") else router.submit(line)
         result = wait(lambda: (value if value["status"] in ("succeeded", "failed", "cancelled") else None)
                       if (value := controller.get_operation(identity)) else None)
         assert result["status"] == expected, result
@@ -152,23 +288,23 @@ def in_container():
     try:
         wait(lambda: controller._connected and controller._operation is None)
         assert controller.status()["policy"] is None and not containers()
-        assert "policy example example" in command("help example")
-        command("switch example")
+        assert "policy example example" in command("policy help example")["help"]
+        command("policy switch example")
         assert controller.status()["state"] == "paused"
         first = containers()
         assert len(first) == 1
-        initial = command("example")
+        initial = command("policy example example")
         assert initial["python"].startswith("3.14.") and initial["calls"] == 0
         assert command("policy example example") == initial
         report["example_python"] = initial["python"]
-        report["checks"].append("discovery, static help, own Python3.14 container, paused startup, both command forms")
+        report["checks"].append("discovery, static help, own Python3.14 container, paused startup, explicit instance commands")
 
-        router.submit("monitor-example on")
+        router.submit("monitor example")
         hub = controller.policy_monitors
         wait(lambda: hub.snapshot().get("example", {}).get("values"))
         command("resume")
         wait(lambda: controller.status()["consumed"] >= 3)
-        running = command("example")
+        running = command("policy example example")
         assert running["calls"] > 0 and running["observations"] > 0
         images = json.loads(running["images"])
         assert len(images) == 3 and all(value["readonly"] for value in images.values())
@@ -181,29 +317,30 @@ def in_container():
         report["checks"].append("resume, current-pose hold, three readonly shared cameras, observe and monitor")
 
         version = controller.status()["config_version"]
-        command('set policy.params.message "容器热更新"')
-        command("set policy.params.log_every_n_calls 10")
+        command('policy example config set params.message "容器热更新"')
+        command("policy example config set params.log_every_n_calls 10")
         assert containers() == first and controller.status()["config_version"] == version + 2
-        assert command("example")["message"] == "容器热更新"
+        assert command("policy example example")["message"] == "容器热更新"
         wait(lambda: (hub.snapshot().get("example", {}).get("values") or {}).get("message") == "容器热更新")
-        router.submit("monitor-example off")
+        router.submit("monitor example")
         assert not hub.snapshot()
         report["checks"].append("hot config visible in commands and monitor without replacing the container")
 
-        command("switch example_chain")
+        command("policy switch example_chain")
         current = containers()
         assert len(current) == 2 and not set(first) & set(current)
         assert controller.status()["state"] == "paused"
+        path_completion_checks(controller, command, member_ids, report)
         consumed_before = controller.status()["consumed"]
         command("resume")
         wait(lambda: controller.status()["consumed"] > consumed_before)
         for instance in ("example-0", "example-1"):
             snapshot = command(f"policy {instance} example")
             assert snapshot["calls"] > 0 and snapshot["instance"] == instance
-            assert command(f"{instance}-example")["image_count"] == 3
+            assert command(f"policy {instance} example")["image_count"] == 3
         assert all(abs(value - .125) < 1e-6 for value in controller.robot.read_state()["qpos"])
         hot_before = member_ids()
-        hot_contexts = {i: command(f'{i}-example')['context_id'] for i in hot_before}
+        hot_contexts = {i: command(f'policy {i} example')['context_id'] for i in hot_before}
         with patch.object(controller.runtime, 'runner', side_effect=AssertionError('hot command called Docker')):
             command('policy example-1 set-message "registered hot command"')
         hot_after = member_ids()
@@ -211,7 +348,7 @@ def in_container():
         assert hot_after['example-1'] == {**hot_before['example-1'],
             'version': hot_before['example-1']['version'] + 1}
         for instance in hot_before:
-            snapshot = command(f'{instance}-example')
+            snapshot = command(f'policy {instance} example')
             assert snapshot['context_id'] == hot_contexts[instance]
             assert snapshot['message'] == ('registered hot command' if instance == 'example-1' else 'example')
         assert controller.status()['state'] == 'running'
@@ -219,18 +356,18 @@ def in_container():
         report["checks"].append("two occurrences of example use distinct containers and keep upstream targets")
 
         command("pause")
-        version = command("example-0-shared-read")["version"]
-        command(f"example-0-shared-write docker {version}")
-        assert command("example-1-shared-read")["value"] == "docker"
+        version = command("policy example-0 shared-read")["version"]
+        command(f"policy example-0 shared-write docker {version}")
+        assert command("policy example-1 shared-read")["value"] == "docker"
         old = member_ids()
         previous = old
-        old_contexts = {i: command(f"{i}-example") for i in old}
+        old_contexts = {i: command(f"policy {i} example") for i in old}
         group_version = controller._worker.config_version
-        for step, line in enumerate(('example-1-reinitialize', 'example-1-reinitialize-chunk-size 2'), 1):
+        for step, line in enumerate(('policy example-1 reinitialize', 'policy example-1 reinitialize-chunk-size 2'), 1):
             with patch.object(controller.runtime, 'runner', side_effect=AssertionError('unexpected Docker call')):
                 command(line)
             live = member_ids()
-            contexts = {i: command(f"{i}-example") for i in old}
+            contexts = {i: command(f"policy {i} example") for i in old}
             assert live['example-0'] == old['example-0']
             assert contexts['example-0']['context_id'] == old_contexts['example-0']['context_id']
             assert contexts['example-1']['context_id'] != old_contexts['example-1']['context_id']
@@ -253,26 +390,26 @@ def in_container():
                 packet = {**packet, 'event': {**event, 'type':'error', 'error':'injected initialization ACK failure'}}
             receive(packet)
         with patch.object(target, '_receive', side_effect=lose_initialize_ack):
-            command('example-1-reinitialize-chunk-size 4', 'failed')
+            command('policy example-1 reinitialize-chunk-size 4', 'failed')
         assert member_ids() == previous
         assert set(containers()) == {m['container'] for m in previous.values()}
-        assert controller.status()['retry_reload_command'] == 'retry-reload example-1'
+        assert controller.status()['retry_reload_command'] == 'policy example-1 retry'
         command('resume', 'failed')
-        command('retry-reload example-1')
+        command('policy example-1 retry')
         before = member_ids()
         assert before['example-0'] == previous['example-0']
         assert all(before['example-1'][k] != previous['example-1'][k] for k in ('container','host','process'))
-        assert command('example-1-example')['chunk_size'] == 4
+        assert command('policy example-1 example')['chunk_size'] == 4
         assert before['example-1']['version'] == previous['example-1']['version'] + 1
         report['retry_after_reinitialize'] = dict(parked=previous, recovered=before)
-        command("example-1-set-chunk-size 2")
+        command("policy example-1 set-chunk-size 2")
         local = member_ids()
         assert local['example-0'] == before['example-0']
         assert all(local['example-1'][k] != before['example-1'][k] for k in ('container','host','process'))
         assert local['example-1']['version'] == before['example-1']['version'] + 1
         assert set(containers()) == {m['container'] for m in local.values()}
         assert controller.status()["state"] == "paused" and controller.status()['queue_remaining'] == 0
-        command("example-1-set-chunk-size-all 3")
+        command("policy example-1 set-chunk-size-all 3")
         whole = member_ids()
         assert all(whole[name][k] != local[name][k] for name in whole for k in ('container','host','process'))
         assert whole['example-0']['version'] == local['example-0']['version']
@@ -292,7 +429,7 @@ def in_container():
             raise RuntimeError('injected candidate readiness failure')
         controller.runtime.start = lose_create_result
         try:
-            command('example-1-set-chunk-size 3', 'failed')
+            command('policy example-1 set-chunk-size 3', 'failed')
             lost, = lost_attempts
             assert lost.phase == 'removed'
             # An immediate stop may reach the new container before its host
@@ -301,27 +438,27 @@ def in_container():
             assert containers() == [whole['example-0']['container']]
             controller.runtime.start = original_start
             controller.runtime.wait_ready = fail_candidate
-            command('retry-reload example-1', 'failed')
+            command('policy example-1 retry', 'failed')
             assert controller.status()['retry_reload_instance'] == 'example-1'
             assert containers() == [whole['example-0']['container']]
         finally:
             controller.runtime.start = original_start
             controller.runtime.wait_ready = original_wait
-        command('retry-reload example-1')
+        command('policy example-1 retry')
         recovered = member_ids()
         assert recovered['example-0'] == whole['example-0']
         assert recovered['example-1']['version'] == whole['example-1']['version'] + 1
         assert set(containers()) == {m['container'] for m in recovered.values()}
         report['reload_identities'] = dict(before=before, reload_policy=local, reload_all_policy=whole, retry=recovered)
-        assert command("example-0-example")["chunk_size"] == 1
-        assert command("example-1-example")["chunk_size"] == 3
-        command("save-config example-1")
+        assert command("policy example-0 example")["chunk_size"] == 1
+        assert command("policy example-1 example")["chunk_size"] == 3
+        command("policy example-1 config save")
         saved = read_config(root / "policy/example/policy.yaml")
         assert saved["id"] == "example" and saved["params"]["chunk_size"] == 3
         command("take")
         episode = controller.submit_policy_wait()
         wait(lambda: controller.status()["state"] == "running")
-        command("example-1-next-result completed docker")
+        command("policy example-1 next-result completed docker")
         receipt = controller.wait_operation(episode, 10)
         assert receipt["status"] == "succeeded" and receipt["result"] == {
             "outcome": "completed", "message": "docker", "source": {"policy_id": "example-1", "cell": 2}}
@@ -365,6 +502,29 @@ def on_host(evidence):
         # setup only needs a prepared image in this isolated deployment.
         (example / "compose.yaml").write_text(json.dumps({"services": {"policy": {
             "image": os.environ["RC_TEST_WORKER314_IMAGE"]}}}))
+    # Only policy containers mount this fixture. RC sees neither /completion-only
+    # nor /workspace/path-fixture, so a successful lookup cannot be a local fallback.
+    fixture = directory / 'path-fixture'
+    (fixture / 'nested').mkdir(parents=True)
+    (fixture / '中文 空格.json').write_text('{}\n')
+    (fixture / 'nested/inside.json').write_text('{}\n')
+    (fixture / 'ignored.txt').write_text('name-only fixture; never read by a policy\n')
+    (fixture / '.hidden.json').write_text('{}\n')
+    (fixture / 'escape').symlink_to('/tmp', target_is_directory=True)
+    (fixture / 'escaped.json').symlink_to('/etc/hostname')
+    policy_compose = read_config(example / 'compose.yaml')
+    policy_compose['services']['policy'].setdefault('volumes', []).append({
+        'type': 'bind', 'source': str(fixture.resolve()), 'target': '/completion-only', 'read_only': True,
+        'bind': {'create_host_path': False}})
+    (example / 'compose.yaml').write_text(json.dumps(policy_compose))
+    with (example / 'main.py').open('a') as stream:
+        stream.write('\n\ndef path_echo(context, path):\n    return path\n')
+    manifest = read_config(example / 'policy.yaml')
+    manifest['tui_commands']['path-echo'] = {
+        'handler': 'path_echo', 'args': [{'name': 'fixture', 'type': 'path', 'root': '/completion-only',
+                                        'kind': 'file', 'suffixes': ['.json']}],
+        'help': 'Acceptance-only path echo, without filesystem reads', 'timeout_s': 5}
+    (example / 'policy.yaml').write_text(json.dumps(manifest, ensure_ascii=False))
     copy_templates(ROOT / "policy/example_chain", directory / "policy/example_chain")
     config = read_config(ROOT / "configs/rc.mock.yaml.example")
     config.update(startup_policy=None, frequency_hz=30)
@@ -407,7 +567,7 @@ def on_host(evidence):
             shutil.copyfile(output, evidence / "result.json")
         assert code == "0", logs[-6000:]
         report = read_config(output)
-        assert len(report["checks"]) == 7, report
+        assert len(report["checks"]) == 8, report
         print(json.dumps(report, ensure_ascii=False, indent=2))
     finally:
         # Fallback only touches this task's exact deployment label, never global prune.

@@ -84,7 +84,7 @@ def container():
             assert 'fixture-key' not in json.dumps(controller.read_events())
             report['checks'].append('stop clears executable queue, redacts credentials, and does not reconnect/replay')
 
-            command('switch internvla_maas')
+            command('policy switch internvla_maas')
             assert controller.status()['state'] == 'paused'
             command('resume')
             wait(lambda: controller.status()['consumed'] > consumed, 10)

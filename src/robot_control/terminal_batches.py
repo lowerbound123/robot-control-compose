@@ -5,9 +5,9 @@ they never own the lifetime of an accepted batch.
 """
 from collections import deque
 from dataclasses import dataclass
-import shlex
 import time
 
+from rc_policy_sdk.command_syntax import parse_command
 from .operations import TERMINAL
 from .secret_config import reject_secret_edit
 
@@ -21,18 +21,15 @@ def parse_batch(text):
         raise ValueError('at most 64 commands per batch')
     for index, (_, line) in enumerate(lines):
         reject_secret_edit(line)
-        try:
-            words = shlex.split(line)
-        except ValueError:
-            raise ValueError('invalid command quoting') from None
-        if not words or any(char in line for char in ('\x00', '\r')):
+        if any(char in line for char in ('\x00', '\r')):
             raise ValueError('invalid command line')
-        if words[0] == 'mcp':
+        parsed = parse_command(line)
+        if parsed.kind in ('mcp_tool', 'mcp_help'):
             raise ValueError('recursive MCP commands are not supported')
-        if words[0] in ('camera', 'monitor', 'manage-policy', 'snapshot') or words[0].startswith('monitor-'):
+        if parsed.local_only:
             raise ValueError('local-only terminal command is not supported')
-        if words[0] in ('exit', 'quit') and (len(words) != 1 or index != len(lines) - 1):
-            raise ValueError('exit/quit must be the final command')
+        if parsed.kind == 'exit' and index != len(lines) - 1:
+            raise ValueError('exit must be the final command')
     return lines
 
 

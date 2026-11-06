@@ -21,7 +21,66 @@ hot_reloadable: []
 tui_commands:
   switch-provider:
     handler: switch_provider
-    args: [str]
+    args: [{name: config_path, type: path, help: 供应商配置文件, root: ., kind: file,
+          suffixes: [.yaml, .yml]}]
     help: 校验供应商配置文件并冷重载，完成后等待 resume
     timeout_s: 30
     effect: reload_policy
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.task:
+      type: str
+      help: 任务描述
+    params.prompt:
+      type: str
+      help: 任务提示词
+    params.request_when_remaining:
+      type: int
+      help: 触发新请求时的剩余动作数
+    params.chunk_size:
+      type: int
+      help: 输出动作块长度
+    params.translation_m:
+      type: float
+      help: 平移步长（米）
+    params.rotation_rad:
+      type: float
+      help: 旋转步长（弧度）
+    params.gripper_open:
+      type: float
+      help: 夹爪打开目标
+    params.gripper_close:
+      type: float
+      help: 夹爪闭合目标
+    params.image_max_side:
+      type: int
+      help: 图像最长边（像素）
+    params.jpeg_quality:
+      type: int
+      help: JPEG 图像质量
+    params.provider_config_path:
+      type: path
+      help: 供应商配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .yaml
+      - .yml
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      - async
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数
+    execution.control_mode:
+      type: enum
+      choices:
+      - epos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停

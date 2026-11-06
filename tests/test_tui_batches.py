@@ -15,14 +15,14 @@ def parser():
 
 
 def test_batch_parser_preserves_line_numbers_json_and_quotes():
-    text = '\r\n set example.params.message "a \\"quoted\\" value"\r\n\nstatus '
-    assert parser()(text) == [(2, 'set example.params.message "a \\"quoted\\" value"'), (4, 'status')]
+    text = '\r\n policy example config set params.message "a \\"quoted\\" value"\r\n\nstatus '
+    assert parser()(text) == [(2, 'policy example config set params.message "a \\"quoted\\" value"'), (4, 'status')]
 
 
 @pytest.mark.parametrize('text', ['', ' \n\t', 'x' * 4001, 'status\n' * 65,
-    'status\nmcp take', '"mcp" take', 'status\ncamera on', 'monitor', 'monitor-example',
-    'manage-policy', 'snapshot', 'set global.api_key "never-log-secret"',
-    'status\nset global.x "unclosed', 'exit\nstatus', 'quit\nstatus'])
+    'status\nmcp take', '"mcp" take', 'status\ncamera show', 'monitor', 'monitor-example',
+    'policy manage', 'snapshot', 'global set api_key "never-log-secret"',
+    'status\nglobal set x "unclosed', 'exit\nstatus', 'quit\nstatus'])
 def test_batch_preflight_rejects_entire_input_without_secret_values(text):
     parse = parser()
     with pytest.raises(ValueError) as error:
@@ -40,8 +40,8 @@ def test_batches_are_fifo_and_internal_tui_semantics_do_not_interrupt(setup_cont
     rc, _, _ = setup_controller
     ready(rc)
     with rc._lock:
-        a = rc.submit_tui_batch('set policy.params.value 2\nshow policy')
-        b = rc.submit_tui_batch('set policy.params.value 3\nshow policy')
+        a = rc.submit_tui_batch('policy first config set params.value 2\npolicy first config show')
+        b = rc.submit_tui_batch('policy first config set params.value 3\npolicy first config show')
     first, second = wait(rc, a), wait(rc, b)
     assert first['result']['steps'][1]['result']['params']['value'] == 2
     assert second['result']['steps'][1]['result']['params']['value'] == 3
@@ -53,8 +53,8 @@ def test_one_failed_batch_does_not_execute_its_tail_or_cancel_next_batch(setup_c
     rc, _, _ = setup_controller
     ready(rc)
     with rc._lock:
-        a = rc.submit_tui_batch('unknown-command\nset policy.params.value 9')
-        b = rc.submit_tui_batch('show policy')
+        a = rc.submit_tui_batch('policy missing config show\npolicy first config set params.value 9')
+        b = rc.submit_tui_batch('policy first config show')
     assert wait(rc, a, 'failed')['result']['steps'][1]['status'] == 'cancelled'
     assert wait(rc, b)['result']['steps'][0]['result']['params']['value'] == 1
 
@@ -63,41 +63,41 @@ def test_local_query_cancels_all_waiting_batches(setup_controller):
     rc, _, _ = setup_controller
     ready(rc)
     with rc._lock:
-        ids = [rc.submit_tui_batch('set policy.params.value 9') for _ in range(3)]
+        ids = [rc.submit_tui_batch('policy first config set params.value 9') for _ in range(3)]
         rc.submit('status')
     for identity in ids:
         wait(rc, identity, 'cancelled')
-    assert rc.query('show policy')['params']['value'] == 1
+    assert rc.query('policy first config show')['params']['value'] == 1
 
 
 def test_local_input_revokes_child_already_in_controller_queue(setup_controller):
     rc, _, _ = setup_controller
     ready(rc)
     with rc._lock:
-        identity = rc.submit_tui_batch('set policy.params.value 9\nstatus')
+        identity = rc.submit_tui_batch('policy first config set params.value 9\nstatus')
         rc._tui_batches.poll()
         child = rc.get_operation(identity)['result']['steps'][0]['operation_id']
         rc.submit('status')
     wait(rc, identity, 'cancelled')
     wait(rc, child, 'cancelled')
     until(lambda: rc._commands.empty())
-    assert rc.query('show policy')['params']['value'] == 1
+    assert rc.query('policy first config show')['params']['value'] == 1
 
 
 def test_local_query_leaves_started_child_to_finish_but_clears_remainder(setup_controller, monkeypatch):
     rc, _, _ = setup_controller
     worker = ready(rc)
     entered, release = threading.Event(), threading.Event()
-    update = worker.update_config
+    update = worker.apply_config
     def delayed(*args, **kwargs):
         entered.set()
         assert release.wait(3)
         return update(*args, **kwargs)
-    monkeypatch.setattr(worker, 'update_config', delayed)
-    identity = rc.submit_tui_batch('set policy.params.value 2\nset policy.params.value 9')
+    monkeypatch.setattr(worker, 'apply_config', delayed)
+    identity = rc.submit_tui_batch('policy first config set params.value 2\npolicy first config set params.value 9')
     try:
         assert entered.wait(2)
-        queued = rc.submit_tui_batch('set policy.params.value 7')
+        queued = rc.submit_tui_batch('policy first config set params.value 7')
         rc.submit('status')
         assert rc.get_operation(identity)['status'] == 'running'
         wait(rc, queued, 'cancelled')
@@ -105,7 +105,7 @@ def test_local_query_leaves_started_child_to_finish_but_clears_remainder(setup_c
         release.set()
     reply = wait(rc, identity, 'cancelled')
     assert reply['result']['steps'][0]['status'] == 'succeeded'
-    assert rc.query('show policy')['params']['value'] == 2
+    assert rc.query('policy first config show')['params']['value'] == 2
 
 
 def test_cancel_is_idempotent_and_only_affects_selected_batch(setup_controller):
@@ -144,7 +144,7 @@ def test_panel_only_terminal_submission_also_clears_batches(setup_controller):
     with rc._lock:
         identity = rc.submit_tui_batch('status')
         with pytest.raises(ValueError, match='TUI'):
-            router.submit('camera on')
+            router.submit('camera show')
     wait(rc, identity, 'cancelled')
     router.close()
 
@@ -174,7 +174,7 @@ def test_lifecycle_discarded_child_does_not_leave_batch_source_state(setup_contr
     rc, _, _ = setup_controller
     worker = ready(rc)
     with rc._lock:
-        identity = rc.submit_tui_batch('set first.params.value 2')
+        identity = rc.submit_tui_batch('policy first config set params.value 2')
         rc._tui_batches.poll()
         rc._gate_policy_commands(worker)  # Existing lifecycle barrier removes the queued request.
         rc._tui_batches.poll()
@@ -191,7 +191,7 @@ def test_even_rejected_local_secret_input_interrupts_without_logging_value(setup
     with rc._lock:
         identity = rc.submit_tui_batch('status')
         with pytest.raises(ValueError):
-            local.submit('set global.api_key "local-secret-canary"')
+            local.submit('global set api_key "local-secret-canary"')
         assert rc.get_operation(identity)['status'] == 'cancelled'
     assert 'local-secret-canary' not in str(rc.read_events(limit=1000))
 

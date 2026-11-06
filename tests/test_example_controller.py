@@ -42,8 +42,9 @@ def example_rc(tmp_path, monkeypatch, request):
 
 
 def command(rc, line, *, status="succeeded"):
-    reply = rc.wait_operation(rc.submit(line), 12)
-    assert reply["status"] == status, reply
+    identity = rc.submit_control(line) if line in ("take", "return") else rc.submit(line)
+    reply = rc.wait_operation(identity, 12)
+    assert reply["status"] == status, json.dumps(reply, ensure_ascii=False)
     return reply.get("result")
 
 
@@ -51,7 +52,7 @@ def command(rc, line, *, status="succeeded"):
                                         for scheduling in ("sync", "async")], indirect=True)
 def test_execution_sends_full_targets_in_the_selected_coordinates(example_rc):
     rc = example_rc
-    execution = rc.query("show policy")["execution"]
+    execution = rc.query("policy example config show")["execution"]
     mode = execution["control_mode"]
     command(rc, "resume")
     until(lambda: rc.status()["consumed"] >= 4, 6)
@@ -67,37 +68,37 @@ def test_execution_sends_full_targets_in_the_selected_coordinates(example_rc):
 def test_example_chain_supports_both_reload_scopes(example_rc):
     rc = example_rc
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
-    command(rc, 'switch example_chain')
+    command(rc, 'policy switch example_chain')
     chain = rc._worker
     first = chain.monitor_members()
-    command(rc, 'example-1-set-chunk-size 5')
+    command(rc, 'policy example-1 set-chunk-size 5')
     local = rc._worker.monitor_members()
     assert rc._worker is chain and local['example-0'] is first['example-0']
     assert first['example-1'].cleanup_confirmed and first['example-1'].pid != local['example-1'].pid
     assert rc.status()['state'] == 'paused' and rc.status()['queue_remaining'] == 0
-    command(rc, 'example-1-set-chunk-size-all 7')
+    command(rc, 'policy example-1 set-chunk-size-all 7')
     assert all(w.cleanup_confirmed for w in local.values())
     assert rc._worker is not chain and rc._worker.runnable and rc.status()['state'] == 'paused'
-    assert command(rc, 'example-1-example')['chunk_size'] == 7
-    assert command(rc, 'example-0-example')['chunk_size'] == 4
+    assert command(rc, 'policy example-1 example')['chunk_size'] == 7
+    assert command(rc, 'policy example-0 example')['chunk_size'] == 4
 
 
 def test_example_reinitializes_only_target_in_loaded_module(example_rc):
     rc = example_rc
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
-    command(rc, 'switch example_chain')
+    command(rc, 'policy switch example_chain')
     group = rc._worker
     workers = group.member_workers()
-    before = [command(rc, f'example-{i}-example') for i in range(2)]
+    before = [command(rc, f'policy example-{i} example') for i in range(2)]
     versions = {key: w.config_version for key, w in workers.items()}
     version = group.config_version
     # This is the isolated deployment copy. A fresh import or a disk preflight would fail.
     for directory in (workers['example-1'].policy_dir, workers['example-1'].loaded_directory):
         (directory / 'main.py').write_text('raise RuntimeError("reimported")')
-    for iteration, line in enumerate(('example-1-reinitialize', 'example-1-reinitialize-chunk-size 6'), 1):
+    for iteration, line in enumerate(('policy example-1 reinitialize', 'policy example-1 reinitialize-chunk-size 6'), 1):
         command(rc, line)
         assert group is rc._worker and group.member_workers() == workers
-        after = [command(rc, f'example-{i}-example') for i in range(2)]
+        after = [command(rc, f'policy example-{i} example') for i in range(2)]
         assert after[0]['context_id'] == before[0]['context_id']
         assert after[1]['module_id'] == before[1]['module_id']
         assert after[1]['context_id'] != before[1]['context_id']
@@ -121,25 +122,25 @@ def test_cancel_after_local_initialize_ack_revokes_candidate_and_requires_cold_r
         return flags
 
     monkeypatch.setattr(target, 'initialize_context', pause_before_commit)
-    command(rc, 'reinitialize-chunk-size 7', status='cancelled')
+    command(rc, 'policy example reinitialize-chunk-size 7', status='cancelled')
     assert rc._worker is target and target.config_version == old_version
     assert target not in rc._global_service.sessions
     with pytest.raises(RuntimeError, match='stale policy context'):
         rc._external.handle(target, dict(method='register', remote_id='stale', context_id=target.context_id))
-    assert rc.status()['retry_reload_command'] == 'retry-reload example'
-    command(rc, 'save-config example')
+    assert rc.status()['retry_reload_command'] == 'policy example retry'
+    command(rc, 'policy example config save')
     assert read_config(rc.registry.directory / 'example/policy.yaml')['params']['chunk_size'] == 4
     command(rc, 'resume', status='failed')
-    command(rc, 'retry-reload example')
+    command(rc, 'policy example retry')
     assert rc._worker.pid != target.pid and rc._worker.config_version == old_version + 1
-    assert command(rc, 'example')['chunk_size'] == 7 and rc.status()['state'] == 'paused'
+    assert command(rc, 'policy example example')['chunk_size'] == 7 and rc.status()['state'] == 'paused'
 
 
 @pytest.mark.parametrize('stage', ['validate_reinitialize', 'release_context'])
 def test_cancel_before_release_dispatch_retains_active_context(example_rc, monkeypatch, stage):
     rc = example_rc
     target = rc._worker
-    before = command(rc, 'example')['context_id']
+    before = command(rc, 'policy example example')['context_id']
     original = getattr(target, stage)
 
     def pause_before_dispatch(*args, **kwargs):
@@ -147,9 +148,9 @@ def test_cancel_before_release_dispatch_retains_active_context(example_rc, monke
         return original(*args, **kwargs)
 
     monkeypatch.setattr(target, stage, pause_before_dispatch)
-    command(rc, 'reinitialize', status='cancelled')
+    command(rc, 'policy example reinitialize', status='cancelled')
     assert rc._worker is target and rc.status()['retry_reload_command'] is None
-    assert command(rc, 'example')['context_id'] == before
+    assert command(rc, 'policy example example')['context_id'] == before
     command(rc, 'resume')
 
 
@@ -159,14 +160,15 @@ def test_snapshot_record_pose_and_config_lifecycle(example_rc):
     try:
         old = rc._worker
         before = rc.status()["config_version"]
-        command(rc, 'set policy.params.message "热更新"')
+        command(rc, 'policy example config set params.message "热更新"')
         assert rc._worker is old and rc.status()["config_version"] == before + 1
-        assert command(rc, "example")["message"] == "热更新"
-        command(rc, "set rc.frequency_hz 60", status="failed")
-        command(rc, "record on")
+        assert command(rc, "policy example example")["message"] == "热更新"
+        command(rc, "config rc set frequency_hz 60")
+        assert rc.query("config rc show")["draft"]["frequency_hz"] == 60
+        command(rc, "record start")
         command(rc, "resume")
         until(lambda: rc.status()["consumed"] >= 3, 6)
-        command(rc, "save example_pose")
+        command(rc, "pose save example_pose")
         assert read_config(rc.outputs / "state_saves/example_pose.json")["qpos"][0] == pytest.approx(.01)
         snapshot = router.submit("snapshot").result(5)
         frames = read_config(snapshot / "state.json")["images"]
@@ -174,15 +176,15 @@ def test_snapshot_record_pose_and_config_lifecycle(example_rc):
         assert all((snapshot / frame["file"]).is_file() for frame in frames.values())
         command(rc, "reset")
         until(lambda: rc.status()["hold_name"] == "reset")
-        command(rc, "load example_pose")
+        command(rc, "pose restore example_pose")
         until(lambda: rc.status()["hold_name"] == "example_pose")
         assert rc.robot.read_state()["qpos"][0] == pytest.approx(.01)
-        command(rc, "set-chunk-size 6")
+        command(rc, "policy example set-chunk-size 6")
         assert old.cleanup_confirmed and rc._worker is not old and rc.status()["state"] == "paused"
-        assert command(rc, "example")["chunk_size"] == 6
-        command(rc, "save-config example")
+        assert command(rc, "policy example example")["chunk_size"] == 6
+        command(rc, "policy example config save")
         assert read_config(rc.registry.directory / "example/policy.yaml")["params"]["chunk_size"] == 6
-        folder = Path(command(rc, "record off")["path"])
+        folder = Path(command(rc, "record stop")["path"])
         policy = [json.loads(line) for line in (folder / "policy.jsonl").read_text().splitlines()]
         assert any(row["event"] == "policy.result" and row["instance_id"] == "example" for row in policy)
         assert 'control.published' in (folder / "control.jsonl").read_text()
@@ -194,7 +196,7 @@ def test_snapshot_record_pose_and_config_lifecycle(example_rc):
 @pytest.mark.parametrize("example_rc", [("qpos", "sync"), ("qpos", "async")], indirect=True)
 def test_slow_policy_trims_only_targets_consumed_during_async_inference(example_rc, monkeypatch):
     rc = example_rc
-    scheduling = rc.query("show policy")["execution"]["mode"]
+    scheduling = rc.query("policy example config show")["execution"]["mode"]
     decisions = []
     accept = rc.buffer.accept
     def observe_accept(token, chunk):
@@ -202,7 +204,7 @@ def test_slow_policy_trims_only_targets_consumed_during_async_inference(example_
         decisions.append((token.consumed, rc.buffer.last_trim, accepted))
         return accepted
     monkeypatch.setattr(rc.buffer, "accept", observe_accept)
-    command(rc, "set policy.params.inference_delay_s 0.18")
+    command(rc, "policy example config set params.inference_delay_s 0.18")
     command(rc, "resume")
     # The first 4-frame batch triggers a second request after 3 sends. The last
     # frame is still in the buffer while the real worker handles that request.
@@ -268,7 +270,7 @@ def test_mcp_take_direct_control_and_result_handback(example_rc, example_mcp):
         assert not tool("send_command", commands=move, wait=True).is_error
         episode = tool("return_and_wait", timeout_s=0).structured_content["operation_id"]
         until(lambda: rc.status()["state"] == "running")
-        command(rc, f"next-result {outcome} demo")
+        command(rc, f"policy example next-result {outcome} demo")
         receipt = rc.wait_operation(episode, 6)
         queried = tool("get_policy_result", operation_id=episode).structured_content
         assert queried["finished"] and queried["status"] == receipt["status"]
@@ -292,21 +294,21 @@ async def test_tui_panels_and_chain_editor_with_two_examples(example_rc):
     rc = example_rc
     app = RobotControlApp(rc, start_controller=False, graphics=GraphicsSupport("kitty"))
     async with app.run_test(size=(110, 36)) as pilot:
-        for name in ("camera", "monitor", "monitor-example"):
-            app.router.submit(name + " on")
+        for line in ("camera show", "monitor", "monitor example"):
+            app.router.submit(line)
         await eventually(pilot, lambda: rc.policy_monitors.snapshot().get("example", {}).get("values"))
-        app.router.submit("manage-policy")
+        app.router.submit("policy manage")
         panel = app.query_one("#policy-manager")
         await eventually(pilot, lambda: panel.initialized and panel.query_one("#chain-cells").has_focus)
         # The empty editor has just one available source, the actual example.
         for _ in range(2):
             await pilot.press("d", "enter")
         assert panel.policies == ["example", "example"]
-        app.router.submit("manage-policy save")
+        app.router.submit("policy manage save")
         path = rc.registry.directory / "default_chain/policy.yaml"
         await eventually(pilot, lambda: not panel.disabled and panel.saved == panel.policies)
         assert read_config(path)["policies"] == ["example", "example"]
-        app.router.submit("manage-policy apply")
+        app.router.submit("policy manage apply")
         await eventually(pilot, lambda: rc.status()["policy"] == "default_chain", timeout=12)
         assert rc.status()["state"] == "paused"
         for instance in ("example-0", "example-1"):

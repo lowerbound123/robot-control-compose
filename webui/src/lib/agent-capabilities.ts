@@ -100,11 +100,23 @@ export function validateDecision(value: unknown, snapshot: CapabilitySnapshot): 
   }
   if (call.name === 'command') {
     const line = String(call.arguments.line)
-    const word = /^[A-Za-z][A-Za-z0-9_-]*(?=\s|$)/.exec(line.trim())?.[0]
-    const policyWords = snapshot.policy_commands.policies.flatMap(row => row.commands.flatMap(spec => [spec.name, spec.alias]))
-    if (!word || word === 'policy' || policyWords.includes(word)) throw Error('policy 注册命令请使用 policy_command 和原生类型参数；RC 命令名须直接书写。')
-    if (['mcp', 'camera', 'monitor', 'manage-policy', 'snapshot'].includes(word) || word.startsWith('monitor-')) throw Error('本地面板和递归 MCP 命令不可由 AI 执行。')
     if (line.length > 4000 || /[\r\n]/.test(line)) throw Error('一次只能提交一条 RC 命令。')
+    const words = line.trim().split(/\s+/)
+    const [root, branch, action] = words
+    if (['mcp', 'camera', 'monitor', 'snapshot'].includes(root) || (root === 'policy' && branch === 'manage')) {
+      throw Error('本地面板和递归 MCP 命令不可由 AI 执行。')
+    }
+    if (root === 'policy' && !['help', 'list', 'switch'].includes(branch)) {
+      throw Error('策略配置请使用 policy_config；注册命令请使用 policy_command 和原生类型参数。')
+    }
+    const allowed = (['help', 'status', 'pause', 'resume', 'reset', 'exit'].includes(root) && words.length === 1)
+      || (root === 'record' && (words.length === 1 || (words.length === 2 && ['start', 'stop', 'status'].includes(branch))))
+      || (root === 'config' && branch === 'rc' && ((['show', 'save'].includes(action) && words.length === 3) || (action === 'set' && words.length >= 5)))
+      || (root === 'global' && ((branch === 'show' && words.length <= 3) || (branch === 'set' && words.length >= 4) || (branch === 'remove' && words.length === 3)))
+      || (root === 'pose' && ['save', 'restore'].includes(branch) && words.length >= 3)
+      || (root === 'policy' && ((branch === 'list' && words.length === 2) || (branch === 'help' && words.length <= 4)
+        || (branch === 'switch' && (words.length === 3 || (words.length === 4 && words[3] === '--reset')))))
+    if (!allowed) throw Error('请使用当前 RC 命令树；旧命令别名和未知路径不可执行。')
   }
   if (call.name === 'retry_reload' && call.arguments.instance_id !== snapshot.status.retry_reload_instance) throw Error('请选择状态中明确列出的可重试实例。')
   return decision
@@ -114,12 +126,13 @@ export function prepareToolCall(call: ToolCall, snapshot: CapabilitySnapshot): P
   validateDecision({ message: '参数校验', tool_call: call }, snapshot)
   const definition = snapshot.tools.find(tool => tool.name === call.name)!
   const fields = snapshot.managed[call.name] || []
-  const readOnly = call.name === 'record' ? (call.arguments.action ?? 'status') === 'status' : definition.annotations?.readOnlyHint === true
+  const readOnly = call.name === 'record' ? (call.arguments.action ?? 'status') === 'status'
+    : call.name === 'policy_config' ? (call.arguments.action ?? 'show') === 'show' : definition.annotations?.readOnlyHint === true
   if (!readOnly && !fields.includes('expected_control')) throw Error(`工具 ${call.name} 缺少控制代次保护，请同步升级 RC。`)
   const args = { ...call.arguments }
   if (fields.includes('wait')) args.wait = false
   if (fields.includes('timeout_s')) args.timeout_s = call.name === 'state' ? 3 : 0
   if (fields.includes('include_images')) args.include_images = false
   return { name: call.name, args, readOnly, episode: call.name === 'return_and_wait',
-    shutdown: call.name === 'command' && ['exit', 'quit'].includes(String(args.line).trim()) }
+    shutdown: call.name === 'command' && String(args.line).trim() === 'exit' }
 }

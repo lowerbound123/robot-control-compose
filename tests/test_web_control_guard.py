@@ -20,7 +20,7 @@ def test_mcp_expected_control_checks_before_enqueue_and_again_before_dispatch(se
         assert rc.status()['generation'] == before['generation']
         fresh = {key: before[key] for key in guard}
         with rc._lock:
-            queued = rc.submit('return', origin='mcp', expected_control=fresh)
+            queued = rc.submit_control('return', expected_control=fresh)
             rc.buffer.invalidate()  # Intervention after admission, before execution.
         assert rc.wait_operation(queued, 3)['status'] in ('cancelled', 'failed')
         assert rc.control_owner == 'mcp' and not rc.status()['returning']

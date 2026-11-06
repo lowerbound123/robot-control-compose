@@ -52,17 +52,16 @@ class Context:
 监控命令使用当前运行实例的 ID。单例与来源目录同名；链中重复实例使用自动编号，例如 `a-0`、`a-1`：
 
 ```text
-monitor-my_policy
-monitor-my_policy on
-monitor-my_policy off
-help monitor-my_policy
+monitor my_policy
+monitor my_policy
+help
 ```
 
-无参数表示切换；Tab 补全当前已加载且支持监控的策略。`monitor-` 是保留命令前缀，不能用在自定义 `tui_commands` 或原生链生成的命令别名中。headless 和 MCP 不开启 TUI 面板，也不会持续打印监控数据。原有 `monitor` 仍显示机器人姿态。
+`monitor <实例>` 每次切换该面板；Tab 补全当前已加载且支持监控的策略。旧 monitor- 前缀和 on/off 参数不再接受。headless 和 MCP 不开启 TUI 面板，也不会持续打印监控数据。原有 `monitor` 仍显示机器人姿态。
 
 日志占左侧约 2/3，监控占右侧约 1/3。每个实例一个框，按开启顺序排列，按内容换行和调整高度；右栏超高时单独滚动。字符串按普通文本显示，控制字符以转义文字显示。全部关闭后日志恢复全宽。
 
-原生链 `a → b → a` 提供 `monitor-a-0`、`monitor-b`、`monitor-a-1` 三个独立监控入口，分别读取各自 context；`monitor-a` 不会指向其中某个实例。普通暂停和 MCP 接管时继续采集；重置、热配置和释放时先停止新读取，等待在途读取完成，再修改 context。同名实例重载保留面板并清空旧数据；切换或重新编号后不再加载的实例移除。若重载后删除了回调，面板显示不可用，可手动关闭。
+原生链 `a → b → a` 提供 `monitor a-0`、`monitor b`、`monitor a-1` 三个独立监控入口，分别读取各自 context；`monitor a` 不会指向其中某个实例。普通暂停和 MCP 接管时继续采集；重置、热配置和释放时先停止新读取，等待在途读取完成，再修改 context。同名实例重载保留面板并清空旧数据；切换或重新编号后不再加载的实例移除。若重载后删除了回调，面板显示不可用，可手动关闭。
 
 ## 错误与退出
 
@@ -76,4 +75,4 @@ help monitor-my_policy
 
 ## 镜像更新与验证
 
-运行 `./setup.sh --policies <id>` 准备对应镜像，再通过 switch 创建新容器。monitor 只读活动实例快照，切换时会失效旧代次，不执行 Docker/socket I/O。动态生命周期验证见 [verification.md](verification.md)。
+运行 `./setup.sh --policies <id>` 准备对应镜像，再通过 policy switch 创建新容器。monitor 只读活动实例快照，切换时会失效旧代次，不执行 Docker/socket I/O。动态生命周期验证见 [verification.md](verification.md)。

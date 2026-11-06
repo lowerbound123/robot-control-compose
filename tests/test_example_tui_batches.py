@@ -11,8 +11,8 @@ def test_text_batch_resolves_after_switch_and_updates_exact_example_instance(exa
     if chain:
         copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
     target = 'example-1' if chain else 'example'
-    commands = ([f'switch example_chain'] if chain else []) + [
-        f'set {target}.params.message "from direct text"',
+    commands = ([f'policy switch example_chain'] if chain else []) + [
+        f'policy {target} config set params.message "from direct text"',
         f'policy {target} set-message "registered command"',
         f'policy {target} example',
     ]

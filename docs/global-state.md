@@ -42,14 +42,14 @@ RC 代码使用 `controller.globals`。代理属于整个 session，可以保存
 ## 终端与 MCP
 
 ```text
-show global
-show global task
-set global.task {"phase":"grasp","attempt":1}
-set global.ready true
-unset global.task
+global show
+global show task
+global set task {"phase":"grasp","attempt":1}
+global set ready true
+global remove task
 ```
 
-新增字段无需 manifest 白名单。嵌套数据按整个顶层字段替换。TUI/headless 共用操作回执，只有 succeeded 才表示提交成功。MCP 可直接 `show(scope="global")` 或 `command("show global task")`；修改仍要求 take，归还或代次变化后排队的旧写请求不能提交。全局字段本身不触发运动、不修改配置或控制权。
+新增字段无需 manifest 白名单。嵌套数据按整个顶层字段替换。TUI/headless 共用操作回执，只有 succeeded 才表示提交成功。MCP 可直接 `show(scope="global")` 或 `command("global show task")`；修改仍要求 take，归还或代次变化后排队的旧写请求不能提交。全局字段本身不触发运动、不修改配置或控制权。
 
 ## 文件与冷配置
 

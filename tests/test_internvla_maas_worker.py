@@ -152,9 +152,9 @@ def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeyp
             command('resume')
             wait(lambda: controller.status()['consumed'] >= 23)
             sessions = len(server.hellos)  # resume performs its ordinary context reset.
-            for line in ('set policy.execution.mode "sync"',
-                         'set policy.execution.call_every_actions 3',
-                         'set policy.execution.mode "async"'):
+            for line in ('policy internvla_maas config set execution.mode "sync"',
+                         'policy internvla_maas config set execution.call_every_actions 3',
+                         'policy internvla_maas config set execution.mode "async"'):
                 version = controller.status()['config_version']
                 command(line)
                 assert controller.status()['config_version'] == version + 1
@@ -176,7 +176,7 @@ def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeyp
             assert server.requests[-1]['instruction'] == 'New task.'
             assert 'fixture-key' not in json.dumps(controller.read_events())
             assert 'fixture-key' not in json.dumps(controller.status())
-            command('switch internvla_maas')
+            command('policy switch internvla_maas')
             assert controller.status()['state'] == 'paused'
             command('resume')
             wait(lambda: controller.status()['consumed'] > count)

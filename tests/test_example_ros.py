@@ -45,7 +45,7 @@ def test_example_with_ros_feedback_cameras_and_commands(tmp_path, monkeypatch):
                 command(rc, "resume")
                 until(lambda: rc.status()["consumed"] >= 3, rc)
                 command(rc, "pause")
-                meta = json.loads(command(rc, "example")["images"])
+                meta = json.loads(command(rc, "policy example example")["images"])
                 assert set(meta) == {"head", "left_wrist", "right_wrist"}
                 assert all(item["shape"] == [48, 64, 3] and item["readonly"] for item in meta.values())
                 # A small observable move round-trips through both ROS publishers and feedback.
@@ -53,7 +53,7 @@ def test_example_with_ros_feedback_cameras_and_commands(tmp_path, monkeypatch):
                 target = [v + .03 if i in (0, 7) else v for i, v in enumerate(state)]
                 pose = tmp_path / "pose.json"
                 pose.write_text(json.dumps({"qpos": target}))
-                command(rc, f'load "{pose}"')
+                command(rc, f'pose restore "{pose}"')
                 until(lambda: all(abs(a-b) < .005 for a, b in zip(rc.robot.read_state()["qpos"], target)), rc)
             finally:
                 rc.submit("exit")

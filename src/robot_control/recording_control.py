@@ -4,7 +4,7 @@ import time
 from .recording import RecordingService
 
 
-RECORD_HELP = 'record：切换录制；record on/off：开始/停止；record status：状态、目录、采样、缺口和待写入量'
+RECORD_HELP = 'record：切换录制；record start：开始；record stop：停止；record status：状态、目录、采样、缺口和待写入量'
 
 
 class RecordingControl:

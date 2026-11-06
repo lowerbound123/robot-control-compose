@@ -190,7 +190,7 @@ def test_real_delayed_hold_async_exhaustion_holds_without_false_consumption(e2e)
     e2e.stop_and_assert_clean(expected_code=0)
 
 
-def test_hot_patch_preserves_real_worker_and_cold_reload_closes_before_new_initialize(e2e):
+def test_config_patch_preserves_worker_and_reinitializes_context_in_same_process(e2e):
     e2e.add_policy(delay_s=0.06)
     controller = e2e.launch()
     e2e.ready()
@@ -199,8 +199,8 @@ def test_hot_patch_preserves_real_worker_and_cold_reload_closes_before_new_initi
     old_policy_pid = e2e.events("initialize_start", identity="first")[0]["pid"]
     controller.submit("resume")
     wait_for(lambda: e2e.events("inference_start"))
-    controller.submit("set policy.params.value 0.04")
-    wait_for(lambda: controller.status()["pending_config"] is not None)
+    pending = controller.submit("policy first config set params.value 0.04")
+    wait_for(lambda: controller.get_operation(pending)["status"] == "running")
     assert controller.status()["config_version"] == 1
     wait_for(lambda: controller.status()["config_version"] == 2)
     updated = wait_for(lambda: [event for event in e2e.events("inference_start") if event["value"] == 0.04])
@@ -210,14 +210,13 @@ def test_hot_patch_preserves_real_worker_and_cold_reload_closes_before_new_initi
     wait_for(lambda: np.allclose(e2e.robot.read_state()["qpos"], [0.04] * 14),
              detail="hot config output reaches robot")
     before_reload = e2e.robot.read_state()["qpos"]
-    controller.submit("set policy.execution.call_every_actions 5")
-    e2e.ready(count=2)
-    assert controller.status()["config_version"] == 3
-    assert e2e.prior_workers_alive_at_creation[1] == [False]
-    assert not old.alive and e2e.workers[1].pid != old_pid
+    controller.submit("policy first config set execution.call_every_actions 5")
+    wait_for(lambda: controller.status()["config_version"] == 3)
+    assert len(e2e.workers) == 1 and old.alive and old.pid == old_pid
     old_end = e2e.events("release_done", pid=old_policy_pid)[0]
     new_start = e2e.events("initialize_start", identity="first")[-1]
     assert old_end["time_ns"] < new_start["time_ns"]
+    assert new_start["pid"] == old_policy_pid
     np.testing.assert_allclose(e2e.robot.read_state()["qpos"], before_reload, atol=1e-7)
     e2e.stop_and_assert_clean(expected_code=0)
 
@@ -233,7 +232,7 @@ def test_pause_load_discards_old_result_and_resume_observes_loaded_qpos(e2e):
     generation = controller.status()["generation"]
     target = e2e.directory / "loaded.json"
     target.write_text(json.dumps({"name": "loaded", "qpos": [0.2] * 14, "old_format_extra": True}))
-    controller.submit(f'load "{target}"')
+    controller.submit(f'pose restore "{target}"')
     wait_for(lambda: controller.status()["hold_name"] == "loaded")
     assert controller.status()["state"] == "paused"
     assert controller.status()["generation"] > generation
@@ -244,7 +243,7 @@ def test_pause_load_discards_old_result_and_resume_observes_loaded_qpos(e2e):
     observed = wait_for(lambda: [row for row in e2e.events("inference_start") if np.isclose(row["qpos"][0], 0.2)])
     assert observed[-1]["same_config"]
     assert len(e2e.events("reset_context")) >= 2
-    controller.submit("save resumed")
+    controller.submit("pose save resumed")
     saved = e2e.directory / "outputs" / "state_saves" / "resumed.json"
     wait_for(saved.exists)
     wait_for(lambda: controller.status()["state"] == "paused")
@@ -291,7 +290,7 @@ def test_exit_during_switch_never_orphans_either_real_worker(e2e, phase):
     e2e.add_policy("second", initialize_delay_s=2)
     controller = e2e.launch(release_s=0.5 if phase == "old_release" else 0.08)
     e2e.ready()
-    controller.submit("switch second")
+    controller.submit("policy switch second")
     if phase == "old_release":
         wait_for(lambda: e2e.events("release_start", identity="first"))
     else:
@@ -350,7 +349,7 @@ def test_old_inference_error_cannot_cancel_requested_policy_switch(e2e):
     e2e.ready()
     controller.submit("resume")
     wait_for(lambda: e2e.events("inference_start", identity="first"))
-    controller.submit("switch second")
+    controller.submit("policy switch second")
     e2e.ready(identity="second", count=2)
     assert controller.status()["state"] == "paused"
     assert not e2e.workers[0].alive

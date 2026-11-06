@@ -79,7 +79,7 @@ DeepSeek 默认使用 `provider.yaml`。三个 Decisions 模板各自对应一�
 
 `llm_failure` 的旧 `type: openai_decisions` 和 `choice_descriptions` 需要手工修改。沿用旧二选一行为时，将类型设为 `gpt-decision-choice`、题名设为 `failed`，把两个旧说明按顺序写入 `choices`，分别填写 `value: not_failed, failed: false` 和 `value: failed, failed: true`。可保留原文件路径。
 
-使用当前源码挂载部署和已锁定依赖时，这次更新可沿用现有镜像。如果策略已在运行，更新源码和选定的配置后执行一次 `switch <当前链名>`，让策略进程加载新实现。此后通过 `switch-provider` 切换题型或重读同一配置文件。
+使用当前源码挂载部署和已锁定依赖时，这次更新可沿用现有镜像。如果策略已在运行，更新源码和选定的配置后执行一次 `policy switch <当前链名>`，让策略进程加载新实现。此后通过 `switch-provider` 切换题型或重读同一配置文件。
 
 如果旧部署仍将 `params.task` 和 `params.prompt` 保存在策略清单中，先手工更新旧 Decisions 题型，再用 setup 所用的 Python 运行已有的提示词迁移命令。迁移与 setup、手动编辑分开执行。
 
@@ -93,11 +93,11 @@ python3 scripts/migrate_llm_failure_prompts.py
 
 ```text
 policy llm_failure-1 switch-provider providers/gpt-decision-choice.yaml
-save-config policy llm_failure-1
+policy llm_failure-1 config save
 resume
 ```
 
-只有一个实例时使用 `llm_failure`。候选文件校验失败时，原实例继续使用已加载的设置。校验成功后 RC 只冷重载目标实例并暂停整链，其他成员保留现有模型和路径。若新实例初始化失败，修正文件后可执行 `retry-reload llm_failure-1`。再次指定同一路径会重读文件。`save-config` 是可选步骤，只将选定路径写回来源策略的 `policy.yaml`。该文件是以后创建实例时的默认配置。
+只有一个实例时使用 `llm_failure`。候选文件校验失败时，原实例继续使用已加载的设置。校验成功后 RC 只冷重载目标实例并暂停整链，其他成员保留现有模型和路径。若新实例初始化失败，修正文件后可执行 `policy llm_failure-1 retry`。再次指定同一路径会重读文件。`policy <实例> config save` 是可选步骤，只将选定路径写回来源策略的 `policy.yaml`。该文件是以后创建实例时的默认配置。
 
 默认 `control_mode=qpos`，可改为 `epos` 或 `mixed`，但必须与链首策略一致。检查器要求非空前序动作，因此应作为链成员使用，不能单独启动后依靠它生成保持动作。
 
@@ -105,7 +105,7 @@ resume
 
 ## 实例监控
 
-通过 `monitor-llm_failure on` 打开单实例监控；重复实例使用明确名称，例如 `monitor-llm_failure-1 on`。`monitor(context)` 只读取内存中的六个标量，不执行 HTTP、文件或控制操作，也不等待供应商请求、诊断输出或 reset 收尾。
+通过 `monitor llm_failure` 打开单实例监控；重复实例使用明确名称，例如 `monitor llm_failure-1`。`monitor(context)` 只读取内存中的六个标量，不执行 HTTP、文件或控制操作，也不等待供应商请求、诊断输出或 reset 收尾。
 
 | 字段 | 当前 episode 内的含义 |
 |---|---|
@@ -153,7 +153,7 @@ HTTP 耗时或 total token 没有样本时显示 `—`；缺失样本不按 0 �
 
 ## 链与 MCP 用法
 
-先准备动作策略，将其与 `llm_failure` 通过 `manage-policy` 编排为同模式的链。例如保存的链定义可以是：
+先准备动作策略，将其与 `llm_failure` 通过 `policy manage` 编排为同模式的链。例如保存的链定义可以是：
 
 ```json
 {"schema_version":3,"kind":"chain","policies":["qwen35_single","llm_failure"]}

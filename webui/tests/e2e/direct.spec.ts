@@ -21,7 +21,7 @@ test('direct text sends one batch without AI, take or policy discovery', async (
   })
   await page.goto('/monitor')
   const message = '直接输入 "带引号"'
-  await page.getByLabel('命令输入', { exact: true }).fill(`set example.params.message ${JSON.stringify(message)}\npolicy example example`)
+  await page.getByLabel('命令输入', { exact: true }).fill(`policy example config set params.message ${JSON.stringify(message)}\npolicy example example`)
   await page.getByRole('button', { name: '发送指令' }).click()
   await expect(page.getByRole('status')).toContainText('命令批次已执行')
   expect(names.filter(name => name === 'tui_command')).toHaveLength(1)
@@ -41,7 +41,7 @@ test('direct text sends one batch without AI, take or policy discovery', async (
 
 test('direct text rejects recursion before earlier lines can execute', async ({ page, request }) => {
   await page.goto('/monitor')
-  await page.getByLabel('命令输入', { exact: true }).fill('record on\nmcp take')
+  await page.getByLabel('命令输入', { exact: true }).fill('record start\nmcp take')
   await page.getByRole('button', { name: '发送指令' }).click()
   await expect(page.getByRole('status')).toHaveAttribute('data-error', 'true')
   const after = await (await request.get(`${rc}/health`)).json()
@@ -52,7 +52,7 @@ test('direct text rejects recursion before earlier lines can execute', async ({ 
 test('direct text stop leaves started line to finish and cancels its tail', async ({ page, request }) => {
   await request.post(`${api}/test/batch-hold`)
   await page.goto('/monitor')
-  await page.getByLabel('命令输入', { exact: true }).fill('set example.params.message "first"\nset example.params.message "tail"')
+  await page.getByLabel('命令输入', { exact: true }).fill('policy example config set params.message "first"\npolicy example config set params.message "tail"')
   await page.getByRole('button', { name: '发送指令' }).click()
   await expect.poll(async () => (await (await request.get(`${api}/test/batch-state`)).json()).held).toBe(true)
   const stopped = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith('/mcp')
@@ -75,7 +75,7 @@ test('direct text refresh recovers the parent receipt without cancellation or re
     }
   })
   await page.goto('/monitor')
-  await page.getByLabel('命令输入', { exact: true }).fill('set example.params.message "survived refresh"\nstatus')
+  await page.getByLabel('命令输入', { exact: true }).fill('policy example config set params.message "survived refresh"\nstatus')
   await page.getByRole('button', { name: '发送指令' }).click()
   await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('rc-pending-operation') || '{}').id)).toBeTruthy()
   await expect.poll(async () => (await (await request.get(`${api}/test/batch-state`)).json()).held).toBe(true)

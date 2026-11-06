@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from .secret_config import public_value, reject_secret_edit
 
-from os.path import commonprefix
 from queue import Empty
-import re
+import asyncio
 import time
 
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.message import Message
+from textual.suggester import Suggester
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, Static
 
@@ -25,77 +26,276 @@ from .tui_panels import CameraPanel, MonitorPanel
 from .policy_monitor_tui import PolicyMonitorSidebar
 from .policy_manager_tui import PolicyManagerPanel
 
-from rc_policy_sdk.commands import BUILTIN_COMMANDS as COMMANDS
+from .completion import apply_completion
+from .completion_service import CompletionService
+from .completion_panel import CompletionPanel
+from .history import CommandHistory, recent_unique, valid_history_line
+
+
+class HistorySuggestionReady(Message):
+    def __init__(self, value, suggestion, revision, edit_revision):
+        super().__init__()
+        self.value, self.suggestion = value, suggestion
+        self.revision, self.edit_revision = revision, edit_revision
+
+
+class HistorySuggester(Suggester):
+    def __init__(self, field):
+        super().__init__(use_cache=False, case_sensitive=True)
+        self.field = field
+
+    async def get_suggestion(self, value):
+        if not value:
+            return None
+        return next((line for line in reversed(self.field.history)
+                     if line != value and line.startswith(value)), None)
+
+    async def _get_suggestion(self, requester, value):
+        revision, edit_revision = self.field.history_revision, self.field._ghost_epoch
+        suggestion = await self.get_suggestion(value)
+        if suggestion is not None:
+            requester.post_message(HistorySuggestionReady(value, suggestion, revision, edit_revision))
 
 
 class CommandInput(Input):
-    """History keeps complete command lines, including JSON quotes and spaces."""
+    """Native input editing with explicit completion confirmation and durable history."""
 
     BINDINGS = [
-        Binding("up", "history_previous", show=False),
-        Binding("down", "history_next", show=False),
-        Binding("tab", "complete_command", show=False),
+        Binding('up', 'history_previous', show=False),
+        Binding('down', 'history_next', show=False),
+        Binding('tab', 'complete_command', show=False),
+        Binding('shift+tab', 'complete_previous', show=False),
+        Binding('escape', 'dismiss_assistance', show=False),
     ]
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.commands = COMMANDS
-        self.mcp_tools = ()
-        self.history: list[str] = []
+        self.history = []
+        self.history_revision = 0
         self.history_index = 0
-        self.draft = ""
+        self.draft = ''
+        self.menu_open = False
+        self.selected_completion = 0
+        self.completion_result = None
+        self.completion_service = None
+        self.history_store = None
+        self._history_store_revision = -1
+        self._ghost_epoch = 0
+        self._ghost_hidden_value = None
+        super().__init__(suggester=HistorySuggester(self), **kwargs)
 
-    def paste_text(self, text: str) -> None:
-        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    def attach_assistance(self, service, history=None):
+        self.completion_service, self.history_store = service, history
+        self._request_completion()
+        self.poll_assistance()
+
+    def _panel(self):
+        if self.is_mounted:
+            return self.app.query_one(CompletionPanel)
+        return None
+
+    def _show_assistance(self):
+        panel = self._panel()
+        if panel is not None:
+            panel.present(self.completion_result, self.selected_completion, self.menu_open)
+
+    def _request_completion(self):
+        if self.completion_service is None:
+            return
+        self._accept_result(self.completion_service.request(self.value, self.cursor_position))
+
+    def _accept_result(self, result):
+        if result is None or result.text != self.value or result.cursor != self.cursor_position:
+            return
+        current = self.completion_result
+        if current is not None and current.text == result.text and current.cursor == result.cursor and result.revision < current.revision:
+            return
+        previous = None
+        if current is not None and current.items and self.selected_completion < len(current.items):
+            previous = current.items[self.selected_completion]
+        self.completion_result = result
+        self.selected_completion = next((index for index, item in enumerate(result.items) if item == previous), 0)
+        self._show_assistance()
+
+    def poll_assistance(self):
+        if self.completion_service is not None:
+            self._accept_result(self.completion_service.poll())
+        if self.history_store is not None:
+            lines, revision = self.history_store.snapshot()
+            if revision != self._history_store_revision:
+                browsing = self.history_index < len(self.history)
+                old = self.history[self.history_index] if browsing else None
+                self.history = list(lines)
+                self.history_index = self.history.index(old) if old in self.history else len(self.history)
+                self._history_store_revision = revision
+                self.history_revision += 1
+                self._refresh_ghost()
+
+    def _watch_value(self, value):
+        self._ghost_epoch += 1
+        self._ghost_hidden_value = None
+        super()._watch_value(value)
+        self.selected_completion = 0
+        self._request_completion()
+
+    def _watch_selection(self, selection):
+        super()._watch_selection(selection)
+        self._refresh_ghost()
+        self._request_completion()
+
+    def _ghost_allowed(self):
+        return (bool(self.value) and not self.menu_open and self.selection.is_empty
+                and self.cursor_at_end and self._ghost_hidden_value != self.value)
+
+    def _refresh_ghost(self):
+        self._ghost_epoch += 1
+        self._suggestion = ''
+        if self.is_mounted and self._ghost_allowed():
+            self.run_worker(self.suggester._get_suggestion(self, self.value))
+
+    async def _on_suggestion_ready(self, event):
+        # Only tagged, current-history replies may paint the native ghost.
+        event.stop().prevent_default()
+
+    def on_history_suggestion_ready(self, event):
+        event.stop()
+        if (self._ghost_allowed() and event.value == self.value
+                and event.revision == self.history_revision and event.edit_revision == self._ghost_epoch
+                and event.suggestion != self.value and event.suggestion.startswith(self.value)):
+            self._suggestion = event.suggestion
+
+    def paste_text(self, text):
+        text = text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
         start, end = self.selection
         self.replace(text, min(start, end), max(start, end))
 
-    def _on_paste(self, event: events.Paste) -> None:
+    def _on_paste(self, event):
         event.stop().prevent_default()
         self.paste_text(event.text)
 
-    def remember(self, command: str) -> None:
-        reject_secret_edit(command)
-        if not self.history or self.history[-1] != command:
-            self.history.append(command)
+    def remember(self, command):
+        valid_history_line(command)
+        self.history = recent_unique([*self.history, command])
+        self.history_revision += 1
         self.history_index = len(self.history)
-        self.draft = ""
+        self.draft = ''
+        if self.history_store is not None:
+            self.history_store.record(command)
+        self._refresh_ghost()
 
-    def _replace(self, value: str) -> None:
+    def _replace(self, value):
         self.value = value
         self.cursor_position = len(value)
 
-    def action_history_previous(self) -> None:
+    def _move_completion(self, direction):
+        result, panel = self.completion_result, self._panel()
+        if result is not None and panel is not None:
+            self.selected_completion = panel.move(self.selected_completion, len(result.items), direction)
+            self._show_assistance()
+
+    def action_history_previous(self):
+        if self.menu_open:
+            self._move_completion('up')
+            return
         if self.history_index == len(self.history):
             self.draft = self.value
         if self.history_index > 0:
             self.history_index -= 1
             self._replace(self.history[self.history_index])
 
-    def action_history_next(self) -> None:
+    def action_history_next(self):
+        if self.menu_open:
+            self._move_completion('down')
+            return
         if self.history_index < len(self.history):
             self.history_index += 1
-            self._replace(self.draft if self.history_index == len(self.history)
-                          else self.history[self.history_index])
+            self._replace(self.draft if self.history_index == len(self.history) else self.history[self.history_index])
 
-    def action_complete_command(self) -> None:
-        # Only complete command/tool names, never the argument tail.
-        prefix = self.value
-        head = ""
-        candidates = self.commands
-        tool = re.fullmatch(r"(mcp\s+)(\S*)", prefix)
-        if tool:
-            head, prefix = tool.groups()
-            candidates = self.mcp_tools
-            if not prefix:
-                return
-        if not prefix or any(char.isspace() for char in prefix):
+    def action_complete_command(self):
+        if self.menu_open:
+            self._move_completion('next')
+        else:
+            self.menu_open = True
+            self._refresh_ghost()
+            self._request_completion()
+            self._show_assistance()
+
+    def action_complete_previous(self):
+        if not self.menu_open:
+            self.action_complete_command()
+        else:
+            self._move_completion('previous')
+
+    def close_menu(self):
+        self.menu_open = False
+        self._show_assistance()
+        self._refresh_ghost()
+
+    def action_dismiss_assistance(self):
+        self.close_menu()
+        self._ghost_hidden_value = self.value
+        self._ghost_epoch += 1
+        self._suggestion = ''
+
+    def _confirm_completion(self):
+        self.poll_assistance()
+        result = self.completion_result
+        self.close_menu()
+        if result is None or result.text != self.value or result.cursor != self.cursor_position or not result.items:
+            return False
+        value, cursor = apply_completion(self.value, self.cursor_position, result, result.items[self.selected_completion])
+        self.value, self.cursor_position = value, cursor
+        return True
+
+    async def action_submit(self):
+        if self.menu_open:
+            self._confirm_completion()
             return
-        matches = [command for command in candidates if command.startswith(prefix)]
-        if len(matches) == 1:
-            self._replace(head + matches[0] + " ")
-        elif matches:
-            self._replace(head + commonprefix(matches))
+        await super().action_submit()
+
+    async def _on_key(self, event):
+        if self.menu_open and event.character == ' ':
+            event.stop().prevent_default()
+            if not self._confirm_completion():
+                self.insert_text_at_cursor(' ')
+            return
+        # Native non-printable bindings normally bubble back to the App queue.
+        # Resolve them here, in the same queue as printable keys and Paste, so a
+        # rapid Ctrl+U/type/Tab sequence cannot delete the newly typed text.
+        if not event.is_printable and await self.app._check_bindings(event.key):
+            event.stop().prevent_default()
+            return
+        await super()._on_key(event)
+
+    def action_cursor_left(self, select=False):
+        if self.menu_open and not select:
+            self._move_completion('left')
+            return
+        if select:
+            self.close_menu()
+        super().action_cursor_left(select)
+
+    def action_cursor_right(self, select=False):
+        self.poll_assistance()
+        if self.menu_open and not select:
+            self._move_completion('right')
+            return
+        if select:
+            self.close_menu()
+        if not self._ghost_allowed():
+            self._suggestion = ''
+        super().action_cursor_right(select)
+
+    def action_home(self, select=False):
+        self.close_menu()
+        super().action_home(select)
+
+    def action_end(self, select=False):
+        self.close_menu()
+        super().action_end(select)
+
+    async def _on_mouse_down(self, event):
+        self.close_menu()
+        await super()._on_mouse_down(event)
 
 
 class RobotControlApp(App):
@@ -129,6 +329,10 @@ class RobotControlApp(App):
         self._editor_pending = None
         self._ui_active = False
         self._refresh_timers = []
+        self.completion_service = CompletionService(controller, tools=tuple(self.router.service.tools) if self.router.service is not None else ())
+        config_path = getattr(controller, "config_path", None)
+        outputs = getattr(controller, "outputs", None)
+        self.command_history = CommandHistory(config_path, outputs) if config_path is not None and outputs is not None else None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="log-area"):
@@ -140,12 +344,14 @@ class RobotControlApp(App):
         with Vertical(id='command-area'):
             yield PolicyManagerPanel()
             yield Static("Starting…", id="status")
-            yield CommandInput(id="command", placeholder="help · ↑/↓ history · Tab complete · Ctrl+C exit")
+            yield CompletionPanel()
+            yield CommandInput(id="command", placeholder="help · ↑/↓ history · Tab candidates · → history · Ctrl+C exit")
 
     def on_mount(self) -> None:
         self._ui_active = True
         if self.start_controller:
             self.controller.start()
+        self.query_one(CommandInput).attach_assistance(self.completion_service, self.command_history)
         self.query_one(CommandInput).focus()
         self._refresh_timers.append(self.set_interval(0.05, self.refresh_controller))
         self._refresh_timers.append(self.set_interval(1 / 30, self.refresh_preview))
@@ -187,12 +393,18 @@ class RobotControlApp(App):
             return
         try:
             command_input.remember(line)
+        except ValueError:
+            # Invalid/secret text is never echoed or persisted. The router still
+            # receives every real nonempty submission so it revokes queued batches.
+            pass
+        else:
             self.query_one(StructuredLog).write(Text(f"> {line}", style="bold cyan"))
+        try:
             self.router.submit(line)
         except (ValueError, RuntimeError, PermissionError) as exc:
             self.query_one(StructuredLog).write(Text(f"命令失败：{exc}", style="red"))
             return
-        if line.strip() in ("exit", "quit"):
+        if line.strip() == "exit":
             self.exit_requested = True
             self._stop_preview()
 
@@ -215,14 +427,22 @@ class RobotControlApp(App):
         # Also cover programmatic use of Textual's inherited quit action.
         self.action_safe_exit()
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
         self._ui_active = False
         for timer in self._refresh_timers:
             timer.stop()
         self._stop_preview()
+        self.completion_service.close()
+        if self.command_history is not None:
+            self.command_history.close()
         self.router.panel_handler = None
         self.router.policy_manager_handler = None
         self.router.close()
+        if self.command_history is not None:
+            deadline = getattr(self.controller, '_shutdown_deadline', None)
+            budget = .5 if deadline is None else min(.5, max(0., deadline - time.monotonic()))
+            if budget:
+                await asyncio.to_thread(self.command_history.wait_idle, budget)
 
     def _camera_source(self):
         return self.controller.robot.camera_preview_snapshot()
@@ -241,7 +461,7 @@ class RobotControlApp(App):
         if self._editor_pending is not None:
             raise RuntimeError('链操作正在进行')
         if action != 'open' and (not panel.display or panel.token is None):
-            raise ValueError('请先运行 manage-policy')
+            raise ValueError('请先运行 policy manage')
         if action != 'open' and not panel.policies:
             raise ValueError('空草稿不能应用或保存，请添加 policy')
         order = list(panel.policies)
@@ -364,6 +584,11 @@ class RobotControlApp(App):
         if not self._ui_active or not self.is_running:
             return
         self._refresh_editor()
+        self.query_one(CommandInput).poll_assistance()
+        if self.command_history is not None:
+            warning = self.command_history.take_warning()
+            if warning:
+                self.query_one(StructuredLog).write(Text(warning, style="yellow"))
         if self.controller.done.is_set():
             self._stop_preview()
             self.router.close()
@@ -377,12 +602,8 @@ class RobotControlApp(App):
             events.append(event)
         log.write_events(events)
         monitors = getattr(self.controller, "policy_monitors", None)
-        monitor_commands = []
         if monitors is not None:
-            monitor_commands = ["monitor-" + identity for identity in monitors.available()]
             self.query_one(PolicyMonitorSidebar).update_snapshots(monitors.snapshot())
-        self.query_one(CommandInput).commands = (*COMMANDS, *getattr(self.controller, "local_commands", lambda: [])(), *monitor_commands)
-        self.query_one(CommandInput).mcp_tools = self.router.tool_names
         status = self.controller.status()
         fields = [f"{key}={value}" for key, value in status.items() if key not in ("direct", "runtime", "last_action_request")]
         last_request = status.get('last_action_request')

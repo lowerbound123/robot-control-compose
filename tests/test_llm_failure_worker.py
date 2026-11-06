@@ -410,8 +410,13 @@ async def test_real_controller_registers_instance_widget_with_six_monitor_values
         from test_policy_manager_tui import eventually
         app = RobotControlApp(controller, start_controller=False, graphics=GraphicsSupport('kitty'))
         async with app.run_test(size=(110, 36)) as pilot:
-            await eventually(pilot, lambda: 'monitor-llm_failure' in app.query_one(CommandInput).commands)
-            app.router.submit('monitor-llm_failure on')
+            field = app.query_one(CommandInput)
+            field.value = 'monitor '
+            field.cursor_position = len(field.value)
+            await eventually(pilot, lambda: field.completion_result is not None and any(
+                item.label == 'llm_failure' for item in field.completion_result.items))
+            field.value = ''
+            app.router.submit('monitor llm_failure')
             await eventually(pilot, lambda: controller.policy_monitors.snapshot().get('llm_failure', {}).get('values'))
             assert controller.policy_monitors.snapshot()['llm_failure']['values'] == {
                 'in_flight': 0, 'avg_http_s': '—', 'max_http_s': '—',

@@ -58,11 +58,11 @@ def run():
         assert controller.status()['policy'] is None and not ids(controller)
         base=controller.runtime._ids({'com.docker.compose.project':controller.runtime.context['base_project']},time.monotonic()+10)
         assert len(base)==2
-        command(controller,'help a')
+        command(controller,'policy help a')
         command(controller,'policy a info','failed')
         assert not ids(controller)
         outcomes.append('base exactly two; EMPTY; static help creates nothing')
-        command(controller,'switch a')
+        command(controller,'policy switch a')
         first=ids(controller)[0]
         first_instance=controller._worker.host.instance_id
         info=command(controller,'policy a info')
@@ -71,13 +71,13 @@ def run():
         wait(lambda:controller.buffer.consumed>2)
         info=command(controller,'policy a info')
         assert info['frames']>0
-        command(controller,'switch a')
+        command(controller,'policy switch a')
         assert first not in ids(controller)
         assert controller._worker.host.instance_id!=first_instance
         assert controller.status()['state']=='paused'
         assert all(abs(x)<1e-5 for x in controller.robot.read_state()['qpos'])
         outcomes.append('Python3.10 to 3.14; read-only shared images; same-ID cold recreate; no implicit reset')
-        command(controller,'switch pair')
+        command(controller,'policy switch pair')
         old=set(ids(controller));assert len(old)==3
         members=controller._worker.monitor_members()
         assert list(members)==['a-0','b','a-1']
@@ -99,7 +99,7 @@ def run():
             info=command(controller,'policy '+identity+' info')
             assert info['identity']==identity and info['source']=='/workspace/policy/'+source
         command(controller,'policy a-0 mark 7')
-        assert command(controller,'a-0-info')['marker']==7
+        assert command(controller,'policy a-0 info')['marker']==7
         assert command(controller,'policy a-1 info')['marker']==0
         command(controller,'policy a info','failed')
         hub=controller.policy_monitors
@@ -111,9 +111,9 @@ def run():
         command(controller,'resume')
         wait(lambda:controller.buffer.consumed>=consumed_before_chain+3)
         assert all(command(controller,'policy '+name+' info')['frames']>0 for name in members)
-        command(controller,'info','failed')
+        command(controller,'policy a info','failed')
         boundary=len(TRACE)
-        command(controller,'switch next')
+        command(controller,'policy switch next')
         new=set(ids(controller));assert len(new)==2 and not old&new
         events=TRACE[boundary:]
         removed=[i for i,e in enumerate(events) if e['command'][0]=='rm' and e['command'][-1] in old]
@@ -121,22 +121,22 @@ def run():
         assert len(removed)==3 and max(removed)<min(created)
         outcomes.append('chain a-0,b,a-1 has three independent hosts/contexts/sockets on one image and original source paths; distinct commands/monitors; all old CIDs removed before new create')
         (ROOT/'policy/b/compose.yaml').unlink()
-        command(controller,'switch a')
+        command(controller,'policy switch a')
         assert not new&set(ids(controller))
         outcomes.append('deleted old Compose still cleans by CID/labels')
-        command(controller,'switch failed','failed')
+        command(controller,'policy switch failed','failed')
         assert controller.status()['policy'] is None and not ids(controller)
         outcomes.append('initialize failure leaves FAULT_EMPTY with no orphan')
-        command(controller,'switch partial','failed')
+        command(controller,'policy switch partial','failed')
         assert controller.status()['policy'] is None and not ids(controller)
         outcomes.append('chain partial initialize failure reclaims every created member')
-        command(controller,'switch slow')
+        command(controller,'policy switch slow')
         before=time.monotonic()
-        command(controller,'switch a')
+        command(controller,'policy switch a')
         assert time.monotonic()-before<20
         assert controller.exit_code==1 and controller.status()['runtime']['cleanup_forced']
         outcomes.append('hanging release forces bounded cleanup; paused successor; nonzero fact retained')
-        command(controller,'switch a --reset')
+        command(controller,'policy switch a --reset')
         assert all(abs(x-.25)<1e-5 for x in controller.robot.read_state()['qpos'])
         outcomes.append('explicit --reset moves only through control thread')
         controller.submit('exit');assert controller.done.wait(25)
@@ -165,7 +165,7 @@ def run():
             pass
         assert handle.container_id not in ids(controller)
         outcomes.append('RC new run reconciles and removes previous run container from journal')
-        command(controller,'switch a')
+        command(controller,'policy switch a')
         old_anchor=controller.runtime.anchor_id
         deadline=time.monotonic()+20
         controller.runtime._run(['stop','--time','2',old_anchor],deadline)
@@ -180,7 +180,7 @@ def run():
             '--label','com.docker.compose.container-number=2',
             '--env','RC_UID='+str(context['uid']),'--env','RC_GID='+str(context['gid']),
             '--volume',context['rpc_volume']+':/run/robot-control','robot-control-compose-anchor:local'],deadline)
-        command(controller,'switch c','failed')
+        command(controller,'policy switch c','failed')
         assert controller.status()['runtime']['phase']=='BLOCKED_INFRA' and not ids(controller)
         assert controller.status()['policy'] is None
         outcomes.append('anchor replacement/ambiguity blocks new group and closes old group')

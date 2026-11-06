@@ -58,17 +58,17 @@ def test_pause_result_never_installs_or_trims_and_retains_worker(setup_controlle
     assert worker is controller._worker
 
 
-@pytest.mark.parametrize('action', ['pause', 'take', 'switch second', 'exit'])
+@pytest.mark.parametrize('action', ['pause', 'take', 'policy switch second', 'exit'])
 def test_late_pause_result_cannot_override_manual_control_or_lifecycle(setup_controller, action):
     controller, _, _ = setup_controller
     worker = ready(controller)
     operation(controller, controller.submit('resume'))
     until(lambda: len(worker.requests) == 1)
     request = worker.requests[-1]
-    operation(controller, controller.submit(action))
+    operation(controller, (controller.submit_control(action) if action in ("take", "return") else controller.submit(action)))
     before = controller.status()
     finish(worker, request=request)
-    if action not in ('exit', 'switch second'):
+    if action not in ('exit', 'policy switch second'):
         until(lambda: not controller.status()['in_flight'])
     after = controller.status()
     assert (after['state'], after['control_owner'], after['policy'], after['generation']) == (
@@ -95,21 +95,21 @@ def test_pause_never_masks_invalid_result(setup_controller, invalid):
     assert not any('task complete' in event['message'] for event in controller.read_events()['events'])
 
 
-def test_pause_preserves_a_pending_hot_patch_and_remains_paused(setup_controller):
+def test_runtime_pause_cancels_pending_configuration_bound_to_old_generation(setup_controller):
     controller, _, _ = setup_controller
     worker = ready(controller)
     operation(controller, controller.submit('resume'))
     until(lambda: len(worker.requests) == 1)
-    pending = controller.submit('set policy.params.value 2')
+    pending = controller.submit('policy first config set params.value 2')
     until(lambda: controller._operation is not None)
     with controller._lock:
-        assert controller._operation['kind'] == 'hot_patch'
+        assert controller._operation['kind'] == 'configure'
         assert not controller._operation['launched']
         finish(worker)
-    operation(controller, pending)
+    operation(controller, pending, 'cancelled')
     assert controller.status()['state'] == 'paused'
-    assert controller.status()['config_version'] == 2
-    assert controller.registry.get('first').config['params']['value'] == 2
+    assert controller.status()['config_version'] == 1
+    assert controller.registry.get('first').config['params']['value'] == 1
     assert controller.status()['queue_remaining'] == controller.status()['consumed'] == 0
     assert controller._worker is worker and worker.alive
 

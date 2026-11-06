@@ -31,7 +31,7 @@ TUI 和 headless 日志按固定 UTC+8 显示完整日期、时间和毫秒，�
 
 ## 阅读 JSON 日志
 
-在 TUI 执行 `status`、`show rc` 或 MCP 查询，可以看到 JSON 日志。每条记录第一行右侧有 `[复制]`；JSON 左侧另有 `▸`。
+在 TUI 执行 `status`、`config rc show` 或 MCP 查询，可以看到 JSON 日志。每条记录第一行右侧有 `[复制]`；JSON 左侧另有 `▸`。
 
 - 默认折叠为一个物理行，超宽预览显示 `…`。点击第一行展开，再次点击第一行收起。
 - 展开后按两个空格缩进，区分字段名、字符串、数字、布尔值与 null 的颜色；长行自动换行。
@@ -110,7 +110,7 @@ python -m pytest tests/test_structured_log.py tests/test_structured_log_tui.py t
 
 自动化覆盖 JSON、选区、实际 OSC 52 输出、增强键盘事件、粘贴、滚动、拥塞和退出。PTY 回归运行真实 Textual 终端驱动，丢弃启动阶段输出后，分别通过尺寸通知和同尺寸命令提交恢复鼠标；随后发送终端鼠标字节，检查 JSON 展开、完整原文 OSC 52 输出和正常退出。真实终端还需要人工验收：
 
-1. Ghostty 中 attach 到控制器，执行 `show rc`，展开和收起 JSON。
+1. Ghostty 中 attach 到控制器，执行 `config rc show`，展开和收起 JSON。
 2. 拖选中文及跨行文字，用 Ctrl+Shift+C 粘贴到宿主编辑器，检查没有多余自动换行。
 3. 点击 JSON 的 `[复制]`，确认粘贴得到完整 JSON。
 4. 从宿主复制多行带引号文本，在日志区粘贴，确认命令框保留全部文本且没有执行。

@@ -1,5 +1,6 @@
 """Read policy command declarations without importing model implementations."""
 from rc_policy_sdk.commands import command_specs, command_usage
+from rc_policy_sdk.argument_hints import normalize_config_hints
 
 from .policy_catalog import read_descriptor
 from .secret_config import public_value
@@ -53,11 +54,11 @@ class PolicyCapabilities:
     def _describe_commands(source, instance, config, *, loaded=False, runnable=False, chain=False):
         commands = []
         for name, spec in command_specs(config).items():
-            commands.append({'name': name, 'alias': f'{instance}-{name}' if instance and chain else None,
-                             'args': spec['args'], 'help': spec['help'], 'timeout_s': spec['timeout_s'],
+            commands.append({'name': name, 'alias': None,
+                             'args': spec['args'], 'parameters': spec['parameters'], 'help': spec['help'], 'timeout_s': spec['timeout_s'],
                              'effect': spec.get('effect'), 'requires_take': True})
         return {'source_id': source, 'instance_id': instance, 'loaded': loaded,
-                'runnable': runnable, 'commands': commands}
+                'runnable': runnable, 'commands': commands, 'config_hints': normalize_config_hints(config.get('config_hints'))}
 
     @staticmethod
     def _format_capabilities(capabilities):

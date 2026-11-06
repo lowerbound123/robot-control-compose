@@ -97,7 +97,7 @@ def model_fixture(body):
         elif status.get('control_owner') != 'mcp':
             value = decision('take')
         else:
-            value = decision(operation, {} if operation == 'return' else {'line': 'switch example_chain' if '切换自链' in text else 'reset'})
+            value = decision(operation, {} if operation == 'return' else {'line': 'policy switch example_chain' if '切换自链' in text else 'reset'})
     else:
         value = decision() if 'status' in names else decision('status')
     return text, context, exchanges, value
@@ -181,7 +181,8 @@ def main():
         stream_gate.set()
 
         def command(line):
-            result = controller.wait_operation(controller.submit(line), 15)
+            identity = controller.submit_control(line) if line in ("take", "return") else controller.submit(line)
+            result = controller.wait_operation(identity, 15)
             if result['status'] != 'succeeded': raise RuntimeError(str(result))
             return result
 
@@ -209,7 +210,7 @@ def main():
                 elif self.path == '/test/requests': self.reply(requests)
                 elif self.path == '/test/clock': self.reply({'camera_wall_epoch': robot._camera_wall_epoch, 'now': time.time()})
                 elif self.path == '/test/batch-state':
-                    self.reply({'held': batch_held.is_set(), 'config': controller.query('show policy')})
+                    self.reply({'held': batch_held.is_set(), 'config': controller.query('policy example config show')})
                 else: self.reply({'error': 'not found'}, 404)
             def do_POST(self):
                 length = int(self.headers.get('Content-Length', 0))
@@ -247,7 +248,7 @@ def main():
                     batch_gate.clear()
                     batch_held.clear()
                     worker = controller._worker
-                    update = worker.update_config
+                    update = worker.apply_config
                     def delayed(*args, **kwargs):
                         batch_held.set()
                         try:
@@ -255,8 +256,8 @@ def main():
                                 raise RuntimeError('test batch gate timed out')
                             return update(*args, **kwargs)
                         finally:
-                            worker.update_config = update
-                    worker.update_config = delayed
+                            worker.apply_config = update
+                    worker.apply_config = delayed
                     self.reply({'ready': True})
                     return
                 if self.path == '/test/batch-release':
@@ -266,7 +267,7 @@ def main():
                 if self.path == '/test/reset':
                     batch_gate.set()
                     stream_gate.set()
-                    for line in ('record off', 'pause', 'switch example', 'return', 'pause'):
+                    for line in ('record stop', 'pause', 'policy switch example', 'return', 'pause'):
                         command(line)
                     requests.clear()
                     self.reply(controller.status())

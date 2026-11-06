@@ -58,8 +58,8 @@ def test_text_help_prioritizes_policy_named_record_over_builtin_topic(example_rc
     config['id'] = 'record'
     (folder / 'policy.yaml').write_text(json.dumps(config))
     (folder / 'main.py').write_text('raise RuntimeError("help imported policy")\n')
-    reply = tool(example_mcp, 'command', line='help record')
-    assert 'policy record set-chunk-size' in reply['result']
+    reply = tool(example_mcp, 'command', line='policy help record')
+    assert 'policy record set-chunk-size' in reply['result']['help']
     assert example_rc.control_owner == 'policy'
 
 
@@ -69,7 +69,7 @@ def test_policy_command_named_return_and_wait_is_not_an_internal_handoff(example
     config = read_config(path)
     config['tui_commands']['return_and_wait'] = {'handler': 'example', 'args': []}
     path.write_text(json.dumps(config))
-    command(rc, 'switch example')
+    command(rc, 'policy switch example')
     tool(example_mcp, 'take')
     reply = query(example_mcp, 'policy_command', instance_id='example', command='return_and_wait')
     receipt = rc.wait_operation(reply['operation_id'], 2)
@@ -86,8 +86,9 @@ def test_structured_and_text_commands_share_targets_and_strict_arguments(example
     assert service.submit_tool('policy_command', {'instance_id': 'example', 'command': 'example'}).result(5).is_error
     tool(service, 'take')
     first = tool(service, 'policy_command', instance_id='example', command='example')['result']
-    for line in ('policy example example', 'example'):
-        assert tool(service, 'command', line=line)['result'] == first
+    assert tool(service, 'command', line='policy example example')['result'] == first
+    for line in ('example', 'example-example'):
+        assert service.submit_tool('command', {'line': line, 'wait': True}).result(5).is_error
     version = tool(service, 'policy_command', instance_id='example', command='shared-read')['result']['version']
     for args in (['hello', True], ['hello', str(version)], ['hello'], ['hello', float('inf')]):
         reply = service.submit_tool('policy_command', {
@@ -95,7 +96,7 @@ def test_structured_and_text_commands_share_targets_and_strict_arguments(example
         assert reply.is_error
     tool(service, 'policy_command', instance_id='example', command='shared-write', args=['hello "world"', version])
     assert tool(service, 'policy_command', instance_id='example', command='shared-read')['result']['value'] == 'hello "world"'
-    assert 'set-chunk-size' in str(tool(service, 'command', line='help example')['result'])
+    assert 'set-chunk-size' in str(tool(service, 'command', line='policy help example')['result'])
     assert rc.status()['control_owner'] == 'mcp'
 
 
@@ -109,7 +110,7 @@ def test_record_is_independent_of_running_policy_and_wait_episode(example_rc, ex
     started = tool(service, 'record', action='on')['result']
     before = rc.status()['consumed']
     until(lambda: rc.status()['consumed'] > before and rc.status()['recording']['samples_written'] >= 2)
-    stopped = tool(service, 'command', line='record off')['result']
+    stopped = tool(service, 'command', line='record stop')['result']
     assert started['session_id'] == stopped['session_id']
     assert stopped['state'] == 'idle' and stopped['pending_bytes'] == 0
     assert rc.status()['control_owner'] == 'policy' and rc.status()['state'] == 'running'
@@ -117,10 +118,10 @@ def test_record_is_independent_of_running_policy_and_wait_episode(example_rc, ex
     tool(service, 'take')
     episode = query(service, 'return_and_wait', timeout_s=0)['operation_id']
     until(lambda: rc.status()['state'] == 'running')
-    tool(service, 'command', line='record on')
+    tool(service, 'command', line='record start')
     tool(service, 'record', action='off')
     assert not query(service, 'get_policy_result', operation_id=episode)['finished']
-    command(rc, 'next-result completed recorded')
+    command(rc, 'policy example next-result completed recorded')
     assert rc.wait_operation(episode, 5)['status'] == 'succeeded'
 
 
@@ -202,11 +203,11 @@ def test_return_cancels_management_requests_queued_in_old_epoch(example_rc, exam
     with rc._lock:
         identity = (rc.submit_policy_command('example', 'shared-write', ['stale', 0]) if kind == 'command'
                     else rc.submit_policy_chain(['example', 'example']))
-        returning = rc.submit('return', origin='mcp')
+        returning = rc.submit_control('return')
     assert rc.wait_operation(returning, 5)['status'] == 'succeeded'
     assert rc.wait_operation(identity, 5)['status'] == 'cancelled'
     assert rc._worker is old and rc.control_owner == 'policy'
-    assert command(rc, 'shared-read')['value'] is None
+    assert command(rc, 'policy example shared-read')['value'] is None
 
 
 def test_record_can_stop_while_policy_lifecycle_is_busy(example_rc, example_mcp, monkeypatch):
@@ -219,7 +220,7 @@ def test_record_can_stop_while_policy_lifecycle_is_busy(example_rc, example_mcp,
             assert release.wait(5)
         return original(job)
     monkeypatch.setattr(rc, '_run_job', delayed)
-    pending = rc.submit('switch example')
+    pending = rc.submit('policy switch example')
     try:
         assert entered.wait(3)
         owner, epoch, generation = rc.control_owner, rc._control_epoch, rc.buffer.generation

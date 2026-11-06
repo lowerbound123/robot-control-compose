@@ -27,7 +27,7 @@ def test_command_codec_quotes_and_types():
 @pytest.mark.parametrize("change", [
     {"tui_commands": {"pause": {"handler": "f", "args": []}}},
     {"tui_commands": {"x": {"handler": "missing.dot", "args": []}}},
-    {"tui_commands": {"x": {"handler": "f", "args": ["json"]}}},
+    {"tui_commands": {"x": {"handler": "f", "args": ["unknown-type"]}}},
     {"tui_commands": {"x": {"handler": "f", "args": [], "timeout_s": 0}}},
     {"tui_commands": {"x": {"handler": "f", "args": [], "timeout_s": True}}},
     {"tui_commands": {"x": {"handler": "f", "args": [], "timeout_s": float("inf")}}},

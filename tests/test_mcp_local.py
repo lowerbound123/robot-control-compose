@@ -91,7 +91,7 @@ def test_local_unknown_tool_and_nested_terminal_command_fail(local_service):
             local_call(service, "take")
         response = local_call(service, "command", {"line": "mcp take", "wait": True})
         assert response.is_error
-        assert "local-only" in response.structured_content["error"]
+        assert "本地" in response.structured_content["error"]
         response = local_call(service, "command", {"line": "custom-policy-command", "wait": True})
         assert response.is_error
     assert not controller.done.is_set()

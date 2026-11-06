@@ -15,7 +15,13 @@ from test_controller import until
 
 
 SOURCE = '''
+import json
 import time
+def configure(context, candidate, key, value, callback):
+    if key != 'params.value': raise ValueError('unsupported configuration key')
+    candidate['params']['value'] = json.loads(value)
+    validate_config(candidate)
+    callback("reinitialize")
 def validate_config(config):
     if config['params']['value'] < 0:
         raise ValueError('invalid candidate value')
@@ -46,7 +52,7 @@ def monitor(context): return {'id':context['config']['id'], 'value':context['con
 def operation(controller, identity, expected='succeeded'):
     until(lambda: controller.get_operation(identity)['status'] in ('succeeded','failed','cancelled'), 8)
     value = controller.get_operation(identity)
-    assert value['status'] == expected, value
+    assert value['status'] == expected, json.dumps(value, ensure_ascii=False)
     return value
 
 
@@ -127,17 +133,19 @@ def test_disconnect_can_still_shutdown_controller_and_confirm_reader_exit(native
 
 def test_chain_commands_and_member_reload_and_explicit_save(native_controller):
     controller, children, root = native_controller
-    for name, expected in [('a-0-test','a-0'), ('b-test','b'), ('policy a-1 test', 'a-1')]:
+    for name, expected in [('policy a-0 test','a-0'), ('policy b test','b'), ('policy a-1 test', 'a-1')]:
         assert operation(controller, controller.submit(name))['result'] == expected
-    for command in ('a-test', 'policy a test', 'test'):
-        operation(controller, controller.submit(command), 'failed')
+    for command in ('a-test', 'test'):
+        with pytest.raises(ValueError):
+            controller.submit(command)
+    operation(controller, controller.submit('policy a test'), 'failed')
     help_text = controller.local_help()
     assert 'policy a-0 test' in help_text and 'policy a-1 test' in help_text
     assert 'policy a test' not in help_text
     assert '[running]' in controller.local_help('a-0')
     old = controller._worker
     old_versions = [member.version for member in old.record.members]
-    operation(controller, controller.submit('a-0-change 9'))
+    operation(controller, controller.submit('policy a-0 change 9'))
     assert controller.status()['state'] == 'paused'
     assert old is controller._worker and len(children) == 4
     assert children[0].cleanup_confirmed and all(w.runnable for w in children[1:])
@@ -147,19 +155,19 @@ def test_chain_commands_and_member_reload_and_explicit_save(native_controller):
     assert controller.registry.get('a').config['params']['value'] == 1
     path = root / 'policy/a/policy.yaml'
     before = path.read_bytes()
-    for command in ('save-config a', 'save-config policy a'):
+    for command in ('policy a config save',):
         result = operation(controller, controller.submit(command), 'failed')
         assert 'a-0' in result['error'] and 'a-1' in result['error']
         assert path.read_bytes() == before
-    operation(controller, controller.submit('save-config a-0'))
+    operation(controller, controller.submit('policy a-0 config save'))
     assert read_config(path)['params']['value'] == 9
     assert read_config(path)['id'] == 'a'
     assert not (root / 'policy/a-0').exists()
     assert [member.config['params']['value'] for member in controller.registry.get('default_chain').members] == [9, 1, 1]
-    operation(controller, controller.submit('save-config policy a-1'))
+    operation(controller, controller.submit('policy a-1 config save'))
     assert read_config(path)['params']['value'] == 1
     assert controller.registry.get('a').config['params']['value'] == 1
-    operation(controller, controller.submit('set policy.params.value 10'), 'failed')
+    operation(controller, controller.submit('policy a config set params.value 10'), 'failed')
 
 
 @pytest.mark.parametrize('command_name', ['change', 'reinit'])
@@ -171,20 +179,20 @@ def test_failed_member_reload_can_retry_only_that_slot(native_controller, comman
     hub = controller.policy_monitors
     hub.set_enabled('b', True)
     until(lambda: hub.snapshot()['b']['values'])
-    operation(controller, controller.submit(f'a-1-{command_name} 77'), 'failed')
+    operation(controller, controller.submit(f'policy a-1 {command_name} 77'), 'failed')
     assert controller.status()['retry_reload_instance'] == 'a-1'
     assert controller.status()['state'] == 'fault'
     assert chain.config_version == before and original['a-1'].cleanup_confirmed == (command_name == 'change')
     assert original['b'].runnable and original['a-0'].runnable
     sampled = hub.snapshot()['b']['updated_at']
     until(lambda: hub.snapshot()['b']['updated_at'] > sampled)
-    for command in ('resume', 'retry-reload a', 'retry-reload b', 'retry-reload a-1'):
+    for command in ('resume', 'policy a retry', 'policy b retry', 'policy a-1 retry'):
         operation(controller, controller.submit(command), 'failed')
-    operation(controller, controller.submit('take'))
-    operation(controller, controller.submit('retry-reload a-1'), 'failed')
-    operation(controller, controller.submit('return'), 'failed')
+    operation(controller, controller.submit_control('take'))
+    operation(controller, controller.submit('policy a-1 retry'), 'failed')
+    operation(controller, controller.submit_control('return'), 'failed')
     (root / 'allow_77').touch()
-    operation(controller, controller.submit('retry-reload a-1'))
+    operation(controller, controller.submit('policy a-1 retry'))
     assert chain is controller._worker and chain.config_version == before + 1
     assert controller.status()['state'] == 'paused' and controller.status()['retry_reload_instance'] is None
     assert list(chain.monitor_members()) == ['a-0', 'b', 'a-1']
@@ -197,10 +205,10 @@ def test_failed_member_reload_can_retry_only_that_slot(native_controller, comman
 
 def test_whole_group_failure_has_no_member_retry(native_controller):
     controller, children, _ = native_controller
-    operation(controller, controller.submit('a-1-change-all 77'), 'failed')
+    operation(controller, controller.submit('policy a-1 change-all 77'), 'failed')
     assert controller._worker is None and all(w.cleanup_confirmed for w in children)
     assert controller.status()['state'] == 'fault' and controller.status()['retry_reload_instance'] is None
-    operation(controller, controller.submit('retry-reload a-1'), 'failed')
+    operation(controller, controller.submit('policy a-1 retry'), 'failed')
 
 
 def test_unproved_member_exit_prevents_replacement(native_controller, monkeypatch):
@@ -210,12 +218,12 @@ def test_unproved_member_exit_prevents_replacement(native_controller, monkeypatc
     def missing_proof(*args, **kwargs):
         raise RuntimeError('reader exit not proved')
     monkeypatch.setattr(children[-1], 'close', missing_proof)
-    for line in ('a-1-change 8', 'retry-reload a-1'):
+    for line in ('policy a-1 change 8', 'policy a-1 retry'):
         operation(controller, controller.submit(line), 'failed')
         assert len(children) == 3 and all(w.runnable for w in children)
         assert chain.record.members[-1].config['params']['value'] == 1
     monkeypatch.setattr(children[-1], 'close', original)
-    operation(controller, controller.submit('retry-reload a-1'))
+    operation(controller, controller.submit('policy a-1 retry'))
     assert len(children) == 4 and controller.exit_code != 0
 
 
@@ -242,12 +250,12 @@ def test_external_reader_blocks_reload_until_ack(native_controller, command_name
         {'operation_id':'done'} if path.endswith('unload') else
         {'status':'succeeded','result':{'state':'unloaded','worker_pid':None,'instance_id':'remote'}})
     try:
-        operation(controller, controller.submit(f'a-1-{command_name} 9'), 'failed')
+        operation(controller, controller.submit(f'policy a-1 {command_name} 9'), 'failed')
         assert len(children) == 3 and children[-1].runnable
         assert controller.status()['retry_reload_instance'] == 'a-1'
         assert 'r' in resources._records['sibling-reader']['leases']
         resources.handle(sibling, dict(method='released', context_id=sibling.context_id, remote_id='sibling-reader', request_id='r'))
-        operation(controller, controller.submit('retry-reload a-1'))
+        operation(controller, controller.submit('policy a-1 retry'))
         assert len(children) == 4 and children[0].runnable
     finally:
         if 'sibling-reader' in resources._records:
@@ -263,11 +271,11 @@ def test_rejected_inplace_candidate_preserves_original_context_and_command_gate(
     operation(controller, controller.submit('resume'))
     until(lambda: controller.status()['consumed'])
     generation = controller.buffer.generation
-    operation(controller, controller.submit('a-1-reinit -1'), 'failed')
+    operation(controller, controller.submit('policy a-1 reinit -1'), 'failed')
     assert controller.status()['state'] == 'running' and controller.status()['retry_reload_instance'] is None
     assert controller.buffer.generation == generation
     assert (worker.context_id, worker.config_version, chain.config_version) == old
-    assert operation(controller, controller.submit('a-1-test'))['result'] == 'a-1'
+    assert operation(controller, controller.submit('policy a-1 test'))['result'] == 'a-1'
 
 
 def test_release_failure_leaves_target_parked_until_cold_retry(native_controller):
@@ -277,11 +285,11 @@ def test_release_failure_leaves_target_parked_until_cold_retry(native_controller
     version = target.config_version
     marker = root / 'fail_release'
     marker.touch()
-    operation(controller, controller.submit('a-1-reinit 4'), 'failed')
+    operation(controller, controller.submit('policy a-1 reinit 4'), 'failed')
     assert chain.member_workers()['a-1'] is target and target.config_version == version
     assert controller.status()['state'] == 'fault'
     operation(controller, controller.submit('resume'), 'failed')
-    operation(controller, controller.submit('retry-reload a-1'))
+    operation(controller, controller.submit('policy a-1 retry'))
     assert marker.read_text().splitlines() == ['release failed']
     marker.unlink()
     assert children[:2] == [chain.member_workers()['a-0'], chain.member_workers()['b']]
@@ -300,7 +308,7 @@ def test_member_preflight_losing_ipc_anchor_retires_invalid_group(native_control
                               snapshot=lambda: {}, target=None)
     with monkeypatch.context() as patch:
         patch.setattr(controller, 'runtime', runtime)
-        operation(controller, controller.submit('a-1-change 9'), 'failed')
+        operation(controller, controller.submit('policy a-1 change 9'), 'failed')
         assert runtime.phase == 'BLOCKED_INFRA' and controller.status()['state'] == 'fault'
         assert controller._worker is None and all(w.cleanup_confirmed for w in children)
         assert controller.status()['retry_reload_instance'] is None
@@ -313,7 +321,7 @@ def test_missing_container_handle_cannot_be_treated_as_removal(native_controller
                               prepare_spec=lambda *a, **kw: object(), snapshot=lambda: {})
     with monkeypatch.context() as patch:
         patch.setattr(controller, 'runtime', runtime)
-        result = operation(controller, controller.submit('a-1-change 9'), 'failed')
+        result = operation(controller, controller.submit('policy a-1 change 9'), 'failed')
         assert 'container handle' in result['error']
         assert len(children) == 3 and all(w.runnable for w in children)
 
@@ -321,11 +329,11 @@ def test_missing_container_handle_cannot_be_treated_as_removal(native_controller
 def test_edit_credentials_invalidated_by_switch_and_mcp_rejected(native_controller):
     controller, _, _ = native_controller
     token = operation(controller, controller.manage_policy('open'))['result']['token']
-    operation(controller, controller.submit('switch a'))
+    operation(controller, controller.submit('policy switch a'))
     with pytest.raises(RuntimeError, match='stale'):
         controller.manage_policy('apply', ['b'], token=token)
     with pytest.raises(PermissionError):
-        controller.submit('manage-policy', origin='mcp')
+        controller.submit('policy manage', origin='mcp')
 
 
 def test_chain_uses_head_execution_and_saved_draft_survives_restart(native_controller):
@@ -391,18 +399,18 @@ def test_editor_waiting_application_is_invalidated_by_later_switch(native_contro
     monkeypatch.setattr(controller.registry, 'propose_chain', blocked)
     pending = controller.manage_policy('apply', ['b','a'], token=token)
     assert entered.wait(5)
-    switch = controller.submit('switch b')
+    switch = controller.submit('policy switch b')
     finish.set()
     operation(controller, pending, 'cancelled')
     operation(controller, switch)
     assert controller.status()['policy'] == 'b'
 
 
-def test_cold_set_of_single_policy_invalidates_open_editor(native_controller):
+def test_config_reinitialize_of_single_policy_invalidates_open_editor(native_controller):
     controller, _, _ = native_controller
-    operation(controller, controller.submit('switch a'))
+    operation(controller, controller.submit('policy switch a'))
     token = operation(controller, controller.manage_policy('open'))['result']['token']
-    operation(controller, controller.submit('set policy.params.value 2'))
+    operation(controller, controller.submit('policy a config set params.value 2'))
     with pytest.raises(RuntimeError, match='stale'):
         controller.manage_policy('apply', ['b'], token=token)
 
@@ -430,7 +438,7 @@ def test_repeated_instance_monitors_are_independent_and_reset_on_reload(native_c
         assert release.wait(5)
         return original(*args, **kwargs)
     monkeypatch.setattr(controller, 'process_factory', delayed_factory)
-    receipt = controller.submit('a-0-change 9')
+    receipt = controller.submit('policy a-0 change 9')
     try:
         assert entered.wait(5)
         during = hub.snapshot()

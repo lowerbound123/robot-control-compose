@@ -54,27 +54,27 @@ class ChainManagement:
 
     def manage_policy(self, action, policies=None, *, token=None):
         if action not in ('open', 'apply', 'save', 'close'):
-            raise ValueError('unknown manage-policy action')
+            raise ValueError('unknown policy manage action')
         with self._lock:
             if self.done.is_set() or self._stop.is_set():
                 raise RuntimeError('controller is stopping')
             if action == 'open':
                 if self.control_owner != 'policy' or self._return_requested:
-                    raise PermissionError('manage-policy is unavailable during MCP takeover')
+                    raise PermissionError('policy manage is unavailable during MCP takeover')
                 self._invalidate_policy_editor()
                 self._edit_active = True
                 token = self._edit_serial
                 # Urgent pause also cancels a lifecycle already in progress.
                 self.submit('pause')
             elif token != self._edit_serial or not self._edit_active:
-                raise RuntimeError('stale policy editor; reopen manage-policy')
+                raise RuntimeError('stale policy editor; reopen policy manage')
             if action == 'close':
                 self._edit_active = False
                 return None
             if self.control_owner != 'policy' or self._return_requested:
-                raise PermissionError('manage-policy is unavailable during MCP takeover')
-            identity = self.operations.create(f'manage-policy {action}')
-            self._commands.put(ControlRequest(identity, f'manage-policy {action}', 'tui', self._control_epoch,
+                raise PermissionError('policy manage is unavailable during MCP takeover')
+            identity = self.operations.create(f'policy manage {action}')
+            self._commands.put(ControlRequest(identity, f'policy manage {action}', 'tui', self._control_epoch,
                                               chain_action=action, chain_policies=tuple(policies or ()), edit_token=token))
             self._wake.set()
             return identity
@@ -92,7 +92,7 @@ class ChainManagement:
                 self._operation_start('chain_save', policies=list(request.chain_policies), old_worker=self._worker)
             return
         if request.edit_token != self._edit_serial or not self._edit_active:
-            raise RuntimeError('stale policy editor; reopen manage-policy')
+            raise RuntimeError('stale policy editor; reopen policy manage')
         if self.control_owner != 'policy' or request.epoch != self._control_epoch:
             raise PermissionError('policy control ownership changed')
         action = request.chain_action

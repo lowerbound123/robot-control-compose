@@ -8,6 +8,40 @@ import pytest
 from robot_control import cli
 
 
+@pytest.fixture(autouse=True)
+def cli_service_boundary(monkeypatch):
+    """CLI unit tests verify service lifecycle; HTTP integration lives in test_mcp."""
+    services = []
+
+    class Service:
+        tools = ()
+        settings = {}
+        url = "http://127.0.0.1:4000/mcp"
+
+        def __init__(self, controller, override=None):
+            self.controller = controller
+            self.override = override
+            self.calls = []
+            services.append(self)
+
+        def bind(self):
+            assert self.controller.starts == 0
+            self.calls.append("bind")
+
+        def start(self):
+            assert self.controller.starts == 1
+            self.calls.append("start")
+
+        def close(self):
+            assert self.controller.done.is_set()
+            self.calls.append("close")
+
+    monkeypatch.setattr(cli, "make_mcp_service", Service)
+    yield services
+    for service in services:
+        assert service.calls == ["bind", "start", "close"]
+
+
 class FakeController:
     instances = []
 
@@ -26,20 +60,20 @@ class FakeController:
 
     def submit(self, line):
         self.commands.append(line)
-        if line in ("exit", "quit"):
+        if line == "exit":
             self.events.put({"level": "INFO", "message": "cleaned up"})
             self.done.set()
 
 
 def test_headless_preserves_json_and_eof_runs_cleanup(monkeypatch, capsys):
     monkeypatch.setattr(cli, "make_controller", FakeController)
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO('set policy.params.label "hello world"\nstatus\n'))
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO('policy first config set params.label "hello world"\nstatus\n'))
     previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     assert cli.main(["--config", "custom.json", "--headless"]) == 0
     controller = FakeController.instances[-1]
     assert controller.config_path == "custom.json"
     assert controller.starts == 1
-    assert controller.commands == ['set policy.params.label "hello world"', "status", "exit"]
+    assert controller.commands == ['policy first config set params.label "hello world"', "status", "exit"]
     assert "ready" in capsys.readouterr().out
     assert all(signal.getsignal(sig) == old for sig, old in previous.items())
 

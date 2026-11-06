@@ -126,7 +126,7 @@ RC_HOST_PROJECT_ROOT="$PWD" docker compose --env-file policy/pi05/deployment.env
 先按 [真机部署说明](ubuntu22-amd64-from-scratch.md) 启动 RC；机器人和相机驱动由现场独立管理。RC 中执行：
 
 ```text
-switch pi05
+policy switch pi05
 status
 ```
 

@@ -14,7 +14,50 @@ hot_reloadable: []
 tui_commands:
   switch-provider:
     handler: switch_provider
-    args: [str]
+    args: [{name: config_path, type: path, help: 供应商配置文件, root: ., kind: file,
+          suffixes: [.yaml, .yml]}]
     help: 校验供应商配置文件并冷重载，完成后等待 resume
     timeout_s: 30
     effect: reload_policy
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.check_every_steps:
+      type: int
+      help: 检测间隔（动作步数）
+    params.history_size:
+      type: int
+      help: 保留的历史条数
+    params.image_max_side:
+      type: int
+      help: 图像最长边（像素）
+    params.jpeg_quality:
+      type: int
+      help: JPEG 图像质量
+    params.provider_config_path:
+      type: path
+      help: 供应商配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .yaml
+      - .yml
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      - async
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      - epos
+      - mixed
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停

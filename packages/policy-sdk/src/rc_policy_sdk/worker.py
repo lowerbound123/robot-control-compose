@@ -17,7 +17,7 @@ from .control import RUNTIME_TOOLS, runtime_tools
 
 from .actions import CONTROL_MODES, normalize_actions
 
-from .configuration import apply_patch
+from .configuration import ConfigureCallback, apply_candidate, apply_patch, same_config, validate_candidate
 from .images import map_images
 from .lifecycle import become_subreaper, cleanup_worker_children
 from .runtime import PolicyRuntime, WorkerChannel, invoke
@@ -73,6 +73,10 @@ def run_session(connection, policy_dir, namespace):
     message = {}
     release_due = False
     active = False
+    prepared_config = None
+    configure_applied = False
+    configure_failed = False
+    configure_committed = False
     try:
         channel = WorkerChannel(connection)
         message = channel.commands.get()
@@ -91,7 +95,9 @@ def run_session(connection, policy_dir, namespace):
         release_due = True
         specs = command_specs(config)
         check_command_effects(specs, message)
-        reinitialize_enabled = any(spec.get("effect") == "reinitialize_policy" for spec in specs.values())
+        supports_configure = callable(getattr(module, "configure", None))
+        configure_enabled = supports_configure and message.get("configure") is True
+        reinitialize_enabled = configure_enabled or any(spec.get("effect") == "reinitialize_policy" for spec in specs.values())
         channel.reinitialize_enabled = reinitialize_enabled
         if reinitialize_enabled and (type(channel.context_id) is not str or not channel.context_id):
             raise ValueError("reinitialize_policy requires a nonempty initial context_id")
@@ -105,7 +111,10 @@ def run_session(connection, policy_dir, namespace):
         channel.on_command = lambda request: commands.submit(request, version)
         channel.on_command_gate = commands.pause
         def resume():
-            if active:
+            nonlocal configure_committed
+            if active and (not channel.configure_fenced or configure_committed):
+                channel.configure_fenced = False
+                configure_committed = False
                 commands.resume()
                 monitor.resume()
                 channel.observations_gated = False
@@ -127,6 +136,7 @@ def run_session(connection, policy_dir, namespace):
         if callable(getattr(module,'wants_observations',None)):
             supported=supported and module.wants_observations(context)
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
+                      "configure": configure_enabled, "context_id": channel.context_id,
                       "tui_command_effects_v2": list(COMMAND_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
                       "global_state_version": 1 if channel.global_memory is not None else None})
         channel.send({'type':'capabilities','observe':supported})
@@ -136,7 +146,77 @@ def run_session(connection, policy_dir, namespace):
             if kind == "shutdown":
                 break
             try:
-                if kind.startswith("reinit_"):
+                if channel.configure_fenced and kind in ('update_config', 'reset_context'):
+                    raise RuntimeError('configure transaction blocks legacy lifecycle operations')
+                if configure_failed and kind.startswith('reinit_'):
+                    raise RuntimeError('configure failed after apply; cold retry required')
+                if kind.startswith("configure_"):
+                    if configure_failed:
+                        raise RuntimeError("configure failed after apply; cold retry required")
+                    expected_version = message.get("new_config_version") if kind == "configure_commit" else message.get("config_version")
+                    if not active or message.get("context_id") != channel.context_id or type(expected_version) is not int or expected_version != version:
+                        raise ValueError("stale configure context")
+                    if kind == "configure_prepare":
+                        monitor.barrier()
+                        commands.barrier()
+                        channel.barrier()
+                        if prepared_config is not None:
+                            raise ValueError("configure transaction already prepared")
+                        try:
+                            if not configure_enabled:
+                                raise ValueError("policy does not support configure")
+                            if type(message.get("key")) is not str or not message["key"] or type(message.get("value")) is not str:
+                                raise ValueError("configure requires key and raw text value")
+                            candidate = copy.deepcopy(config)
+                            callback = ConfigureCallback()
+                            try:
+                                returned = module.configure(context, candidate, message["key"], message["value"], callback)
+                            finally:
+                                callback.expire()
+                            if returned is not None:
+                                raise ValueError("configure must return None")
+                            validate_candidate(config, candidate, callback.action)
+                            if config.get('schema_version') == 3:
+                                from .catalog import validate_runtime_policy
+                                validate_runtime_policy(candidate, Path(policy_dir).name, config['id'])
+                            if callable(getattr(module, "validate_config", None)):
+                                module.validate_config(copy.deepcopy(candidate))
+                            # User code may retain its candidate; freeze a detached snapshot.
+                            prepared_config = (copy.deepcopy(candidate), callback.action)
+                        except Exception as exc:
+                            raise CandidateRejected(str(exc)) from exc
+                        channel.send({"type": "ack", "operation_id": message["operation_id"], **_identity(message),
+                                      "config": prepared_config[0], "action": prepared_config[1]})
+                    elif kind == "configure_apply":
+                        if (prepared_config is None or configure_applied or not same_config(message.get("config"), prepared_config[0])
+                                or message.get("action") != prepared_config[1] or prepared_config[1] == "reinitialize"
+                                or type(message.get("new_config_version")) is not int or message["new_config_version"] <= version):
+                            raise ValueError("invalid prepared configure application")
+                        # From here even a throwing reset has changed active state.
+                        configure_failed = True
+                        apply_candidate(config, prepared_config[0])
+                        if prepared_config[1] == "reset":
+                            module.reset_context(context)
+                        version = message["new_config_version"]
+                        configure_applied = True
+                        configure_failed = False
+                        channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version, "context_id": channel.context_id})
+                    elif kind == "configure_commit":
+                        if not configure_applied:
+                            raise ValueError("configure has not been applied")
+                        prepared_config = None
+                        configure_applied = False
+                        configure_committed = True
+                        channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version, "context_id": channel.context_id})
+                    elif kind == "configure_abort":
+                        if configure_applied:
+                            raise ValueError("applied configure cannot be aborted")
+                        prepared_config = None
+                        channel.configure_fenced = False
+                        channel.send({"type": "ack", "operation_id": message["operation_id"], **_identity(message)})
+                    else:
+                        raise ValueError("unknown configure operation")
+                elif kind.startswith("reinit_"):
                     if not reinitialize_enabled:
                         raise ValueError("policy did not opt in to reinitialization")
                     if channel.context_id is None and kind != "reinit_initialize":
@@ -191,6 +271,9 @@ def run_session(connection, policy_dir, namespace):
                         channel.on_command_gate = commands.pause
                         channel.on_monitor_gate = monitor.pause
                         active = True
+                        prepared_config = None
+                        configure_applied = False
+                        channel.configure_fenced = False
                         supported = callable(getattr(module, 'observe', None))
                         if callable(getattr(module, 'wants_observations', None)):
                             supported = supported and module.wants_observations(context)
@@ -201,7 +284,7 @@ def run_session(connection, policy_dir, namespace):
                         ack.update(observe=bool(supported), monitor=monitor.callback is not None)
                     channel.send(ack)
                 elif kind == "infer":
-                    if not active:
+                    if not active or channel.configure_fenced:
                         raise ValueError("policy context unavailable")
                     if message.get("config_version") != version:
                         raise ValueError("inference config version differs from worker")
@@ -249,7 +332,7 @@ def run_session(connection, policy_dir, namespace):
                 channel.send({"type": "fatal", **_identity(message), "images_released": False, "error": str(exc)})
                 break
             except Exception as exc:
-                if kind in ("update_config", "reset_context"):
+                if kind in ("update_config", "reset_context") and not channel.configure_fenced:
                     monitor.resume()
                 channel.send({"type": "error", "images_released": True, **_identity(message), "operation_id": message.get("operation_id"), "error": f"{type(exc).__name__}: {exc}", **({"error_type": "candidate_rejected"} if isinstance(exc, CandidateRejected) else {})})
     except Shutdown:

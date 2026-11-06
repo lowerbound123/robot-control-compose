@@ -146,7 +146,7 @@ def main(argv=None) -> int:
             service.start()
             router = TerminalCommandRouter(controller, service)
             if hasattr(controller, "_emit"):
-                controller._emit(f"MCP listening at {service.url}; 默认只读，take 后接管")
+                controller._emit(f"MCP listening at {service.url}; 默认只读，mcp take 后接管")
             if args.headless:
                 run_headless(controller, router=router)
             else:

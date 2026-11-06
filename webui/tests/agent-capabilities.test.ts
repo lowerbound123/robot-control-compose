@@ -58,3 +58,34 @@ it('refuses unguarded legacy writes and supplies host-owned wait and image setti
   const legacy = await discoverCapabilities(g)
   expect(() => prepareToolCall(decision('take').tool_call, legacy)).toThrow(/升级|保护/)
 })
+
+
+it('accepts current RC command paths and rejects removed aliases before submission', async () => {
+  const snapshot = await discoverCapabilities(fixtureGateway())
+  for (const line of ['status', 'resume', 'policy list', 'policy help example', 'policy switch example --reset',
+    'config rc show', 'config rc set frequency_hz 50', 'config rc save', 'global show',
+    'global set phase "pick"', 'global remove phase', 'pose save home', 'pose restore home', 'record', 'record start', 'record stop']) {
+    expect(validateDecision(decision('command', { line }), snapshot).tool_call?.arguments.line).toBe(line)
+  }
+  for (const line of ['take', 'return', 'quit', 'switch example', 'show rc', 'set rc.frequency_hz 50',
+    'save-config example', 'retry-reload example', 'example-1-set-message x', 'record on', 'record off',
+    'record toggle', 'mcp take', 'camera show', 'monitor example', 'snapshot', 'policy manage',
+    'policy example-1 config set params.message x', 'status extra']) {
+    expect(() => validateDecision(decision('command', { line }), snapshot)).toThrow()
+  }
+})
+
+
+it('treats policy_config show as read-only and preserves raw values for guarded writes', async () => {
+  const snapshot = await discoverCapabilities(fixtureGateway())
+  for (const args of [{ instance_id: 'example-1' }, { instance_id: 'example-1', action: 'show' }]) {
+    expect(prepareToolCall(decision('policy_config', args).tool_call, snapshot).readOnly).toBe(true)
+  }
+  const raw = 'a value with "quotes" and spaces'
+  const prepared = prepareToolCall(decision('policy_config', {
+    instance_id: 'example-1', action: 'set', key: 'params.message', value_text: raw,
+  }).tool_call, snapshot)
+  expect(prepared.readOnly).toBe(false)
+  expect(prepared.args).toMatchObject({ value_text: raw, wait: false })
+  expect(prepareToolCall(decision('policy_config', { instance_id: 'example-1', action: 'save' }).tool_call, snapshot).readOnly).toBe(false)
+})

@@ -70,7 +70,7 @@ def in_container():
             image = subprocess.check_output(['docker', 'inspect', '-f', '{{.Image}}', old], text=True).strip()
             (root / 'outputs/ready').touch()
             wait(lambda: (root / 'outputs/updated').exists())
-            command('switch probe')
+            command('policy switch probe')
             new = controller._worker.endpoint.container_id
             assert old != new
             assert subprocess.check_output(['docker', 'inspect', '-f', '{{.Image}}', new], text=True).strip() == image
@@ -78,7 +78,7 @@ def in_container():
             report['policy_reload_same_image'] = image
             (root / 'outputs/ready-missing').touch()
             wait(lambda: (root / 'outputs/missing').exists())
-            command('switch probe', expected='failed')
+            command('policy switch probe', expected='failed')
             assert controller._worker is None
             report['missing_source_rejected'] = True
     finally:

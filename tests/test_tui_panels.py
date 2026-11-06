@@ -6,7 +6,7 @@ from robot_control.log_tui import StructuredLog
 from test_controller import setup_controller as setup_controller, ready, until
 
 
-@pytest.mark.parametrize("name", ["camera", "monitor", "record", "mcp", "snapshot", "monitor-A"])
+@pytest.mark.parametrize("name", ["camera", "monitor", "record", "mcp", "snapshot", "manage"])
 def test_reserved_command_names_cannot_be_declared_as_policy_extensions(name):
     from rc_policy_sdk.commands import command_specs
     with pytest.raises(ValueError, match="reserved"):
@@ -20,9 +20,9 @@ def test_panel_commands_are_unavailable_to_headless_and_mcp(name, setup_controll
     ready(controller)
     router = TerminalCommandRouter(controller)
     with pytest.raises(ValueError, match="TUI"):
-        router.submit(name + " on")
-    with pytest.raises(PermissionError, match="local-only"):
-        controller.submit(name + " on", origin="mcp")
+        router.submit("camera show" if name == "camera" else "monitor")
+    with pytest.raises(PermissionError, match="local-only|本地"):
+        controller.submit("camera show" if name == "camera" else "monitor", origin="mcp")
 
 
 @pytest.mark.asyncio
@@ -42,10 +42,12 @@ async def test_panels_toggle_layout_monitor_and_live_camera(setup_controller):
         command = app.query_one(CommandInput)
         command.value = "mon"
         await pilot.press("tab")
-        assert command.value == "monitor "
-        command.value = "monitor on"
+        assert command.value == "mon" and command.menu_open
         await pilot.press("enter")
-        command.value = "camera on"
+        assert command.value == "monitor "
+        command.value = "monitor"
+        await pilot.press("enter")
+        command.value = "camera show"
         await pilot.press("enter")
         assert camera.display and monitor.display
         await pilot.pause(.2)
@@ -60,10 +62,10 @@ async def test_panels_toggle_layout_monitor_and_live_camera(setup_controller):
         assert "qpos" in monitor.query_one("#monitor-values").content.plain
         assert "epos" in monitor.query_one("#monitor-values").content.plain
         # Repeating on must preserve state; disabling the other panel is independent.
-        app.router.submit("camera on")
-        app.router.submit("monitor off")
+        app.router.submit("camera show")
+        app.router.submit("monitor")
         assert camera.display and not monitor.display
-        app.router.submit("camera off")
+        app.router.submit("camera hide")
         assert not camera.display and all(item.frame is None for item in images)
         assert any("a=d,d=I" in text for text in writes)
         command.value = "camera unexpected"
@@ -88,14 +90,14 @@ async def test_unsupported_camera_keeps_monitor_and_commands_usable(setup_contro
                           graphics=GraphicsSupport("sixel", error="unsupported terminal"))
     async with app.run_test(size=(60, 24)) as pilot:
         command = app.query_one(CommandInput)
-        for line in ("camera on", "monitor on", "status"):
+        for line in ("camera show", "monitor", "status"):
             command.value = line
             await pilot.press("enter")
         assert not app.query_one(CameraPanel).display
         assert app.query_one(MonitorPanel).display
         assert command.region.bottom <= app.size.height
         assert app.is_running
-        command.value = "quit"
+        command.value = "exit"
         await pilot.press("enter")
         await asyncio.to_thread(until, controller.done.is_set)
         await pilot.pause(.1)
@@ -114,8 +116,8 @@ async def test_camera_disconnect_retains_image_and_render_error_disables_only_ca
     app = RobotControlApp(controller, start_controller=False, graphics=GraphicsSupport("sixel"))
     app._write_graphics = writes.append
     async with app.run_test(size=(120, 36)) as pilot:
-        app.router.submit("camera on")
-        app.router.submit("monitor on")
+        app.router.submit("camera show")
+        app.router.submit("monitor")
         await pilot.pause(.3)
         image = app.query_one("#image-head", CameraImage)
         assert image.frame is not None
@@ -154,7 +156,7 @@ async def test_sixel_partial_repaint_restores_retained_frame(row, setup_controll
     app = RobotControlApp(controller, start_controller=False, graphics=GraphicsSupport("sixel"))
     app._write_graphics = writes.append
     async with app.run_test(size=(120, 36)) as pilot:
-        app.router.submit("camera on")
+        app.router.submit("camera show")
         image = app.query_one("#image-head", CameraImage)
         # Encoding is asynchronous; wait for its result rather than assuming
         # the first frame always fits a 300ms budget on a busy container host.

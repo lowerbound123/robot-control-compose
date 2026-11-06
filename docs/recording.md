@@ -1,16 +1,16 @@
 # 连续录制与推理追踪
 
-在 RC 命令行使用 `record on` 开始录制，`record off` 停止并等待已接收数据落盘，`record status` 查看状态。裸 `record` 切换录制开关。
+在 RC 命令行使用 `record start` 开始录制，`record stop` 停止并等待已接收数据落盘，`record status` 查看状态。裸 `record` 切换录制开关。
 
 ```text
-record on
+record start
 record status
 pause
 record status
-record off
+record stop
 ```
 
-录制以独立的 30 Hz 时钟读取机器人缓存，和控制循环频率、policy 推理频率、终端相机预览刷新频率分开。暂停、MCP 接管、没有活动 policy 时仍可采样。录制命令本身不会恢复运动、复位机器人、切换策略或改变控制归属。MCP 可调用 `record(action="on"|"off"|"toggle"|"status")`，也可通过 `command("record on/off/status")` 或裸 `command("record")` 操作；录制是默认只读规则的明确例外，无需先 take，在策略生命周期忙碌时仍可使用，不取消 `return_and_wait` 任务。
+录制以独立的 30 Hz 时钟读取机器人缓存，和控制循环频率、policy 推理频率、终端相机预览刷新频率分开。暂停、MCP 接管、没有活动 policy 时仍可采样。录制命令本身不会恢复运动、复位机器人、切换策略或改变控制归属。MCP 可调用 `record(action="on"|"off"|"toggle"|"status")`，也可通过 `command("record start/stop/status")` 或裸 `command("record")` 操作；录制是默认只读规则的明确例外，无需先 take，在策略生命周期忙碌时仍可使用，不取消 `return_and_wait` 任务。
 
 `record` 工具默认查询状态，不新增操作回执。写操作默认 `wait=false`、`timeout_s=30`，通过 `operation_id` 查询结果；`off` 的 `succeeded` 表示已接收数据完成落盘。等待超时和客户端断连只结束等待，不取消开始/停止操作。重复 `on/off` 沿用现有幂等行为，`toggle` 按录制服务队列顺序执行，不自动重试。
 

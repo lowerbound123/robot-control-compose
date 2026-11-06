@@ -26,6 +26,7 @@ class WorkerChannel:
         self.context_id = None
         self.observations_gated = False
         self.reinitialize_enabled = False
+        self.configure_fenced = False
         self.runtime_tools = frozenset()
         self._send_lock = threading.Lock()
         self._condition = threading.Condition()
@@ -74,11 +75,14 @@ class WorkerChannel:
                     if self.on_observe and not self.observations_gated:
                         self.observations.submit(self.on_observe, message)
                 else:
-                    lifecycle = message.get("type") in ("update_config", "reset_context", "shutdown") or (message.get("type") == "reinit_release" and self.reinitialize_enabled)
+                    lifecycle = message.get("type") in ("update_config", "reset_context", "shutdown", "configure_prepare") or (message.get("type") == "reinit_release" and self.reinitialize_enabled)
                     if lifecycle and self.on_command_gate:
                         self.on_command_gate()
                     if lifecycle and self.on_monitor_gate:
                         self.on_monitor_gate()
+                    if message.get("type") == "configure_prepare":
+                        self.configure_fenced = True
+                        self.observations_gated = True
                     if message.get("type") == "reinit_release" and self.reinitialize_enabled:
                         self.observations_gated = True
                     self.commands.put(message)

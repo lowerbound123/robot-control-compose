@@ -41,15 +41,15 @@ RC 外层超时应留出余量。使用上述默认值时，建议 `timeouts.ini
 模板将 `execution.mode` 和 `execution.call_every_actions` 放入热修改白名单，可使用：
 
 ```text
-set policy.execution.mode "async"
-set policy.execution.call_every_actions 3
-monitor-internvla_maas on
+policy internvla_maas config set execution.mode "async"
+policy internvla_maas config set execution.call_every_actions 3
+monitor internvla_maas
 ```
 
-热修改经 RC/SDK 两端确认版本后生效，保留当前运行/暂停状态、模型连接和统计。已有私有 `policy.yaml` 不会被 setup 覆盖；若希望热改，需将上述两个字段加入其 `hot_reloadable`，然后重载一次。没有声明热改的字段沿用通用冷修改流程。MaaS 动作为关节目标，`control_mode` 仍须为 `qpos`。
+上述执行字段由策略 configure 解析，普通修改经 RC/SDK 两端确认后生效，保留当前运行/暂停状态、模型连接和统计。新配置入口不要求将字段加入 `hot_reloadable`；已有自定义命令的 update_config effect 仍遵循其白名单。已有私有 `policy.yaml` 不会被 setup 覆盖。MaaS 动作为关节目标，`control_mode` 仍须为 `qpos`。
 
 ```text
-switch internvla_maas
+policy switch internvla_maas
 resume
 pause
 policy internvla_maas switch-model model_alt.json
@@ -62,7 +62,7 @@ resume
 
 ## 请求监控
 
-本地 TUI 使用 `monitor-internvla_maas on` 打开、`monitor-internvla_maas off` 关闭；重复实例使用明确实例名，例如 `monitor-internvla_maas-0 on`。
+本地 TUI 使用 `monitor internvla_maas` 切换面板；重复实例使用明确实例名，例如 `monitor internvla_maas-0`。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -121,7 +121,7 @@ resume
 
 后台请求只使用 SDK 已复制的图像，不保存 POSIX 共享内存视图。普通 reset 取消并收齐旧请求，关闭旧连接、清空轨迹后重新握手，建立新 episode；旧结果不会进入新控制代次。不发送回执未定义的远端 reset 或 episode_result 消息。
 
-断线、超时、401/404、4400/4409、非法消息、服务端 error/stop 都进入故障流程，停止使用动作缓存；不重发观测、不自动重连，不把 stop 当成任务完成。普通 reset 不清除故障。修正原因后手动 `switch internvla_maas`；若处于局部重载失败待恢复状态，按 RC 提示使用 `retry-reload <实例>`，随后显式 resume。服务端尚未释放旧身份时重新握手也可能返回 4409，仍按此规则处理。
+断线、超时、401/404、4400/4409、非法消息、服务端 error/stop 都进入故障流程，停止使用动作缓存；不重发观测、不自动重连，不把 stop 当成任务完成。普通 reset 不清除故障。修正原因后手动 `policy switch internvla_maas`；若处于局部重载失败待恢复状态，按 RC 提示使用 `policy <实例> retry`，随后显式 resume。服务端尚未释放旧身份时重新握手也可能返回 4409，仍按此规则处理。
 
 ## 验证
 

@@ -75,28 +75,53 @@ def _contains_key(value):
 def reject_secret_edit(line):
     if not isinstance(line, str):
         return
+    # Inspect supported envelopes before parsing/logging their content. Legacy
+    # private execution lines retain the same guard during controller dispatch.
     parts = line.strip().split(maxsplit=2)
-    if len(parts) >= 2 and parts[:2] == ['mcp', 'command']:
-        nested = parts[2] if len(parts) == 3 else ''
-        if nested.lstrip().startswith('{'):
-            try:
-                nested = json.loads(nested).get('line', '')
-            except (ValueError, AttributeError):
-                # Malformed wrappers must not echo a recognizable secret edit.
-                if re.search(r'api(?:_|\\u005[fF])key', nested):
-                    raise ValueError('密钥只能在配置文件中修改') from None
-                return
-        return reject_secret_edit(nested)
-    if not parts or parts[0] != 'set' or len(parts) < 2:
-        return
-    if 'api_key' in parts[1].split('.'):
-        raise ValueError('密钥只能在配置文件中修改')
-    if len(parts) == 3:
+    if len(parts) >= 2 and parts[0] == 'mcp' and parts[1] in ('command', 'policy_config', 'tui_command'):
+        raw = parts[2] if len(parts) == 3 else ''
         try:
-            value = json.loads(parts[2])
-        except ValueError:
-            if re.search(r'api(?:_|\\u005[fF])key', parts[2]):
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            if re.search(r'api(?:_|\\u005[fF])key', raw):
                 raise ValueError('密钥只能在配置文件中修改') from None
             return
-        if _contains_key(value):
-            raise ValueError('密钥只能在配置文件中修改')
+        if not isinstance(data, dict):
+            return
+        if parts[1] == 'command':
+            return reject_secret_edit(data.get('line', ''))
+        if parts[1] == 'tui_command':
+            batch = data.get('text', '')
+            if isinstance(batch, str):
+                for command in batch.splitlines():
+                    reject_secret_edit(command)
+            return
+        if data.get('action') == 'set':
+            return _reject_secret_value(data.get('key', ''), data.get('value_text', ''))
+        return
+    tokens = line.strip().split(maxsplit=5)
+    if len(tokens) >= 4 and tokens[0] == 'policy' and tokens[2:4] == ['config', 'set']:
+        return _reject_secret_value(tokens[4] if len(tokens) > 4 else '', tokens[5] if len(tokens) > 5 else '')
+    tokens = line.strip().split(maxsplit=4)
+    if tokens[:3] == ['config', 'rc', 'set']:
+        return _reject_secret_value(tokens[3] if len(tokens) > 3 else '', tokens[4] if len(tokens) > 4 else '')
+    tokens = line.strip().split(maxsplit=3)
+    if tokens[:2] == ['global', 'set']:
+        return _reject_secret_value(tokens[2] if len(tokens) > 2 else '', tokens[3] if len(tokens) > 3 else '')
+    if parts and parts[0] == 'set' and len(parts) >= 2:
+        return _reject_secret_value(parts[1], parts[2] if len(parts) > 2 else '')
+
+
+def _reject_secret_value(key, text):
+    if isinstance(key, str) and 'api_key' in key.split('.'):
+        raise ValueError('密钥只能在配置文件中修改')
+    if not isinstance(text, str):
+        return
+    try:
+        value = json.loads(text)
+    except ValueError:
+        if re.search(r'api(?:_|\\u005[fF])key', text):
+            raise ValueError('密钥只能在配置文件中修改') from None
+        return
+    if _contains_key(value):
+        raise ValueError('密钥只能在配置文件中修改')

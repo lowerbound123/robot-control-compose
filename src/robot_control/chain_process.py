@@ -211,6 +211,7 @@ class ChainProcess:
                 raise RuntimeError(self._failure or 'stale member reinitialization')
             worker.commit_reinitialize(member.runtime_config, member.version, flags)
             self.record, self.config_version = record, record.version
+            self.execution = copy.deepcopy(record.execution)
             self.reloading_member = None
             self._condition.notify_all()
 
@@ -232,6 +233,7 @@ class ChainProcess:
             if endpoint is not None:
                 self._endpoints[identity] = endpoint
             self.record, self.config_version = record, record.version
+            self.execution = copy.deepcopy(record.execution)
             self.reloading_member = None
             self._condition.notify_all()
 
@@ -243,6 +245,7 @@ class ChainProcess:
                     or record.version != self.config_version + 1 or worker.config_version != member.version):
                 raise RuntimeError('stale member hot configuration')
             self.record, self.config_version = record, record.version
+            self.execution = copy.deepcopy(record.execution)
             self._condition.notify_all()
 
     @staticmethod

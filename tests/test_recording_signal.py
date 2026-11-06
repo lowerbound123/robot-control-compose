@@ -25,7 +25,7 @@ if __name__ == '__main__':
     with shutdown_signals(controller):
         controller.start()
         until(lambda: controller.status()['policy'] == 'first')
-        operation = controller.submit('record on')
+        operation = controller.submit('record start')
         assert controller.wait_operation(operation, 5)['status'] == 'succeeded'
         until(lambda:controller.status()['recording']['samples_written'] >= 5)
         print(json.dumps({'writer':controller._recorder._process.pid,

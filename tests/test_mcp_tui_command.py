@@ -29,7 +29,7 @@ def test_http_batches_need_no_take_and_survive_client_disconnect(batch_service):
             assert 'Agents should not use' in tools['tui_command'].description
             denied = await session.call_tool('command', {'line': 'reset'})
             assert denied.is_error
-            reply = await session.call_tool('tui_command', {'text': 'set policy.params.value 7\nshow policy'})
+            reply = await session.call_tool('tui_command', {'text': 'policy first config set params.value 7\npolicy first config show'})
             assert not reply.is_error, reply
             return reply.structured_content['operation_id']
     identity = asyncio.run(issue())
@@ -49,7 +49,7 @@ def test_local_wait_timeout_cancel_and_sensitive_preflight(batch_service):
     assert rc.wait_operation(identity, 3)['status'] == 'succeeded'
     reply = service.submit_tool('cancel_tui_command', {'operation_id': identity}).result(3)
     assert reply.structured_content['status'] == 'succeeded'
-    for text in ('status\nmcp take', 'status\nset global.api_key "batch-secret-canary"'):
+    for text in ('status\nmcp take', 'status\nglobal set api_key "batch-secret-canary"'):
         denied = service.submit_tool('tui_command', {'text': text}).result(3)
         assert denied.is_error and 'operation_id' not in denied.structured_content
     assert 'batch-secret-canary' not in str(rc.read_events(limit=1000))
