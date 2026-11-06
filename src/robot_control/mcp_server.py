@@ -16,7 +16,7 @@ from typing import Annotated, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, Strict, StrictBool, StrictInt, StrictStr, field_validator
@@ -544,8 +544,19 @@ def create_app(controller, settings, *, server=None, preview=None, state_feed=No
         source_generation=lambda: getattr(getattr(controller, 'robot', None), 'generation', 0))
     state_feed = state_feed if state_feed is not None else WebState(
         controller.robot.read_state, run_id=controller.run_id, stopping=controller.done.is_set)
-    mcp_app = server.streamable_http_app(stateless_http=True, json_response=True,
-        transport_security=TransportSecuritySettings(allowed_hosts=settings["allowed_hosts"], allowed_origins=settings["allowed_origins"]))
+    security = TransportSecuritySettings(allowed_hosts=settings["allowed_hosts"], allowed_origins=settings["allowed_origins"])
+    mcp_app = server.streamable_http_app(stateless_http=True, json_response=True, transport_security=security)
+    stream_security = TransportSecurityMiddleware(security)
+
+    async def no_mcp_stream(request):
+        # Stateless JSON requests have no standalone notification channel. An
+        # unused SSE connection consumes one of the browser's HTTP/1 slots,
+        # serializing tools beside the three camera streams and state stream.
+        rejected = await stream_security.validate_request(request)
+        if rejected is not None:
+            return rejected
+        return JSONResponse({'error': 'standalone MCP stream is not supported'}, status_code=405,
+                            headers={'Allow': 'POST'})
 
     @asynccontextmanager
     async def lifespan(app):
@@ -585,7 +596,9 @@ def create_app(controller, settings, *, server=None, preview=None, state_feed=No
         return StreamingResponse(multipart_frames(reader), media_type='multipart/x-mixed-replace; boundary=frame',
                                  headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
-    app = Starlette(routes=[Route("/health", health), Route('/state/stream', state_stream), Route('/preview/status', preview_status),
+    app = Starlette(routes=[Route('/mcp', no_mcp_stream, methods=['GET', 'HEAD']),
+        Route('/mcp/', no_mcp_stream, methods=['GET', 'HEAD']),
+        Route("/health", health), Route('/state/stream', state_stream), Route('/preview/status', preview_status),
         Route('/preview/{camera}.mjpg', preview_stream), Mount("/", app=mcp_app)], lifespan=lifespan)
     token = os.environ.get(settings["token_env"])
     if token:

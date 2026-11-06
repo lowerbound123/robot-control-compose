@@ -6,6 +6,8 @@ WebUI 使用的 `status` 额外返回本次 RC 的 `run_id`。`take`、`return`�
 
 服务默认提供 Streamable HTTP `/mcp`。本地 TUI/headless 的 `mcp <工具> <JSON>` 使用同一组注册工具。`mcp help` 查看完整参数；MCP `help()` 查看 RC 帮助。工具参数只能是 JSON 对象，无参数时可省略对象；不支持位置参数简写。TUI 接管和归还分别使用 `mcp take` / `mcp return`，裸 take/return 拒绝。`resume` 不会归还 MCP 控制权。
 
+HTTP MCP 使用无状态 JSON 响应，初始化和工具调用通过 POST 完成。`GET/HEAD /mcp`（含尾斜杠）在认证及 Host/Origin 校验后返回 `405 Allow: POST`，表示不提供独立 MCP 通知流；兼容的 Streamable HTTP 客户端继续使用 POST。相机 MJPEG 和 `/state/stream` 使用各自的流式入口，不占用额外的 MCP 长连接。
+
 ## 人工文本批次
 
 `tui_command(text, wait=false, timeout_s=30, expected_control=None)` 是供人工 WebUI 使用的入口，按本地 TUI 的 RC/policy 命令语义执行，默认无需 `take`。**建议 Agent 不要使用此入口，应使用原有结构化工具及 take 流程。** 工具不会自动 take/return，也不会改变控制归属；TUI 自身的控制权冲突与生命周期检查仍适用。其他 MCP 工具的权限和调度不变。
