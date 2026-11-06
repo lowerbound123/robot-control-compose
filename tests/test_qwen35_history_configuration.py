@@ -1,0 +1,64 @@
+import importlib
+import json
+import sys
+
+import pytest
+from history_helpers import ROOT, model_file
+
+sys.path.insert(0, str(ROOT / 'packages/qwen35-history-policy/src'))
+
+
+def implementation():
+    assert (ROOT / 'packages/qwen35-history-policy/src/rc_qwen35_history/configuration.py').is_file(), 'configuration missing'
+    return importlib.import_module('rc_qwen35_history.configuration')
+
+
+@pytest.mark.parametrize('x', [1, 25, 50])
+def test_resolves_checkpoint_and_preserves_cold_cadence(tmp_path, x):
+    path = model_file(tmp_path, x=x)
+    config = implementation().load_model_config('model.json', project_root=tmp_path)
+    assert config['model']['checkpoint'] == str(tmp_path / 'weights')
+    assert config['execution']['replan_every_actions'] == x
+    assert config['inference']['use_cuda_graph'] is True
+    assert config['model']['vlm_model_name_or_path'] == 'Qwen/Qwen3.5-4B'
+
+
+@pytest.mark.parametrize('x', [0, -1, 51, True, 1.5, '25'])
+def test_rejects_bad_x_before_loading_model(tmp_path, x):
+    model_file(tmp_path, x=x)
+    with pytest.raises(ValueError, match='replan_every_actions'):
+        implementation().load_model_config('model.json', project_root=tmp_path)
+
+
+@pytest.mark.parametrize('file,mutate', [
+    ('config', lambda d: d.update(type='qwen3_5vla_ki_wan')),
+    ('config', lambda d: d.update(max_action_dim=13)),
+    ('config', lambda d: d.update(context_slot_stride=0)),
+    ('train_config', lambda d: d['dataset'].update(norm_mode='unknown')),
+    ('train_config', lambda d: d['dataset'].update(action_mode='eef')),
+    ('stats', lambda d: d['arx_acone']['actions.left_joint.position'].update(std=[-1.]*6)),
+])
+def test_rejects_incompatible_checkpoint_metadata(tmp_path, file, mutate):
+    model_file(tmp_path)
+    path = tmp_path / 'weights' / f'{file}.json'
+    data = json.loads(path.read_text())
+    mutate(data)
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        implementation().load_model_config('model.json', project_root=tmp_path)
+
+
+def test_manifest_uses_existing_contract_and_only_task_is_hot():
+    from robot_control.yaml_config import load_yaml_config
+    path = ROOT / 'policy/qwen35_history/policy.yaml.example'
+    assert path.exists(), 'history manifest missing'
+    config = load_yaml_config(path)
+    implementation().validate_manifest(config)
+    for field, value in [('mode', 'async'), ('call_every_actions', 25), ('control_mode', 'epos')]:
+        changed = json.loads(json.dumps(config))
+        changed['execution'][field] = value
+        with pytest.raises(ValueError):
+            implementation().validate_manifest(changed)
+    config['hot_reloadable'].append('params.model_config_path')
+    with pytest.raises(ValueError):
+        implementation().validate_manifest(config)
