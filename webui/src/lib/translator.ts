@@ -1,6 +1,7 @@
 import { readAiResponse, type TranslationProgress } from './ai-stream'
 import { buildAgentRequest, type AgentPromptInput } from './agent-prompt'
 import { validateDecision } from './agent-capabilities'
+import { audit, type AuditSink } from './session-log'
 export type { TranslationProgress } from './ai-stream'
 
 export type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -8,7 +9,7 @@ export type ApiConfig = { llm: boolean; enabled: boolean; model: string; timeout
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>
 
 export async function requestDecision(config: ApiConfig, prompt: AgentPromptInput,
-  options: { signal?: AbortSignal; fetcher?: Fetcher; onProgress?: (value: TranslationProgress) => void } = {}) {
+  options: { signal?: AbortSignal; fetcher?: Fetcher; onProgress?: (value: TranslationProgress) => void; audit?: AuditSink } = {}) {
   if (!config.llm || !config.enabled || !config.model) throw Error('请先启用并配置 WebUI 服务端 AI 接口，再刷新页面。')
   if (!prompt.input.trim() || prompt.input.length > 4000) throw Error('请输入 1～4000 字的指令。')
   const body = buildAgentRequest(config, prompt)
@@ -20,19 +21,27 @@ export async function requestDecision(config: ApiConfig, prompt: AgentPromptInpu
   const timeout = setTimeout(() => { timedOut = true; controller.abort() }, config.timeout_s * 1000)
   try {
     if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+    audit(options.audit, 'model.request', body)
     const response = await (options.fetcher ?? fetch)('/ai/chat/completions', {
       method: 'POST', signal: controller.signal, credentials: 'omit', redirect: 'error', mode: 'same-origin',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     })
-    if (!response.ok) throw Error(`AI API 返回 HTTP ${response.status}，本轮未执行任何指令。`)
-    const content = await readAiResponse(response, controller.signal, options.onProgress)
+    audit(options.audit, 'model.response.headers', { status: response.status, contentType: response.headers.get('content-type') })
+    if (!response.ok) {
+      // The same bounded reader preserves the proxy's error body without treating it as a decision.
+      try { await readAiResponse(response, controller.signal, undefined, options.audit) } catch { /* Report HTTP status below. */ }
+      throw Error(`AI API 返回 HTTP ${response.status}，本轮未执行任何指令。`)
+    }
+    const content = await readAiResponse(response, controller.signal, options.onProgress, options.audit)
     if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
     let decision: unknown
     try { decision = JSON.parse(content) } catch { throw Error('AI 返回的工具选择不是有效 JSON，未执行。') }
+    audit(options.audit, 'model.decision', decision)
     const validated = validateDecision(decision, prompt.snapshot)
     if (prompt.finalOnly && validated.tool_call) throw Error('本次工具调用达到上限，最后一轮只能总结。')
     return validated
   } catch (error) {
+    audit(options.audit, 'model.error', { message: error instanceof Error ? error.message : String(error), timedOut, cancelled: controller.signal.aborted && !timedOut })
     if (timedOut) throw Error('AI 请求超时，本轮未执行任何指令。')
     if (controller.signal.aborted) throw Error('已取消生成，未发送后续指令。')
     if (error instanceof TypeError) throw Error('无法连接同源 AI 代理，请检查 WebUI 服务与服务端 API 配置。')

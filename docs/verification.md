@@ -409,3 +409,17 @@ Python 3.11 example 基线 78 通过、1 项因缺少 ROS 环境跳过（不计�
 提示词默认使用普通 `return(wait=false)`，只有当前实际运行的 policy／链成员明确会回传本次任务结果且用户需要该结果时才选择 `return_and_wait`。明确区分归还回执与业务终态，说明 `timeout_s=0` 仍创建业务等待任务。暂停／恢复／复位按钮改为共用执行器的单行 `tui_command`，不自动 take；按运行状态选择暂停或恢复，保留原提交代次、忙碌与待确认保护。
 
 沿用用户“不重新测试”的要求，本轮未运行单测、浏览器或后端测试，也未启动 Docker 或连接模型／硬件。已更新提示词、普通归还回执、两种控制归属／LLM 模式的三个按钮及迟到模型响应的回归用例，尚未执行，不能计为通过。`npm run build`（含 `vue-tsc --noEmit`）通过，日志 `/private/tmp/rc-webui-human-toolbar-build.log`；`git diff --check` 通过。RC、SDK 和 policy 实现未改变。
+
+## WebUI 日志、单图与浏览器视频导出（2026-11-06）
+
+新增本页完整 AI 日志 JSON 下载、三个监控子路由、每路固定 30 fps VP8/WebM 下载及日志折叠按钮。图像接收和编码在浏览器 Worker 内执行，数据按页面会话分块存入 IndexedDB；RC、SDK、policy 公开契约和控制行为不变，部署仅需更新 WebUI。
+
+- WebUI 全部单测 **157 passed**，类型检查及生产构建通过。覆盖完整日志不受展示条数限制、原始模型片段和无效尝试、HTTP错误、迟到响应归属、取消前保持连接、原请求的回执恢复关联、MJPEG任意分片、30fps时间轴、后台缺帧与网络突发、导出文件分块和头部回填。日志 `/tmp/rc-webui-reviewed-unit.log`、`/tmp/rc-webui-delivery-build.log`。
+- 完整 Chromium 浏览器回归 **35 passed**，覆盖实际视频播放／拖动／重复导出、缺帧时保持旧画面、挂起恢复、单图路由、缓存隔离、存储耗尽后的部分导出、不支持编码时继续监控、执行中的日志快照和折叠状态，以及原有 AI／直接命令／控制回执流程。初轮已有一次在源码热更新时导航重置造成的失败，固定代码后完整重跑通过；失败不计通过。桌面与320／390／768宽度截图已检查，最后日志关联修复后再次完整回归 **35 passed，1.7分钟**；交付截图与视频证据 `/tmp/rc-webui-delivery-browser`，日志 `/tmp/rc-webui-delivery-e2e.log`。
+- `.venv/bin/python scripts/test_scope.py` 默认 example 和 example 自链回归：**78 passed、1 skipped，64.54秒**。跳过项需要 ROS 2/rclpy 及消息包，不计通过。日志 `/tmp/rc-webui-example-scope.log`。
+- 固定生产构建、同机单前台 Chromium156.0.8078.4、三路30Hz mock源，连续 **600.0092秒**同时显示和录像：左腕 **29.9029fps**、头部 **29.8979fps**、右腕 **29.9029fps**，均超过29.5fps要求；显示延迟P95为24.3～26.0ms，浏览器异常0。采样最大编码／存储积压6帧；主页面JS堆8.05～11.90MB，临时浏览器存储最终约229.04MB。JS堆指标不代表浏览器全部进程内存。结果 `/tmp/rc-webui-recording-bench/results/result.json`。
+- 三个实际视频经ffprobe读取全部帧：左腕18007帧／600.233秒、头部18241帧／608.033秒、右腕18473帧／615.766秒；均为VP8、640×480、30/1fps，时长与帧数误差小于2ms。文件按各自点击时间截止，因此依次下载的视频时长递增。视频和截图位于上述结果目录。
+
+验收使用本机隔离mock RC、example worker和API替身，没有连接真实模型、厂商驱动或机器人。本轮未执行Docker/Nginx容器或真机验收；静态构建验收不替代这些环境。启动浏览器夹具时需让 `PYTHONPATH` 包含本仓库 `src` 与 `packages/policy-sdk/src`，并使用匹配当前Playwright版本的Chromium。
+
+本次独立性能夹具以退出码0完成统一清理，静态测试服务已停止；浏览器回归夹具正常退出，测试端口已释放。未提交或推送代码，任务账本和运行产物均未纳入版本控制。

@@ -78,6 +78,20 @@
 @keyframes halo-contract { 0% { transform: scale(1.008, 1.08); } 55%, 100% { transform: scale(1); } }
 @keyframes green-confirm { 0% { opacity: .15; } 25%, 55% { opacity: 1; } 100% { opacity: 0; } }
 .ai-transcript { position: absolute; bottom: calc(100% + 8px); width: 100%; height: var(--ai-output-height); isolation: isolate; }
+.transcript-body { height: 100%; }
+.ai-transcript:not(.is-collapsed)::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; border-inline: 2px solid #9aabc1; border-radius: 14px; }
+.ai-transcript.is-collapsed { height: 22px; }
+.transcript-toggle {
+  position: absolute; top: -18px; left: 50%; transform: translateX(-50%); z-index: 3;
+  width: 44px; height: 28px; display: grid; place-items: center;
+  border: 1px solid #b5c2d3; border-radius: 12px; background: #f5f7fa; color: #526780;
+  box-shadow: 0 2px 6px rgb(57 74 99 / 8%);
+}
+.transcript-toggle svg { width: 15px; height: 11px; fill: currentColor; }
+.transcript-toggle[aria-expanded=false] svg { transform: rotate(180deg); }
+.transcript-toggle:focus-visible { outline: 2px solid #7188a5; outline-offset: 3px; }
+.transcript-toggle:hover { background: #e8eef6; }
+.log-error { color: #a04f41; }
 .transcript-glass {
   position: absolute; inset: -8px -24px -12px; pointer-events: none; border-radius: 24px;
   background: linear-gradient(to top, rgb(245 247 250 / 92%), rgb(245 247 250 / 35%) 65%, transparent);
@@ -115,7 +129,9 @@
 .latest-button svg { width: 10px; }
 @media (max-width: 560px), (max-height: 700px) { :root { --ai-output-height: 144px; } }
 @media (max-width: 560px) {
-  .topbar { height: 68px; }
+  .topbar { height: auto; min-height: 104px; padding-block: 12px; row-gap: 10px; }
+  .top-navigation { grid-column: 1 / -1; justify-self: center; }
+  .top-actions { grid-column: 1 / -1; justify-self: stretch; justify-content: center; }
   .nav-tab { min-width: 96px; padding-inline: 12px; }
   .composer-area { padding-inline: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .transcript-glass { inset-inline: -12px; }

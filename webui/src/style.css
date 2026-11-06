@@ -59,7 +59,13 @@ button:not(:disabled) { cursor: pointer; }
 .camera-name { font-size: 14px; font-weight: 500; color: #3b424b; }
 .camera-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: #858c95; }
 .camera-frame { aspect-ratio: 4 / 3; position: relative; overflow: hidden; border-radius: 12px; background: #f4f5f6; border: 1px solid #e7eaee; }
-.camera-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.camera-frame canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+.camera-open { position: absolute; inset: 0; border-radius: inherit; cursor: zoom-in; }
+.camera-open:focus-visible { outline: 3px solid #7188a5; outline-offset: -4px; }
+.camera-grid.camera-single { grid-template-columns: minmax(0, 1fr); max-width: min(1120px, max(320px, calc((100dvh - 420px) * 4 / 3))); }
+.camera-export-row { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.recording-meta { font-size: 11px; color: #5f6f83; font-variant-numeric: tabular-nums; }
+.recording-meta > span { margin-inline: 4px; }
 .camera-empty { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 13px; background: #f4f5f6; color: #a0a7b0; font-size: 12px; }
 .camera-empty svg { width: 23px; height: 23px; color: #b0b7bf; }
 .camera-meta { margin-top: 12px; padding: 0 2px; display: flex; justify-content: space-between; color: #949ba4; font-size: 11px; font-variant-numeric: tabular-nums; }

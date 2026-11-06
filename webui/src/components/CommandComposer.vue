@@ -24,7 +24,8 @@ function keydown(event: KeyboardEvent) {
   <footer class="composer-area">
     <div class="composer-wrap">
       <div class="composer-feedback">
-        <AiTranscript v-if="!control.directMode && control.history.length" v-show="!expanded" :entries="control.history" />
+        <AiTranscript v-if="!control.directMode && control.history.length" v-show="!expanded" :entries="control.history"
+          v-model:collapsed="control.transcriptCollapsed" />
         <div v-if="control.message" class="execution-status" :data-error="control.failed" role="status" aria-live="polite">
           <FontAwesomeIcon :icon="control.busy ? faSpinner : control.showRecovery || control.failed ? faCircleExclamation : control.phase === 'cancelled' ? faStop : faCircleCheck" :spin="control.busy" />
           <span>{{ control.message }}</span>
@@ -62,6 +63,7 @@ function keydown(event: KeyboardEvent) {
         <span :title="control.configError">{{ control.directMode ? '命令输入 · 每行一条 TUI 命令' : control.apiReady ? '自然语言控制' : 'AI 未配置' }}</span>
       </div>
       <p v-if="control.configError" class="config-note">{{ control.configError }}</p>
+      <p v-if="control.logError" class="config-note log-error" aria-live="polite">{{ control.logError }}</p>
     </div>
   </footer>
 </template>

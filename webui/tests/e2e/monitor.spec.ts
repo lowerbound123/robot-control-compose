@@ -16,7 +16,8 @@ test('route, real images, reset, and mobile layout work without an AI configurat
   await expect(page).toHaveURL(/\/monitor$/)
   await expect(page).toHaveTitle('Robot Control · 监控')
   for (const camera of ['left_wrist', 'head', 'right_wrist']) {
-    await expect.poll(() => page.getByTestId(`camera-${camera}`).evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
+    await expect(page.getByTestId(`camera-${camera}`)).toHaveAttribute('data-ready', 'true')
+    expect(await page.getByTestId(`camera-${camera}`).evaluate((canvas: HTMLCanvasElement) => canvas.getContext('2d')!.getImageData(0, 0, 1, 1).data[3])).toBe(255)
   }
   await page.getByRole('button', { name: '复位', exact: true }).click()
   await expect(page.getByRole('status')).toContainText('复位指令已完成')
@@ -153,7 +154,7 @@ test('real same-origin AI works without CORS and keeps endpoint/key out of the b
   expect(received[0].origin).toBeNull()
   expect(received[0].cookie).toBeNull()
   expect(errors).toEqual([])
-  await expect.poll(() => page.getByTestId('camera-head').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
+  await expect(page.getByTestId('camera-head')).toHaveAttribute('data-ready', 'true')
   for (const camera of ['head', 'left_wrist', 'right_wrist']) {
     await expect(page.locator(`[data-camera="${camera}"] .camera-state`)).toHaveAttribute('data-state', 'live')
   }

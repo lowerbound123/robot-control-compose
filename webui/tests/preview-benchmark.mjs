@@ -20,8 +20,7 @@ let sampling = false
 let interval
 try {
   await page.goto(args.url + '/monitor', { waitUntil: 'domcontentloaded' })
-  await page.waitForFunction(() => document.querySelectorAll('.camera-frame img').length === 3
-    && [...document.querySelectorAll('.camera-frame img')].every(image => image.naturalWidth === 640))
+  await page.waitForFunction(() => document.querySelectorAll('.camera-frame canvas[data-ready="true"]').length === 3)
   await page.bringToFront()
   await page.screenshot({ path: output + '/desktop.png' })
   const before = await (await fetch(args.url + '/preview/status')).json()
@@ -38,12 +37,17 @@ try {
       const metrics = await session.send('Performance.getMetrics')
       const preview = await (await fetch(args.url + '/preview/status')).json()
       const control = await (await fetch(args.url + '/health')).json()
+      const recording = await page.locator('.camera-tile').evaluateAll(elements => elements.map(element => ({
+        camera: element.dataset.camera, frames: Number(element.dataset.recordedFrames),
+        pending: Number(element.dataset.pendingFrames), bytes: Number(element.dataset.recordedBytes),
+      })))
+      const storage = await page.evaluate(() => navigator.storage.estimate())
       let containers = []
       if (args.containers) {
         const result = await run('docker', ['stats', '--no-stream', '--format', '{{json .}}', ...args.containers.split(',')])
         containers = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
       }
-      telemetry.push({ timestamp: Date.now(), metrics: Object.fromEntries(metrics.metrics.map(item => [item.name, item.value])), preview, control, containers })
+      telemetry.push({ timestamp: Date.now(), metrics: Object.fromEntries(metrics.metrics.map(item => [item.name, item.value])), preview, control, containers, recording, storage })
       await writeFile(output + '/progress.json', JSON.stringify(telemetry.at(-1), null, 2))
     } finally { sampling = false }
   }, 10_000)
@@ -91,8 +95,20 @@ try {
   clearInterval(interval)
   while (sampling) await new Promise(resolve => setTimeout(resolve, 100))
   const after = await (await fetch(args.url + '/preview/status')).json()
+  const recordings = []
+  for (const [camera, label] of [['left_wrist', '左腕'], ['head', '头部'], ['right_wrist', '右腕']]) {
+    const waiting = page.waitForEvent('download', { timeout: 120_000 })
+    await page.getByRole('button', { name: `导出${label}视频` }).click()
+    const download = await waiting, path = output + '/' + camera + '.webm'
+    await download.saveAs(path)
+    const probe = JSON.parse((await run('ffprobe', ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', path])).stdout)
+    recordings.push({ camera, path, ...probe })
+    const stream = probe.streams[0]
+    if (stream.r_frame_rate !== '30/1' || Number(stream.nb_read_frames) < duration * 30
+      || Math.abs(Number(probe.format.duration) - Number(stream.nb_read_frames) / 30) > .002) throw Error(`Invalid video timeline: ${camera}`)
+  }
   const report = { duration_s: duration, viewport: { width: 1440, height: 900 }, browser: browser.version(),
-    clock_offset_ms: offset, displayed, before, after, telemetry, errors }
+    clock_offset_ms: offset, displayed, before, after, telemetry, recordings, errors }
   await writeFile(output + '/result.json', JSON.stringify(report, null, 2))
   await page.screenshot({ path: output + '/desktop-final.png' })
   await page.setViewportSize({ width: 390, height: 844 })

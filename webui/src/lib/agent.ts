@@ -2,6 +2,7 @@ import { discoverCapabilities, object, prepareToolCall, validateDecision, type A
 import { MAX_TOOL_CALLS, type AgentExchange, type ConversationTurn } from './agent-prompt'
 import { requestDecision, type ApiConfig, type TranslationProgress } from './translator'
 import { sameControl, type Payload, type PlanExecutor } from './commands'
+import { audit, type AuditSink } from './session-log'
 
 export type AgentRunOptions = {
   config: ApiConfig; input: string; gateway: AgentGateway; executor: PlanExecutor; history: ConversationTurn[];
@@ -11,6 +12,7 @@ export type AgentRunOptions = {
   onProgress?: (round: number, value: TranslationProgress) => void;
   onTool?: (round: number, call: ToolCall, result?: Payload) => void;
   emit?: (value: Payload) => void;
+  audit?: AuditSink;
 }
 export type AgentCompletion = { message: string; executed: number; facts: Payload[]; outcome: 'success' | 'neutral' | 'terminated' | 'pending' }
 
@@ -22,15 +24,16 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentCompletio
   try {
     for (let index = 0; index <= MAX_TOOL_CALLS; index++) {
       check()
-      const snapshot = await discoverCapabilities(gateway, expected)
-      check()
       const round = index + 1
       options.onRound?.(round)
+      const snapshot = await discoverCapabilities(gateway, expected)
+      check()
       options.onPhase?.('generating')
       const finalOnly = index === MAX_TOOL_CALLS
       const value = await (options.decide ?? requestDecision)(options.config, {
         input: options.input, snapshot, history: options.history, exchanges, finalOnly,
-      }, { signal, onProgress: value => { if (!signal?.aborted) options.onProgress?.(round, value) } })
+      }, { signal, audit: (type, data) => audit(options.audit, type, data, { roundId: round }),
+        onProgress: value => { if (!signal?.aborted) options.onProgress?.(round, value) } })
       check()
       const decision = validateDecision(value, snapshot)
       if (!sameControl(snapshot.status, await gateway.status())) throw Error('AI 生成期间控制代次变化，本轮未执行。')

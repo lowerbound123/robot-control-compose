@@ -1,4 +1,5 @@
 import { createParser } from 'eventsource-parser'
+import { audit, type AuditSink } from './session-log'
 
 export type TranslationProgress = { kind: 'reasoning' | 'message'; text: string }
 export const MAX_STREAM_BYTES = 8 * 1024 * 1024
@@ -56,7 +57,7 @@ function checkChoice(choice: ObjectValue, delta: ObjectValue) {
   if (delta.refusal || delta.tool_calls || delta.function_call) throw Error('AI 未返回可执行的指令说明。')
 }
 
-export async function readAiResponse(response: Response, signal: AbortSignal, onProgress?: (value: TranslationProgress) => void) {
+export async function readAiResponse(response: Response, signal: AbortSignal, onProgress?: (value: TranslationProgress) => void, observer?: AuditSink) {
   const streaming = response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') === true
   const reader = response.body?.getReader()
   if (!reader) throw Error('AI 响应为空，未执行任何指令。')
@@ -109,6 +110,7 @@ export async function readAiResponse(response: Response, signal: AbortSignal, on
       bytes += chunk.value.byteLength
       if (bytes > (streaming ? MAX_STREAM_BYTES : 128_000)) throw Error('AI 响应过大，未执行任何指令。')
       const text = decoder.decode(chunk.value, { stream: true })
+      if (text) audit(observer, 'model.response.chunk', { text })
       if (streaming) parser.feed(text)
       else json += text
       if (done) break
@@ -125,6 +127,7 @@ export async function readAiResponse(response: Response, signal: AbortSignal, on
       append(message)
     }
     if (!content) throw Error('AI 响应缺少有效的 message.content。')
+    audit(observer, 'model.response.completed', { content, reasoning, done: streaming ? done : true })
     return content
   } finally {
     signal.removeEventListener('abort', cancel)
