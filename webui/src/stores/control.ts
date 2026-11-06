@@ -5,6 +5,8 @@ import { PlanExecutor, type Payload, type RcStatus } from '@/lib/commands'
 import { readConfig, type ApiConfig } from '@/lib/translator'
 import { useCommandPresentation } from '@/lib/command-presentation'
 import { runAgent } from '@/lib/agent'
+import { SessionLog, type AuditSink } from '@/lib/session-log'
+import { downloadBlob, fileTime } from '@/lib/download'
 
 export type CameraStatus = {
   state: string; subscribers: number; source_sequence: number | null; frame_age_s: number | null;
@@ -12,7 +14,11 @@ export type CameraStatus = {
 }
 
 export const useControlStore = defineStore('control', () => {
-  const gateway = new McpGateway(new URL('/mcp', window.location.origin))
+  const logCount = ref(0), logError = ref(''), transcriptCollapsed = ref(false)
+  const sessionLog = new SessionLog(() => { logCount.value = sessionLog.count; logError.value = sessionLog.error })
+  let auditScope: AuditSink | undefined
+  let recoveryAudit: AuditSink | undefined
+  const gateway = new McpGateway(new URL('/mcp', window.location.origin), () => auditScope)
   const executor = new PlanExecutor(gateway)
   const presentation = useCommandPresentation()
   const { phase, history } = presentation
@@ -56,6 +62,7 @@ export const useControlStore = defineStore('control', () => {
     } catch { /* Browser storage can be unavailable; live state is retained. */ }
   }
   function emit(value: Payload) {
+    auditScope?.('execution.receipt', value)
     const batch = value.result as Payload | undefined
     details.value = batch?.kind === 'tui_batch' ? [value] : [...details.value, value].slice(-40)
     if (batch?.kind === 'tui_batch') message.value = `${batch.completed}/${batch.total} · 命令批次${value.status === 'queued' ? '排队中' : '执行中'}`
@@ -94,6 +101,8 @@ export const useControlStore = defineStore('control', () => {
         executor.pendingRunId = null
         executor.pendingKind = null
         message.value = 'RC 已重启，上次操作结果不可恢复；旧清单已停止。'
+        recoveryAudit?.('recovery.run_changed', { message: message.value, run_id: next.run_id })
+        recoveryAudit = undefined
         failed.value = true
         presentation.finish('error', message.value, recordId)
         uncertainHistoryId = undefined
@@ -137,6 +146,7 @@ export const useControlStore = defineStore('control', () => {
     } catch (error) { configError.value = error instanceof Error ? error.message : 'API 配置读取失败' }
   }
   function stop() {
+    auditScope?.('session.closed', { unresolved: unresolved.value, uncertain: uncertain.value })
     stopped = true
     clearTimeout(timer)
     pollController?.abort()
@@ -151,6 +161,9 @@ export const useControlStore = defineStore('control', () => {
     if (busy.value) return
     if (!config.value || !inputReady.value) { message.value = configError.value; failed.value = true; return }
     const token = ++serial
+    const requestAudit = directMode.value ? undefined : sessionLog.scope({ requestId: token })
+    auditScope = requestAudit
+    requestAudit?.('request.started', { input: text })
     const previousPendingId = executor.unresolvedOperation
     const previouslyUncertain = executor.uncertainSubmission
     presentation.begin(directMode.value ? undefined : text.trim())
@@ -172,9 +185,10 @@ export const useControlStore = defineStore('control', () => {
       }
       const active = () => token === serial && !request.signal.aborted
       const result = await runAgent({ config: config.value, input: text, gateway, executor, signal: request.signal,
+        audit: requestAudit,
         history: history.value.map(entry => ({ input: entry.input, message: entry.finalAnswer ?? entry.status,
           status: entry.status, outcome: entry.outcome, facts: entry.facts })),
-        onRound: round => { if (active()) presentation.beginRound(round) },
+        onRound: round => { if (active()) { auditScope = sessionLog.scope({ requestId: token, roundId: round }); presentation.beginRound(round) } },
         onPhase: phase => {
           if (!active()) return
           translating.value = phase === 'generating'
@@ -205,6 +219,7 @@ export const useControlStore = defineStore('control', () => {
       message.value = result.message
       presentation.finish(result.outcome === 'terminated' ? 'neutral' : result.outcome, message.value)
     } catch (error) {
+      requestAudit?.('request.error', { message: error instanceof Error ? error.message : String(error), cancelled: request.signal.aborted })
       if (token === serial) {
         message.value = error instanceof Error ? error.message : '执行失败'
         failed.value = token !== cancelledSerial
@@ -216,16 +231,25 @@ export const useControlStore = defineStore('control', () => {
         if (unresolved.value || uncertain.value) {
           const current = presentation.entry()
           if ((unresolved.value && (unresolved.value !== previousPendingId || current?.operationId === unresolved.value))
-            || (uncertain.value && !previouslyUncertain)) presentation.finish('pending', message.value)
+            || (uncertain.value && !previouslyUncertain)) {
+            if (requestAudit) recoveryAudit = requestAudit
+            presentation.finish('pending', message.value)
+          }
           else presentation.setPhase('pending')
           if (uncertain.value && !previouslyUncertain) uncertainHistoryId = current?.id
-        }
+        } else recoveryAudit = undefined
+        requestAudit?.('request.finished', { message: message.value, outcome: presentation.entry()?.outcome, unresolved: unresolved.value, uncertain: uncertain.value })
+        auditScope = undefined
+      } else {
+        requestAudit?.('request.superseded', { cancelled: request.signal.aborted })
       }
     }
   }
   async function runDirect(action: 'reset' | 'pause' | 'resume') {
     if (action === 'reset' ? !canReset.value : !canTogglePause.value) return
     const label = { reset: '复位', pause: '暂停', resume: '恢复' }[action]
+    auditScope?.('request.interrupted', { action })
+    auditScope = undefined
     translation?.abort()
     if (translating.value) presentation.finish('cancelled', `已停止翻译，改为${label}。`)
     const token = ++serial
@@ -259,6 +283,7 @@ export const useControlStore = defineStore('control', () => {
   function reset() { return runDirect('reset') }
   function togglePause() { return runDirect(policyRunning.value ? 'pause' : 'resume') }
   function cancel() {
+    auditScope?.('request.cancelled', { unresolved: executor.unresolvedOperation })
     cancelledSerial = serial
     translation?.abort()
     executor.cancel()
@@ -266,9 +291,13 @@ export const useControlStore = defineStore('control', () => {
   async function reconcile() {
     if (busy.value) return
     const token = serial
+    const observer = recoveryAudit
+    auditScope = observer
+    observer?.('recovery.requested', { operation_id: executor.unresolvedOperation })
     const id = history.value.find(value => value.operationId === executor.unresolvedOperation)?.id ?? null
     try {
       const receipt = await executor.reconcile()
+      observer?.('recovery.result', receipt)
       const terminated = receipt?.status === 'succeeded' && (receipt.result as Payload | undefined)?.outcome === 'terminated'
       const outcome = executor.unresolvedOperation ? 'pending' : terminated ? 'neutral' : receipt?.status === 'succeeded' ? 'success'
         : receipt?.status === 'failed' ? 'error' : receipt?.status === 'cancelled' ? 'cancelled' : 'neutral'
@@ -282,21 +311,34 @@ export const useControlStore = defineStore('control', () => {
       failed.value = receipt?.status === 'failed' || receipt?.status === 'cancelled'
       presentation.finish(outcome, message.value, id)
     } catch (error) {
+      observer?.('recovery.error', { message: error instanceof Error ? error.message : String(error) })
       if (token !== serial) return
       message.value = error instanceof Error ? error.message : '回执查询失败'; failed.value = true
       presentation.setPhase('pending')
     }
-    finally { persist() }
+    finally {
+      persist()
+      if (auditScope === observer) auditScope = undefined
+      if (!unresolved.value && !uncertain.value && recoveryAudit === observer) recoveryAudit = undefined
+    }
   }
   function acknowledgeUnknown() {
+    recoveryAudit?.('recovery.acknowledged', { message: '人工核对后解除本地锁定' })
     executor.acknowledgeUnknown()
+    recoveryAudit = undefined
     persist()
     message.value = '已解除本地锁定；旧清单不会重发。'
     presentation.finish('neutral', message.value, uncertainHistoryId ?? null)
     uncertainHistoryId = undefined
     if (unresolved.value) presentation.setPhase('pending')
   }
+  function exportLog() {
+    if (!logCount.value) return
+    try { downloadBlob(new Blob([JSON.stringify(sessionLog.snapshot(), null, 2)], { type: 'application/json' }), `robot-control-ai-${fileTime()}.json`) }
+    catch { logError.value = 'AI 日志导出失败，请重试；原记录仍然保留。' }
+  }
   return { connected, status, cameras, configError, connectionError, apiReady, directMode, inputReady, busy, translating, message, failed,
     details, unresolved, uncertain, visible, canReset, canTogglePause, policyRunning, phase, history, showRecovery,
+    logCount, logError, transcriptCollapsed, exportLog,
     start, stop, submit, reset, togglePause, cancel, reconcile, acknowledgeUnknown }
 })

@@ -3,7 +3,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { CommandPlan, Payload, RcStatus } from '../src/lib/commands'
 import { useControlStore } from '../src/stores/control'
 
-const mock = vi.hoisted(() => ({ status: vi.fn(), call: vi.fn(), close: vi.fn(async () => {}), translate: vi.fn() }))
+const mock = vi.hoisted(() => ({ status: vi.fn(), call: vi.fn(), close: vi.fn(async () => {}), translate: vi.fn(), download: vi.fn() }))
+vi.mock('../src/lib/download', () => ({ downloadBlob: mock.download, fileTime: () => 'test' }))
 vi.mock('../src/lib/mcp', () => ({ McpGateway: class { status = mock.status; call = mock.call; close = mock.close } }))
 // Presentation tests use a controllable model/executor boundary; actual dynamic
 // decisions and discovery are covered by agent-loop tests and the HTTP browser fixture.
@@ -92,6 +93,26 @@ it('keeps a cancelled accepted operation pending until its receipt is reconciled
   expect(store.phase).toBe('success')
   expect(store.showRecovery).toBe(false)
   expect(mock.call.mock.calls.some(([name]) => name === 'command')).toBe(false)
+})
+
+it.each([false, true])('associates recovery with the original AI request after a subsequent query (unknown=%s)', async unknown => {
+  await store.start()
+  if (unknown) {
+    const original = mock.call.getMockImplementation()!
+    mock.call.mockImplementation((name, ...args) => name === 'take' ? Promise.reject(Error('network')) : original(name, ...args))
+    await store.submit('复位')
+  } else {
+    const running = store.submit('复位'); await flush()
+    store.cancel(); await vi.advanceTimersByTimeAsync(200); await running
+  }
+  mock.translate.mockResolvedValue({ message: '当前状态', steps: [{ action: 'status' }] })
+  await store.submit('查询状态')
+  if (unknown) store.acknowledgeUnknown()
+  else { pending.set('op-1', true); await store.reconcile() }
+  store.exportLog()
+  const log = JSON.parse(await (mock.download.mock.calls.at(-1)![0] as Blob).text())
+  const event = log.events.find((event: any) => event.type === (unknown ? 'recovery.acknowledged' : 'recovery.result'))
+  expect(event.requestId).toBe(1)
 })
 
 it('ignores late model text and a late complete plan after cancellation', async () => {

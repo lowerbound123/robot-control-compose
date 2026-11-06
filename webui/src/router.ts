@@ -4,7 +4,10 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/monitor' },
-    { path: '/monitor', name: 'monitor', component: MonitorView },
+    { path: '/monitor', meta: { section: 'monitor' }, children: [
+      { path: '', name: 'monitor', component: MonitorView },
+      { path: ':camera(left_wrist|head|right_wrist)', name: 'monitor-camera', component: MonitorView },
+    ] },
     { path: '/:pathMatch(.*)*', redirect: '/monitor' },
   ],
 })

@@ -27,4 +27,5 @@ it('uses the executor control guard and never sends a cancelled request', async 
   const controller = new AbortController(); controller.abort()
   await expect(g.call('take', {}, state, controller.signal)).rejects.toThrow()
   expect(client.callTool).toHaveBeenCalledTimes(1)
+  expect(client.close).not.toHaveBeenCalled()
 })
