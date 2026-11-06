@@ -2,6 +2,7 @@ import { readAiResponse, type TranslationProgress } from './ai-stream'
 import { buildAgentRequest, type AgentPromptInput } from './agent-prompt'
 import { validateDecision } from './agent-capabilities'
 import { audit, type AuditSink } from './session-log'
+import { parseDsml } from './dsml'
 export type { TranslationProgress } from './ai-stream'
 
 export type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -35,7 +36,10 @@ export async function requestDecision(config: ApiConfig, prompt: AgentPromptInpu
     const content = await readAiResponse(response, controller.signal, options.onProgress, options.audit)
     if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
     let decision: unknown
-    try { decision = JSON.parse(content) } catch { throw Error('AI 返回的工具选择不是有效 JSON，未执行。') }
+    try { decision = JSON.parse(content) } catch { decision = parseDsml(content) }
+    if (decision !== null && typeof decision === 'object' && !Array.isArray(decision) && !Object.hasOwn(decision, 'tool_call')) {
+      decision = { ...decision, tool_call: null }
+    }
     audit(options.audit, 'model.decision', decision)
     const validated = validateDecision(decision, prompt.snapshot)
     if (prompt.finalOnly && validated.tool_call) throw Error('本次工具调用达到上限，最后一轮只能总结。')

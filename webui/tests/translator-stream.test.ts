@@ -100,3 +100,10 @@ it('never mixes a different choice into the selected command stream', async () =
   const other = `data: ${JSON.stringify({ choices: [{ index: 1, delta: { content: 'wrong choice' } }] })}\n\n`
   expect((await run(other + event({ content }) + ending)).message).toBe('准备复位')
 })
+
+it('accepts a complete streamed DSML call but rejects an unfinished stream', async () => {
+  const dsml = '<｜DSML｜ calls><｜DSML｜ invoke name="status"></｜DSML｜ invoke></｜DSML｜ calls>'
+  const chunks = [...dsml].map(content => event({ content })).join('')
+  expect((await run(chunks + ending, vi.fn(), true)).tool_call).toEqual({ name: 'status', arguments: {} })
+  await expect(run(chunks)).rejects.toThrow()
+})
