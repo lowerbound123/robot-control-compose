@@ -54,7 +54,7 @@ def completed(controller, identity, timeout=5):
     return controller.get_operation(identity)
 
 
-def test_local_commands_during_inference_preserve_generation_and_consume(command_controller):
+def test_policy_commands_during_inference_preserve_generation_and_consume(command_controller):
     controller, _ = command_controller
     controller.submit("resume")
     until(lambda: controller.status()["in_flight"])
@@ -94,7 +94,6 @@ def test_timeout_unloads_worker_cancels_peers_and_requires_switch(command_contro
     until(lambda: controller._worker is None, 8)
     assert not worker.alive
     assert controller.status()["state"] == "paused"
-    assert controller.local_commands() == []
     assert completed(controller, controller.submit("resume"))["status"] == "failed"
 
 
@@ -197,12 +196,11 @@ def test_headless_calls_configured_command(command_controller):
     assert 'succeeded: "local stdin"' in output.getvalue()
 
 
-def test_worker_crash_settles_call_and_removes_commands(command_controller):
+def test_worker_crash_settles_call_and_unloads_worker(command_controller):
     controller, _ = command_controller
     call = controller.submit("policy first die")
     assert completed(controller, call)["status"] == "failed"
     until(lambda: controller._worker is None, 5)
-    assert controller.local_commands() == []
 
 
 @pytest.mark.parametrize("command_controller", [SOURCE.replace('context["barrier"].wait(3)\n    return [[0] * 14]', 'return [[0] * 14]')], indirect=True)

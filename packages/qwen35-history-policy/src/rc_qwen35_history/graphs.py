@@ -168,12 +168,6 @@ class FlowSampler:
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16, cache_enabled=False)
 
     @torch.no_grad()
-    def run_eager(self):
-        with self._autocast(), _expert_attention(self.expert, self.attn_implementation):
-            self._run()
-        return self.output.clone()
-
-    @torch.no_grad()
     def capture(self):
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())

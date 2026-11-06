@@ -36,7 +36,6 @@ export const useControlStore = defineStore('control', () => {
   const unresolved = ref<string | null>(null)
   const uncertain = ref(false)
   const showRecovery = computed(() => !busy.value && (!!unresolved.value || uncertain.value))
-  const visible = ref(!document.hidden)
   const apiReady = computed(() => config.value?.enabled === true && !!config.value.model)
   const directMode = computed(() => config.value?.llm === false)
   const inputReady = computed(() => !!config.value && (directMode.value || apiReady.value))
@@ -122,10 +121,8 @@ export const useControlStore = defineStore('control', () => {
       if (!stopped) timer = setTimeout(poll, 1000)
     }
   }
-  function visibility() { visible.value = !document.hidden }
   async function start() {
     stopped = false
-    document.addEventListener('visibilitychange', visibility)
     try {
       const pending = JSON.parse(sessionStorage.getItem('rc-pending-operation') || 'null')
       if (pending && (typeof pending.id === 'string' || pending.uncertain === true)) {
@@ -154,7 +151,6 @@ export const useControlStore = defineStore('control', () => {
     serial++
     presentation.dispose()
     executor.detach()
-    document.removeEventListener('visibilitychange', visibility)
     void gateway.close()
   }
   async function submit(text: string) {
@@ -338,7 +334,7 @@ export const useControlStore = defineStore('control', () => {
     catch { logError.value = 'AI 日志导出失败，请重试；原记录仍然保留。' }
   }
   return { connected, status, cameras, configError, connectionError, apiReady, directMode, inputReady, busy, translating, message, failed,
-    details, unresolved, uncertain, visible, canReset, canTogglePause, policyRunning, phase, history, showRecovery,
+    details, unresolved, uncertain, canReset, canTogglePause, policyRunning, phase, history, showRecovery,
     logCount, logError, transcriptCollapsed, exportLog,
     start, stop, submit, reset, togglePause, cancel, reconcile, acknowledgeUnknown }
 })

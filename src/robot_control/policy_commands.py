@@ -25,37 +25,6 @@ class PolicyCommandSupport(PolicyCapabilities):
             return {}
         return getattr(worker, "command_specs", {})
 
-    def local_commands(self):
-        with self._lock:
-            if self._identity is None or self._worker is None:
-                return []
-            record = self.registry.get(self._identity)
-            members = record.members if record.is_chain else (record,)
-            from rc_policy_sdk.commands import command_specs
-            paths = []
-            for member in members:
-                prefix = f'policy {member.instance_id} '
-                paths.extend(prefix + tail for tail in ('config show', 'config set', 'config save', 'retry'))
-                paths.extend(prefix + name for name in command_specs(member.config))
-            return paths
-
-    def declared_commands(self):
-        from .policy_catalog import read_descriptor
-        from rc_policy_sdk.commands import command_specs
-        result = {}
-        for row in self.registry.list():
-            if not row['valid'] or row.get('kind') == 'chain':
-                continue
-            config = read_descriptor(row['directory'])['config']
-            result[row['id']] = command_specs(config)
-        record = getattr(self._worker, 'record', None)
-        if record is not None and record.is_chain:
-            for member in record.members:
-                result.pop(member.source_id, None)
-            for member in record.members:
-                result[member.instance_id] = command_specs(member.config)
-        return result
-
     def local_help(self, name=None):
         from .controller import HELP
         with self._lock:

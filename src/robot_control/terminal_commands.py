@@ -16,18 +16,7 @@ MCP_HELP = "\n".join([
     '示例：mcp send_command {"commands":["left:open","right:close"],"wait":true}',
     "调用在后台执行；wait=true 不阻塞终端，等待超时不取消动作；图像只显示元数据。",
 ])
-PANEL_HELP = "camera show|hide|toggle；monitor [实例]：切换 TUI 监控面板，启动时关闭。"
-POLICY_MONITOR_HELP = "monitor <实例>：切换已加载 policy 的监控面板；仅支持 TUI。"
-MANAGE_HELP = 'policy manage [apply|save|close]：本地 TUI 链编排；进入时暂停，apply 后暂停，save 只保存草稿。'
 SNAPSHOT_HELP = "snapshot：后台保存三路原始相机 PNG 和完整 state 到当前工作目录 snapshot/<时间戳>/；支持本地 TUI/headless。"
-
-
-def parse_mcp_command(line: str) -> tuple[str, dict]:
-    """Use the shared grammar; tool arguments are exclusively JSON objects."""
-    parsed = parse_command(line)
-    if parsed.kind != 'mcp_tool':
-        raise ValueError('用法：mcp <工具> [JSON对象]；mcp help 查看帮助')
-    return parsed.target, parsed.args[0]
 
 
 class TerminalCommandRouter:
@@ -49,10 +38,6 @@ class TerminalCommandRouter:
     def pending(self):
         with self._lock:
             return bool(self._pending)
-
-    @property
-    def tool_names(self):
-        return tuple(tool["name"] for tool in self.service.tools) if self.service else ()
 
     def help(self, tool_name=None):
         rows = [MCP_HELP]

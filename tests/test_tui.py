@@ -15,6 +15,7 @@ class FakeController:
         self.done = threading.Event()
         self.exit_code = 0
         self.commands = []
+        self.command_paths = []
         self.starts = 0
 
     def start(self):
@@ -25,7 +26,7 @@ class FakeController:
 
     def completion_snapshot(self):
         instances = {}
-        for path in getattr(self, 'local_commands', lambda: [])():
+        for path in self.command_paths:
             words = path.split()
             if len(words) >= 3 and words[0] == 'policy':
                 entry = instances.setdefault(words[1], {'commands': {}})
@@ -135,7 +136,7 @@ async def test_exit_command_and_events_remain_visible_until_done():
 async def test_policy_commands_refresh_completion_and_submission_errors():
     controller = FakeController()
     available = ["policy hold test-command"]
-    controller.local_commands = lambda: list(available)
+    controller.command_paths = available
     app = RobotControlApp(controller)
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)

@@ -1,10 +1,8 @@
 """One policy session, running on a thread in the shared host runtime."""
 
-import argparse
 import copy
 import importlib.util
 from pathlib import Path
-import signal
 import socket
 import sys
 import traceback
@@ -19,26 +17,11 @@ from .actions import CONTROL_MODES, normalize_actions
 
 from .configuration import ConfigureCallback, apply_candidate, apply_patch, same_config, validate_candidate
 from .images import map_images
-from .lifecycle import become_subreaper, cleanup_worker_children
 from .runtime import PolicyRuntime, WorkerChannel, invoke
 
 
 class CandidateRejected(ValueError):
     pass
-
-
-class Shutdown(BaseException):
-    pass
-
-
-_shutdown_requested = False
-
-
-def _shutdown(_signum, _frame):
-    global _shutdown_requested
-    if not _shutdown_requested:
-        _shutdown_requested = True
-        raise Shutdown()
 
 
 def _identity(message):
@@ -337,8 +320,6 @@ def run_session(connection, policy_dir, namespace):
                 if kind in ("update_config", "reset_context") and not channel.configure_fenced:
                     monitor.resume()
                 channel.send({"type": "error", "images_released": True, **_identity(message), "operation_id": message.get("operation_id"), "error": f"{type(exc).__name__}: {exc}", **({"error_type": "candidate_rejected"} if isinstance(exc, CandidateRejected) else {})})
-    except Shutdown:
-        pass
     except (EOFError, BrokenPipeError, ConnectionResetError):
         pass
     except Exception as exc:

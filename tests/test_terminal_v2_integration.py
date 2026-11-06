@@ -117,7 +117,7 @@ async def test_tui_completion_tracks_full_paths_instances_and_custom_commands():
     controller = FakeController()
     paths = ['policy hold config show', 'policy hold config set', 'policy hold config save',
              'policy hold retry', 'policy example-1 inspect']
-    controller.local_commands = lambda: list(paths)
+    controller.command_paths = paths
     app = RobotControlApp(controller)
     async with app.run_test() as pilot:
         field = app.query_one(CommandInput)

@@ -1,29 +1,25 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import type { CommandPlan, Payload, RcStatus } from '../src/lib/commands'
+import type { Payload, RcStatus } from '../src/lib/commands'
+import type { AgentDecision } from '../src/lib/agent-capabilities'
+import { decision, finalDecision, fixtureGateway } from './agent-fixtures'
 import { useControlStore } from '../src/stores/control'
 
-const mock = vi.hoisted(() => ({ status: vi.fn(), call: vi.fn(), close: vi.fn(async () => {}), translate: vi.fn(), download: vi.fn() }))
+const mock = vi.hoisted(() => ({ status: vi.fn(), call: vi.fn(), catalog: vi.fn(), close: vi.fn(async () => {}), decide: vi.fn(), download: vi.fn() }))
 vi.mock('../src/lib/download', () => ({ downloadBlob: mock.download, fileTime: () => 'test' }))
-vi.mock('../src/lib/mcp', () => ({ McpGateway: class { status = mock.status; call = mock.call; close = mock.close } }))
-// Presentation tests use a controllable model/executor boundary; actual dynamic
-// decisions and discovery are covered by agent-loop tests and the HTTP browser fixture.
-vi.mock('../src/lib/agent', () => ({ runAgent: async (options: any) => {
-  options.onRound(1)
-  options.onPhase('generating')
-  const plan = await mock.translate(options.config, options.input, {}, [], options.signal, undefined,
-    (value: object) => options.onProgress(1, value))
-  if (options.signal.aborted) throw Error('已取消生成')
-  options.onPhase('executing')
-  await options.executor.run(plan, await options.gateway.status(), options.emit)
-  return { message: plan.message, executed: plan.steps.length, facts: [], outcome: plan.steps.length ? 'success' : 'neutral' }
-} }))
+vi.mock('../src/lib/mcp', () => ({ McpGateway: class { status = mock.status; call = mock.call; catalog = mock.catalog; close = mock.close } }))
+// Keep the live agent and executor path; control only the model decisions and
+// gateway receipts so presentation, cancellation and recovery stay deterministic.
+vi.mock('../src/lib/translator', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/lib/translator')>(), requestDecision: mock.decide,
+}))
 let state: RcStatus, store: ReturnType<typeof useControlStore>, pending: Map<string, boolean>, rejected: Set<string>, id: number, direct: boolean
-const plan = { message: '准备复位', steps: [{ action: 'reset' }] } satisfies CommandPlan
+const takeDecision = decision('take')
+const statusDecision = decision('status')
 
 beforeEach(() => {
   vi.useFakeTimers()
-  vi.clearAllMocks()
+  vi.resetAllMocks()
   setActivePinia(createPinia())
   state = { run_id: 'run', state: 'paused', control_owner: 'policy', control_epoch: 1, generation: 1, returning: false }
   pending = new Map(); rejected = new Set(); id = 0; direct = false
@@ -34,9 +30,11 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url === '/config.json'
     ? { llm: !direct, enabled: !direct, model: direct ? '' : 'test', timeout_s: 3 }
     : url === '/health' ? state : { cameras: {} }))))
+  const fixture = fixtureGateway()
+  mock.catalog.mockImplementation(fixture.catalog)
   mock.status.mockImplementation(async () => ({ ...state }))
   mock.call.mockImplementation(async (name: string, args?: Payload) => {
-    if (name === 'policies') return { result: [{ valid: true, id: 'example' }] }
+    if (['policies', 'policy_commands', 'help', 'props'].includes(name)) return fixture.call(name, args)
     if (name === 'status') return { ...state }
     if (name === 'get_operation') return { operation_id: args!.operation_id, status: pending.get(String(args!.operation_id)) ? (rejected.has(String(args!.operation_id)) ? 'failed' : 'succeeded') : 'running', error: rejected.has(String(args!.operation_id)) ? '请先 mcp return' : undefined, result: { ...state } }
     if (name === 'take') state = { ...state, control_owner: 'mcp', control_epoch: state.control_epoch + 1, generation: state.generation + 1 }
@@ -50,18 +48,19 @@ beforeEach(() => {
     if (resumeDenied) rejected.add(operation_id)
     return { operation_id, status: 'queued' }
   })
-  mock.translate.mockResolvedValue(plan)
+  mock.decide.mockImplementation(async (_config, prompt) => prompt.exchanges.length === 0 ? takeDecision
+    : prompt.exchanges.length === 1 ? decision('command', { line: 'reset' }) : finalDecision)
   store = useControlStore()
 })
 afterEach(() => { store.stop(); vi.useRealTimers(); vi.unstubAllGlobals() })
 async function flush() { await vi.advanceTimersByTimeAsync(0) }
 
-it('shows real streamed text, stays orange across intermediate receipts and pulses only after all steps', async () => {
+it('shows real streamed text, stays orange across intermediate receipts and pulses only after all tools', async () => {
   await store.start()
-  let finish!: (plan: CommandPlan) => void
-  mock.translate.mockImplementation((...args) => {
-    args[6]({ kind: 'reasoning', text: '检查控制状态' })
-    args[6]({ kind: 'message', text: '准备' })
+  let finish!: (value: AgentDecision) => void
+  mock.decide.mockImplementationOnce((...args) => {
+    args[2].onProgress({ kind: 'reasoning', text: '检查控制状态' })
+    args[2].onProgress({ kind: 'message', text: '准备' })
     return new Promise(resolve => { finish = resolve })
   })
   const running = store.submit('复位')
@@ -69,7 +68,7 @@ it('shows real streamed text, stays orange across intermediate receipts and puls
   expect(store.phase).toBe('streaming')
   expect(store.history[0]).toMatchObject({ input: '复位', reasoning: '检查控制状态', message: '准备' })
   expect(mock.call.mock.calls.some(([name]) => name === 'take')).toBe(false)
-  finish(plan); await flush()
+  finish(takeDecision); await flush()
   expect(store.phase).toBe('executing')
   expect(store.unresolved).toBe('op-1')
   expect(store.showRecovery).toBe(false)
@@ -107,7 +106,7 @@ it.each([false, true])('associates recovery with the original AI request after a
     const running = store.submit('复位'); await flush()
     store.cancel(); await vi.advanceTimersByTimeAsync(200); await running
   }
-  mock.translate.mockResolvedValue({ message: '当前状态', steps: [{ action: 'status' }] })
+  mock.decide.mockImplementation(async (_config, prompt) => prompt.exchanges.length ? finalDecision : statusDecision)
   await store.submit('查询状态')
   if (unknown) store.acknowledgeUnknown()
   else { pending.set('op-1', true); await store.reconcile() }
@@ -117,13 +116,13 @@ it.each([false, true])('associates recovery with the original AI request after a
   expect(event.requestId).toBe(1)
 })
 
-it('ignores late model text and a late complete plan after cancellation', async () => {
+it('ignores late model text and a late tool decision after cancellation', async () => {
   await store.start()
-  let finish!: (value: CommandPlan) => void, progress!: (value: object) => void
-  mock.translate.mockImplementation((...args) => { progress = args[6]; return new Promise(resolve => { finish = resolve }) })
+  let finish!: (value: AgentDecision) => void, progress!: (value: object) => void
+  mock.decide.mockImplementationOnce((...args) => { progress = args[2].onProgress; return new Promise(resolve => { finish = resolve }) })
   const running = store.submit('复位'); await flush()
   store.cancel()
-  progress({ kind: 'message', text: '迟到内容' }); finish(plan)
+  progress({ kind: 'message', text: '迟到内容' }); finish(takeDecision)
   await running
   expect(store.history[0].message).not.toBe('迟到内容')
   expect(store.phase).toBe('cancelled')
@@ -132,10 +131,10 @@ it('ignores late model text and a late complete plan after cancellation', async 
 
 it('does not pulse green for an explanation without actions or a failure', async () => {
   await store.start()
-  mock.translate.mockResolvedValueOnce({ message: '请说明目标', steps: [] })
+  mock.decide.mockResolvedValueOnce({ message: '请说明目标', tool_call: null })
   await store.submit('不明确')
   expect(store.phase).toBe('idle')
-  mock.translate.mockRejectedValueOnce(Error('模型断流'))
+  mock.decide.mockRejectedValueOnce(Error('模型断流'))
   await store.submit('复位')
   expect(store.phase).toBe('error')
   expect(store.history).toHaveLength(2)
@@ -149,16 +148,17 @@ it('keeps direct mode history-free while retaining execution feedback', async ()
   expect(store.showRecovery).toBe(false)
   pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200); await running
   expect(store.phase).toBe('success')
-  expect(mock.translate).not.toHaveBeenCalled()
+  expect(mock.decide).not.toHaveBeenCalled()
 })
 
 it('keeps 50 local records and does not let an old success timer overwrite a new request', async () => {
   await store.start()
-  mock.translate.mockResolvedValue({ message: '已查询', steps: [{ action: 'status' }] })
+  mock.decide.mockImplementation(async (_config, prompt) => prompt.exchanges.length ? finalDecision : statusDecision)
   for (let i = 0; i < 51; i++) await store.submit(`查询${i}`)
   expect(store.history).toHaveLength(50)
   expect(store.history[0].input).toBe('查询1')
-  mock.translate.mockResolvedValue(plan)
+  mock.decide.mockImplementation(async (_config, prompt) => prompt.exchanges.length === 0 ? takeDecision
+    : prompt.exchanges.length === 1 ? decision('command', { line: 'reset' }) : finalDecision)
   const running = store.submit('复位'); await flush()
   await vi.advanceTimersByTimeAsync(650)
   expect(store.phase).toBe('executing')
@@ -180,15 +180,16 @@ it('does not let a late manual receipt repaint a newer AI request as successful'
   await store.start()
   const first = store.submit('复位'); await flush()
   store.cancel(); await vi.advanceTimersByTimeAsync(200); await first
-  let receipt!: (value: Payload) => void, translation!: (value: CommandPlan) => void
+  let receipt!: (value: Payload) => void, translation!: (value: AgentDecision) => void
   mock.call.mockImplementationOnce(() => new Promise(resolve => { receipt = resolve }))
   const checking = store.reconcile()
-  mock.translate.mockImplementation(() => new Promise(resolve => { translation = resolve }))
+  mock.decide.mockImplementationOnce(() => new Promise(resolve => { translation = resolve }))
+    .mockResolvedValue(finalDecision)
   const second = store.submit('查询状态'); await flush()
   expect(store.phase).toBe('waiting')
   receipt({ operation_id: 'op-1', status: 'succeeded', result: state }); await checking
   expect(store.phase).toBe('waiting')
-  translation({ message: '当前状态', steps: [{ action: 'status' }] }); await second
+  translation(statusDecision); await second
 })
 
 it('preserves the unknown operation record while read-only queries remain available', async () => {
@@ -196,7 +197,7 @@ it('preserves the unknown operation record while read-only queries remain availa
   const original = mock.call.getMockImplementation()!
   mock.call.mockImplementation((name, ...args) => name === 'take' ? Promise.reject(Error('network')) : original(name, ...args))
   await store.submit('复位')
-  mock.translate.mockResolvedValue({ message: '当前状态', steps: [{ action: 'status' }] })
+  mock.decide.mockImplementation(async (_config, prompt) => prompt.exchanges.length ? finalDecision : statusDecision)
   await store.submit('查询状态')
   expect(store.history[0].outcome).toBe('pending')
   expect(store.history[1].outcome).toBe('success')
@@ -222,21 +223,21 @@ for (const owner of ['policy', 'mcp']) for (const llm of [true, false]) {
     expect(mock.call.mock.calls.filter(([name]) => name === 'tui_command')).toHaveLength(1)
     expect(store.phase).toBe(action === 'resume' && owner === 'mcp' ? 'error' : 'success')
     if (action === 'resume' && owner === 'mcp') expect(state.state).toBe('paused')
-    expect(mock.translate).not.toHaveBeenCalled()
+    expect(mock.decide).not.toHaveBeenCalled()
     expect(store.history).toEqual([])
     expect(state.control_owner).toBe(owner)
   })
 }
 
-it('manual pause supersedes in-flight AI without allowing its late reset plan to execute', async () => {
+it('manual pause supersedes in-flight AI without allowing its late reset decision to execute', async () => {
   state = { ...state, state: 'running' }
   await store.start(); await flush()
-  let finish!: (value: CommandPlan) => void, progress!: (value: object) => void
-  mock.translate.mockImplementation((...args) => { progress = args[6]; return new Promise(resolve => { finish = resolve }) })
+  let finish!: (value: AgentDecision) => void, progress!: (value: object) => void
+  mock.decide.mockImplementationOnce((...args) => { progress = args[2].onProgress; return new Promise(resolve => { finish = resolve }) })
   const translating = store.submit('复位'); await flush()
   expect(store.canTogglePause).toBe(true)
   const pausing = store.togglePause(); await flush()
-  progress({ kind: 'message', text: '过期复位指令' }); finish(plan); await translating
+  progress({ kind: 'message', text: '过期复位指令' }); finish(takeDecision); await translating
   expect(store.phase).toBe('executing')
   expect(store.history[0]).toMatchObject({ outcome: 'cancelled', message: '' })
   pending.set('op-1', true); await vi.advanceTimersByTimeAsync(200); await pausing

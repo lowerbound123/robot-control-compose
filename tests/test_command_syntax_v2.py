@@ -1,7 +1,7 @@
 """Human command grammar: explicit targets, no legacy execution aliases."""
 import pytest
 
-from rc_policy_sdk.command_syntax import parse_command, complete_command, POLICY_COMMAND_RESERVED
+from rc_policy_sdk.command_syntax import parse_command, POLICY_COMMAND_RESERVED
 
 
 @pytest.mark.parametrize(('text', 'kind', 'target', 'value'), [
@@ -45,10 +45,3 @@ def test_custom_commands_cannot_shadow_subcommands():
         assert name in POLICY_COMMAND_RESERVED
         with pytest.raises(ValueError, match='reserved'):
             command_specs({'tui_commands': {name: {'handler': name, 'args': []}}})
-
-
-def test_completion_uses_full_command_paths_and_instance_targets():
-    assert 'config rc show' in complete_command('config rc s')
-    assert 'policy example-0 config set' in complete_command('policy example-0 config s', instances=['example-0'])
-    assert 'monitor example-0' in complete_command('monitor ex', instances=['example-0'])
-    assert 'example-0' not in complete_command('ex', instances=['example-0'])

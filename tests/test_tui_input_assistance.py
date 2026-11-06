@@ -289,7 +289,7 @@ async def test_directory_confirmation_keeps_separator_and_tab_lists_children(tmp
 async def test_open_menu_drops_removed_instance_before_confirmation():
     controller = FakeController()
     paths = ['policy example-1 inspect']
-    controller.local_commands = lambda: list(paths)
+    controller.command_paths = paths
     app = RobotControlApp(controller)
     async with app.run_test() as pilot:
         field = app.query_one(CommandInput)

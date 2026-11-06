@@ -3,36 +3,6 @@ from concurrent.futures import Future
 import pytest
 
 
-@pytest.mark.parametrize(("line", "expected"), [
-    ("mcp take", ("take", {})),
-    ("  mcp\tstate  ", ("state", {})),
-    ('mcp show {"scope":"rc"}', ("show", {"scope": "rc"})),
-    ('mcp get_operation {"operation_id":"op-12"}', ("get_operation", {"operation_id": "op-12"})),
-    ('mcp send_command {"commands":"left:up&forward:0.01 | right:hold"}',
-     ("send_command", {"commands": "left:up&forward:0.01 | right:hold"})),
-    ('mcp command {"line":"policy first config set params.label 你好"}',
-     ("command", {"line": 'policy first config set params.label 你好'})),
-    ('mcp send_command {"commands":["left:open","right:close"],"wait":true}',
-     ("send_command", {"commands": ["left:open", "right:close"], "wait": True})),
-    ('mcp move_eef {"targets":{"left":{"end_pos":[0,0,0,0,0,0]}}}',
-     ("move_eef", {"targets": {"left": {"end_pos": [0, 0, 0, 0, 0, 0]}}})),
-])
-def test_parse_mcp_preserves_arguments(line, expected):
-    from robot_control.terminal_commands import parse_mcp_command
-    assert parse_mcp_command(line) == expected
-
-
-@pytest.mark.parametrize("line", [
-    "mcp", "status", "mcp state true", "mcp state []",
-    "mcp show rc", "mcp get_operation op-12", "mcp send_command left:open", "mcp command status",
-    'mcp send_command {"commands":', 'mcp state {"wait_for_new":NaN}',
-])
-def test_parse_mcp_rejects_invalid_argument_forms(line):
-    from robot_control.terminal_commands import parse_mcp_command
-    with pytest.raises(ValueError):
-        parse_mcp_command(line)
-
-
 class RecordingController:
     def __init__(self):
         self.lines = []

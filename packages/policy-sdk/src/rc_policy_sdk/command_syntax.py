@@ -148,22 +148,3 @@ def parse_command(line: str) -> Command:
         raise ValueError('用法：' + usage)
     hint = replacements.get(head, 'help 查看正式命令；自定义命令使用 policy <实例> <命令>')
     raise ValueError(f'不支持此命令或参数；请使用 {hint}')
-
-
-def complete_command(prefix, *, instances=(), policy_commands=None, tools=()):
-    candidates = set()
-    for path, _ in COMMAND_TREE:
-        if '<实例>' in path:
-            for identity in instances:
-                expanded = path.replace('<实例>', identity)
-                if '<命令>' in expanded:
-                    for name in (policy_commands or {}).get(identity, ()):
-                        candidates.add(expanded.replace('<命令>', name))
-                else:
-                    candidates.add(expanded)
-        elif '<工具>' in path:
-            candidates.update(path.replace('<工具>', name) for name in tools)
-        elif '<' not in path:
-            candidates.add(path)
-    candidates.update('monitor ' + identity for identity in instances)
-    return sorted(value for value in candidates if value.startswith(prefix))

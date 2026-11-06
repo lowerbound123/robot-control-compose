@@ -1,39 +1,12 @@
-import Ajv from 'ajv'
 import type { PreparedTool } from './agent-capabilities'
 
 export type RcStatus = { state: string; control_owner: string; control_epoch: number; generation: number; returning: boolean; run_id?: string; [key: string]: unknown }
-export type Step = { action: 'status' | 'state' | 'policies' | 'record_status' | 'take' | 'return' | 'pause' | 'resume' | 'reset' }
-  | { action: 'switch'; policy: string }
-  | { action: 'record'; mode: 'on' | 'off' | 'toggle' }
-export type CommandPlan = { message: string; steps: Step[] }
 export type Payload = Record<string, unknown>
 export interface RcGateway {
   status(): Promise<RcStatus>
   call(name: string, args?: Payload, expected?: RcStatus, signal?: AbortSignal): Promise<Payload>
 }
 export class ToolRejectedError extends Error {}
-
-const simple = ['status', 'state', 'policies', 'record_status', 'take', 'return', 'pause', 'resume', 'reset']
-export const planSchema = {
-  type: 'object', additionalProperties: false, required: ['message', 'steps'],
-  properties: {
-    message: { type: 'string', minLength: 1, maxLength: 1000 },
-    steps: { type: 'array', maxItems: 12, items: { oneOf: [
-      { type: 'object', additionalProperties: false, required: ['action'], properties: { action: { enum: simple } } },
-      { type: 'object', additionalProperties: false, required: ['action', 'policy'], properties: { action: { const: 'switch' }, policy: { type: 'string', minLength: 1, maxLength: 64 } } },
-      { type: 'object', additionalProperties: false, required: ['action', 'mode'], properties: { action: { const: 'record' }, mode: { enum: ['on', 'off', 'toggle'] } } },
-    ] } },
-  },
-}
-const check = new Ajv({ allErrors: true, coerceTypes: false, removeAdditional: false }).compile(planSchema)
-export function validatePlan(value: unknown, policies: string[]): CommandPlan {
-  if (!check(value)) throw Error('AI 返回的指令格式或操作不在允许范围内，未执行。')
-  const plan = value as CommandPlan
-  if (plan.steps.some(step => step.action === 'switch' && !policies.includes(step.policy))) {
-    throw Error('AI 选择了当前不可用的策略，整份清单未执行。')
-  }
-  return plan
-}
 
 export function sameControl(a: RcStatus, b: RcStatus) {
   return a.run_id === b.run_id && a.control_epoch === b.control_epoch && a.generation === b.generation
@@ -45,11 +18,6 @@ export function isStatus(value: unknown): value is RcStatus {
   return typeof v.control_epoch === 'number' && typeof v.generation === 'number' && typeof v.state === 'string'
     && typeof v.control_owner === 'string' && typeof v.returning === 'boolean'
 }
-export const actionLabels: Record<Step['action'], string> = {
-  status: '查询状态', state: '读取机器人反馈', policies: '列出策略', record_status: '查询录制',
-  take: '接管控制', return: '归还控制', pause: '暂停', resume: '继续', reset: '复位', switch: '切换策略', record: '录制',
-}
-const readOnly = new Set(['status', 'state', 'policies', 'record_status'])
 const terminal = new Set(['succeeded', 'failed', 'cancelled'])
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -174,61 +142,6 @@ export class PlanExecutor {
       this.expected = live
       checkCancelled()
       return { payload: completed, control: live, shutdownAccepted: false }
-    } finally { this.busy = false }
-  }
-
-  private async write(name: string, args: Payload, emit: (value: Payload) => void, changesControl = true) {
-    const before = await this.current()
-    this.pendingRunId = before.run_id ?? null
-    this.pendingKind = 'plan'
-    let accepted: Payload
-    try { accepted = await this.gateway.call(name, { ...args, wait: false }, before) }
-    catch (error) {
-      if (!(error instanceof ToolRejectedError)) this.uncertainSubmission = true
-      else { this.pendingRunId = null; this.pendingKind = null }
-      throw error
-    }
-    const completed = await this.receipt(accepted, emit)
-    if (changesControl) {
-      // Completion snapshots belong to this operation. A later status read
-      // must not silently adopt a human's newer generation into our plan.
-      const snapshot = isStatus(completed.result) ? completed.result : completed.controller
-      if (!isStatus(snapshot)) throw Error('RC 回执缺少控制状态，后续步骤已停止。')
-      this.expected = snapshot
-    } else this.expected = before
-    await this.current()
-  }
-
-  async run(plan: CommandPlan, initial: RcStatus, emit: (value: Payload) => void = () => {}) {
-    if (this.busy) throw Error('已有指令正在执行。')
-    if ((this.unresolvedOperation || this.uncertainSubmission) && plan.steps.some(step => !readOnly.has(step.action))) {
-      throw Error('上一条操作尚待确认，暂不能提交新的控制指令。')
-    }
-    this.busy = true
-    this.cancelled = false
-    this.detached = false
-    this.expected = initial
-    try {
-      for (const [index, step] of plan.steps.entries()) {
-        const status = await this.current()
-        emit({ step: index + 1, total: plan.steps.length, action: step.action, label: actionLabels[step.action] })
-        if (readOnly.has(step.action)) {
-          const result = await this.gateway.call(step.action === 'record_status' ? 'record' : step.action,
-            step.action === 'record_status' ? { action: 'status' } : {})
-          emit({ action: step.action, result })
-        } else if (step.action === 'record') {
-          await this.write('record', { action: step.mode }, emit, false)
-        } else if (step.action === 'return') {
-          await this.write('return', {}, emit)
-        } else if (step.action === 'take') {
-          await this.write('take', {}, emit)
-        } else {
-          if (step.action === 'resume' && status.state === 'running' && status.control_owner === 'policy') continue
-          if (status.control_owner !== 'mcp') await this.write('take', {}, emit)
-          if (step.action === 'resume') await this.write('return', {}, emit)
-          else await this.write('command', { line: step.action === 'switch' ? `policy switch ${step.policy}` : step.action }, emit)
-        }
-      }
     } finally { this.busy = false }
   }
 
