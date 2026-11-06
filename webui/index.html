@@ -5,6 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#ffffff" />
+    <style>
+      html { background: #f5f7fa; color-scheme: light; }
+      html[data-theme="dark"] { background: #111720; color-scheme: dark; }
+    </style>
+    <script>
+      // Restore before the app or its styles load to avoid a light first paint.
+      (() => {
+        let theme = 'light';
+        try { if (localStorage.getItem('rc-webui-theme') === 'dark') theme = 'dark'; } catch {}
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('meta[name="color-scheme"]').content = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#111720' : '#f5f7fa';
+      })();
+    </script>
     <title>Robot Control · 监控</title>
   </head>
   <body>

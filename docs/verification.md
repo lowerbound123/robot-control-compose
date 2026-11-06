@@ -1,5 +1,17 @@
 # Schema 3 动态策略容器验收
 
+## WebUI 深浅主题切换（2026-11-06）
+
+顶部太阳／月亮按钮切换深浅主题，默认沿用浅色并记住浏览器偏好；全页面及 Canvas 配色适配，主题切换保持录像、位姿历史和 AI 请求连续。
+
+- `npm test`：**166 passed**；`npm run build` 与 `git diff --check` 通过。
+- 完整 Playwright：**43 passed**，覆盖原有功能和新增的主题切换、Canvas 实际颜色、首屏恢复、刷新/跨标签同步、存储失败、AI 请求期间切换与 320～1440px 布局。
+- 最后视觉检查加深了深色日志底板，避免后方相机文字干扰阅读；修正后主题专项 **4 passed**，构建再次通过，最终截图位于 `/tmp/rc-theme-visual-final/`。
+- 生产构建在完全禁用 `localStorage` getter 后仍可双向切换，页面错误为空。开发服务器的存储依赖通过仅对主题键注入读写故障单独验证。
+- 首次完整回归中 mock RC 在第 4 项后阻塞，健康接口也超时，导致 8 项连锁失败；中断并确认测试进程退出后，在禁止复用服务的新隔离环境中完整重跑通过。未将该次失败计为通过，未在本次主题改动中修改 RC。
+
+证据：`/tmp/rc-theme-vitest.log`、`/tmp/rc-theme-build.log`、`/tmp/rc-theme-e2e-clean.log`、`/tmp/rc-theme-production-check.log`；截图在 `/tmp/rc-theme-e2e-clean/`，首次阻塞日志保留于 `/tmp/rc-theme-e2e-final.log`。单智能体实施与自审；本次仅修改 WebUI，未执行 Docker、ROS 或硬件验收。
+
 ## WebUI 位姿曲线验收（2026-11-06）
 
 新增关节与末端两页、每臂 7 张自适应正方形曲线、60 秒独立视窗与全网页会话历史。RC 以共享采样器提供 50 Hz 目标状态 SSE；原 MCP state、SDK 与 policy 契约不变。多页面共用网络接收，各自保留历史和录像。

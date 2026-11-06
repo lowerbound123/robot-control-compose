@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { usePoseStore } from '@/stores/pose'
+import { useThemeStore } from '@/stores/theme'
 import { drawChart } from '@/lib/pose/draw'
 import { channels, type PoseMode } from '@/lib/pose/window'
 const props = defineProps<{ mode: PoseMode; channel: number }>()
 const pose = usePoseStore()
+const theme = useThemeStore()
 const canvas = ref<HTMLCanvasElement | null>(null)
 const revision = ref(0)
 const viewport = pose.windowFor(props.mode, props.channel)
@@ -42,7 +44,7 @@ onMounted(() => {
   pose.bind(props.mode, props.channel, {
     request: () => !visible || pose.status.first === null ? null : ({ key: pose.key(props.mode, props.channel),
       mode: props.mode, channel: props.channel, start: bounds.value[0], end: bounds.value[1], pixels: canvas.value?.clientWidth ?? 180 }),
-    draw: chart => { if (canvas.value) drawChart(canvas.value, chart, spec, current.value) },
+    draw: chart => { if (canvas.value) drawChart(canvas.value, chart, spec, current.value, theme.colors) },
   })
 })
 onBeforeUnmount(() => {

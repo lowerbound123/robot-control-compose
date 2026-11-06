@@ -2,21 +2,24 @@
 import { computed, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
-import { faDisplay, faDownload, faPause, faPlay, faRotateLeft } from '@fortawesome/free-solid-svg-icons'
+import { faDisplay, faDownload, faMoon, faPause, faPlay, faRotateLeft, faSun } from '@fortawesome/free-solid-svg-icons'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import CommandComposer from '@/components/CommandComposer.vue'
 import { useControlStore } from '@/stores/control'
 import { useCameraStore } from '@/stores/camera'
 import { usePoseStore } from '@/stores/pose'
+import { useThemeStore } from '@/stores/theme'
 const route = useRoute()
 const control = useControlStore()
 const camera = useCameraStore()
 const pose = usePoseStore()
+const theme = useThemeStore()
+const themeAction = computed(() => theme.current === 'dark' ? '切换到浅色主题' : '切换到深色主题')
 const current = computed(() => String(route.meta.section || 'monitor'))
 const connection = computed(() => !control.connected ? '未连接' : control.status?.state === 'running' ? '运行中' : '已连接')
-onMounted(() => { void control.start(); camera.start(); pose.start() })
-onBeforeUnmount(() => { camera.dispose(); pose.dispose(); control.stop() })
+onMounted(() => { theme.start(); void control.start(); camera.start(); pose.start() })
+onBeforeUnmount(() => { theme.stop(); camera.dispose(); pose.dispose(); control.stop() })
 </script>
 
 <template>
@@ -45,6 +48,9 @@ onBeforeUnmount(() => { camera.dispose(); pose.dispose(); control.stop() })
         </Button>
         <Button variant="outline" size="sm" :disabled="!control.canReset" title="移动到配置的复位姿态，并保持暂停" @click="control.reset">
           <FontAwesomeIcon :icon="faRotateLeft" />复位
+        </Button>
+        <Button variant="outline" size="icon-sm" class="theme-toggle" :title="themeAction" :aria-label="themeAction" @click="theme.toggle">
+          <FontAwesomeIcon :icon="theme.current === 'dark' ? faSun : faMoon" />
         </Button>
       </div>
     </header>
