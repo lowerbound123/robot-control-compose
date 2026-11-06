@@ -1,5 +1,17 @@
 # Schema 3 动态策略容器验收
 
+## Compose 快捷入口（2026-11-07）
+
+新增 `scripts/up.sh`、`build.sh`、`down.sh`、`attach.sh`，保留原 `compose.sh`。公共生命周期、策略与 SDK 契约不变。
+
+- 脚本、setup、配置导入和退出回归：**42 passed**，其中新脚本 **19 项**。覆盖顺序合并、路径空格、RC 别名、真实 Compose 服务解析、独立策略环境、歧义/无构建定义拒绝，以及退出码传递。
+- `python3 scripts/test_scope.py`：**78 passed、1 skipped**；宿主 ROS 环境缺失，跳过不计通过。沙箱首次运行禁止 POSIX 共享内存，相关失败运行不计通过；获得测试权限后完整重跑通过。
+- `python3 tests/example_docker_smoke.py --evidence-dir /tmp/rc-compose-shortcuts-example`：7 组真实 Docker 检查通过，覆盖 example 自链、重载、共享图像、MCP 与退出证明；测试部署容器和卷均已清理。
+- 独立临时部署执行 `./setup.sh --policies example` 和 `./scripts/build.sh example` 成功；新 `up.sh` 启动 RC、anchor、附加容器及两个 example，随后无参数 `down.sh` 成功回收全部 5 个容器，无需再次提供覆盖文件。使用 Compose 5.5.0，mock 机器人；未连接硬件。
+- Shell/Python 语法检查、`git diff --check` 通过。单智能体实施与自审。
+
+证据：`/tmp/rc-compose-shortcuts-targeted-full.log`、`/tmp/rc-compose-shortcuts-scope-full.log`、`/tmp/rc-compose-shortcuts-example/`、`/tmp/rc-compose-shortcuts-live.log`、`/tmp/rc-compose-shortcuts-live.json`。
+
 ## WebUI 深浅主题切换（2026-11-06）
 
 顶部太阳／月亮按钮切换深浅主题，默认沿用浅色并记住浏览器偏好；全页面及 Canvas 配色适配，主题切换保持录像、位姿历史和 AI 请求连续。
