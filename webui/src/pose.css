@@ -1,0 +1,30 @@
+.pose-page { width: 100%; max-width: 1680px; margin-inline: auto; }
+.pose-intro { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; margin-bottom: 24px; font-size: 11px; color: #68788b; }
+.pose-error, .pose-outside { color: #a16d29; }
+.pose-arm + .pose-arm { margin-top: 28px; }
+.pose-arm h2 { margin: 0 0 14px; color: #435367; font-size: 13px; font-weight: 600; }
+.pose-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 20px 16px; }
+.pose-chart { margin: 0; min-width: 0; }
+.pose-caption { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 0 3px 9px; }
+.pose-name { font-size: 12px; font-weight: 600; color: #42546b; }
+.pose-name small { margin-left: 3px; font-size: 10px; font-weight: 400; color: #7b8795; }
+.pose-value { font-size: 12px; font-variant-numeric: tabular-nums; }
+.pose-plot { position: relative; aspect-ratio: 1; border: 1px solid #dce4ed; border-radius: 12px; background: rgb(255 255 255 / 62%); overflow: hidden; }
+.pose-plot canvas { display: block; width: 100%; height: 100%; aspect-ratio: 1; outline-offset: -3px; }
+.pose-plot canvas:focus-visible { outline: 2px solid #7188a5; }
+.pose-empty { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: #8490a0; pointer-events: none; }
+.pose-chart-footer { display: flex; justify-content: space-between; align-items: center; gap: 4px; margin: 8px 3px 0; font-size: 10px; color: #758498; }
+.pose-chart-footer button { border: 0; background: transparent; color: #456f99; font: inherit; padding: 2px 0 2px 6px; }
+.pose-chart-footer button:disabled { color: #a0aab6; }
+@media (max-width: 1200px) {
+  .topbar { height: auto; min-height: 104px; grid-template-columns: 1fr auto; gap: 12px; padding-block: 14px; }
+  .top-navigation { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
+  .top-actions { gap: 14px; }
+}
+@media (max-width: 560px) {
+  .topbar { grid-template-columns: 1fr; gap: 12px; padding-inline: 16px; }
+  .top-actions { grid-row: 1; justify-self: center; gap: 12px; }
+  .top-navigation { grid-row: 2; max-width: 100%; }
+  .nav-tab { min-width: 0; padding-inline: 14px; gap: 5px; font-size: 12px; }
+  .pose-intro { line-height: 1.7; margin-bottom: 18px; }
+}

@@ -33,6 +33,7 @@ from .direct_types import finite_number, finite_vector
 from .operations import TERMINAL
 from .policy_results import PolicyWaitActive
 from .web_preview import WebPreview, multipart_frames
+from .web_state import WebState, state_events
 
 Timeout = Annotated[float, Field(ge=0, le=120)]
 PolicyWaitTimeout = Annotated[FiniteFloat, Field(ge=0)]
@@ -459,10 +460,12 @@ def create_server(controller):
     return server
 
 
-def create_app(controller, settings, *, server=None, preview=None):
+def create_app(controller, settings, *, server=None, preview=None, state_feed=None):
     server = server if server is not None else create_server(controller)
     preview = preview if preview is not None else WebPreview(
         lambda: controller.robot.camera_preview_snapshot(), stopping=controller.done.is_set)
+    state_feed = state_feed if state_feed is not None else WebState(
+        controller.robot.read_state, run_id=controller.run_id, stopping=controller.done.is_set)
     mcp_app = server.streamable_http_app(stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(allowed_hosts=settings["allowed_hosts"], allowed_origins=settings["allowed_origins"]))
 
@@ -473,7 +476,11 @@ def create_app(controller, settings, *, server=None, preview=None):
                 yield
         finally:
             deadline = getattr(controller, '_shutdown_deadline', None)
-            if not preview.close(min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1):
+            deadline = min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1
+            state_feed.stop()
+            preview_ok = preview.close(deadline)
+            state_ok = state_feed.close(deadline)
+            if not preview_ok or not state_ok:
                 controller.exit_code = 1
 
     async def health(request):
@@ -481,6 +488,14 @@ def create_app(controller, settings, *, server=None, preview=None):
 
     async def preview_status(request):
         return JSONResponse(preview.status(), headers={'Cache-Control': 'no-store'})
+
+    async def state_stream(request):
+        try:
+            reader = state_feed.subscribe()
+        except RuntimeError:
+            return JSONResponse({'error': 'state stream is stopping'}, status_code=503)
+        return StreamingResponse(state_events(reader), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
     async def preview_stream(request):
         try:
@@ -492,7 +507,7 @@ def create_app(controller, settings, *, server=None, preview=None):
         return StreamingResponse(multipart_frames(reader), media_type='multipart/x-mixed-replace; boundary=frame',
                                  headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
-    app = Starlette(routes=[Route("/health", health), Route('/preview/status', preview_status),
+    app = Starlette(routes=[Route("/health", health), Route('/state/stream', state_stream), Route('/preview/status', preview_status),
         Route('/preview/{camera}.mjpg', preview_stream), Mount("/", app=mcp_app)], lifespan=lifespan)
     token = os.environ.get(settings["token_env"])
     if token:
@@ -510,6 +525,9 @@ class MCPService:
         self.closing = threading.Event()
         self.preview = WebPreview(lambda: controller.robot.camera_preview_snapshot(),
                                   stopping=lambda: self.closing.is_set() or controller.done.is_set())
+        self.state_feed = WebState(controller.robot.read_state, run_id=controller.run_id,
+                                   stopping=lambda: self.closing.is_set() or controller.done.is_set(),
+                                   on_failure=self._state_failure)
         self.failure = None
         self.mcp_server = None
         self.tools = ()
@@ -522,6 +540,11 @@ class MCPService:
     def url(self):
         host = self.settings["host"]
         return f"http://{'[' + host + ']' if ':' in host else host}:{self.port}/mcp"
+
+    def _state_failure(self, exc):
+        self.controller.exit_code = 1
+        self.controller._emit(f'Web state sampler exited: {exc}', 'error')
+        self.controller.submit('exit')
 
     def bind(self):
         if self.listener is not None:
@@ -543,7 +566,8 @@ class MCPService:
             raise RuntimeError("MCP service has already been started or closed")
         self.bind()
         self.mcp_server = create_server(self.controller)
-        app = create_app(self.controller, self.settings, server=self.mcp_server, preview=self.preview)
+        app = create_app(self.controller, self.settings, server=self.mcp_server,
+                         preview=self.preview, state_feed=self.state_feed)
         self.server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False, ws="none", timeout_graceful_shutdown=5))
 
         async def serve():
@@ -620,7 +644,11 @@ class MCPService:
         for future in pending:
             future.cancel()
         deadline = getattr(self.controller, '_shutdown_deadline', None)
-        preview_ok = self.preview.close(min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1)
+        deadline = min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1
+        self.preview.stop()
+        self.state_feed.stop()
+        preview_ok = self.preview.close(deadline)
+        state_ok = self.state_feed.close(deadline)
         if self.server is not None:
             self.server.should_exit = True
         if self.thread is not None:
@@ -630,6 +658,6 @@ class MCPService:
         if self.listener is not None:
             self.listener.close()
             self.listener = None
-        if not preview_ok:
+        if not preview_ok or not state_ok:
             self.controller.exit_code = 1
-            raise RuntimeError('Web preview encoder did not stop before cleanup deadline')
+            raise RuntimeError('Web display workers did not stop before cleanup deadline')

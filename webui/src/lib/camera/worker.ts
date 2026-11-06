@@ -3,6 +3,7 @@ import { FPS, FrameTimeline } from './timeline'
 import { RecordingStorage, type StoredPacket } from './storage'
 import { exportRecording } from './mux'
 import type { CameraWorkerInput, CameraWorkerOutput, RecordingStatus } from './types'
+import { SharedFeed } from '../shared-feed'
 
 const send = (message: CameraWorkerOutput, transfer: Transferable[] = []) => postMessage(message, { transfer })
 const clock = () => performance.timeOrigin + performance.now()
@@ -15,6 +16,8 @@ let metadata: EncodedVideoChunkMetadata = { decoderConfig: { codec: 'vp8', coded
 let outputCount = 0, pending: StoredPacket[] = [], writing: Promise<void> | undefined
 let controller: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
 let exportCutoff: number | undefined, lastReported = 0
+type ReceivedFrame = { blob: Blob; sequence: number | null; at: number }
+let feed: SharedFeed<ReceivedFrame> | undefined
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 function report(force = false) {
@@ -87,9 +90,24 @@ async function initialize(session: string, camera: string) {
   // A live document holds each DB's Web Lock. Never delete another tab's active cache.
   void RecordingStorage.cleanInactive().catch(() => {})
 }
-async function consume(url: string) {
-  while (!stopped) {
+async function receiveFrame({ blob, sequence, at }: ReceivedFrame) {
+  latest = { blob, sequence }
+  void preview()
+  if (!status.error && encoder) {
+    const bitmap = await createImageBitmap(blob)
+    if (stopped || status.error) bitmap.close()
+    else {
+      try { timeline.receive(bitmap, at); pump() }
+      catch (error) { bitmap.close(); fail(error) }
+    }
+  }
+  status.received++; status.streamError = ''; report()
+}
+async function consume(url: string, signal: AbortSignal, publish: (frame: ReceivedFrame) => Promise<void>, streamError: (error: string) => void) {
+  while (!stopped && !signal.aborted) {
     controller = new AbortController()
+    const abort = () => controller?.abort()
+    signal.addEventListener('abort', abort, { once: true })
     try {
       const response = await fetch(url, { signal: controller.signal, cache: 'no-store', credentials: 'same-origin' })
       if (!response.ok || !response.body) throw Error(`图像连接失败（HTTP ${response.status}）`)
@@ -100,30 +118,16 @@ async function consume(url: string) {
           const { done, value } = await reader.read()
           if (done || stopped) { parser.finish(); break }
           for (const frame of parser.push(value)) {
-            const at = clock(), blob = new Blob([frame.jpeg], { type: 'image/jpeg' })
-            latest = { blob, sequence: frame.sequence }
-            void preview()
-            if (!status.error && encoder) {
-              const bitmap = await createImageBitmap(blob)
-              if (stopped || status.error) bitmap.close()
-              else {
-                try { timeline.receive(bitmap, at); pump() }
-                catch (error) { bitmap.close(); fail(error) }
-              }
-            }
-            status.received++
-            status.streamError = ''
-            report()
+            await publish({ at: clock(), blob: new Blob([frame.jpeg], { type: 'image/jpeg' }), sequence: frame.sequence })
           }
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
       if (!stopped) throw Error('图像连接中断，正在重连')
     } catch (error) {
-      if (stopped) break
-      status.streamError = `${errorText(error)}，正在重连`
-      report(true)
-    } finally { controller.abort() }
-    if (!stopped) await new Promise(resolve => setTimeout(resolve, 2000))
+      if (stopped || signal.aborted) break
+      streamError(`${errorText(error)}，正在重连`)
+    } finally { controller.abort(); signal.removeEventListener('abort', abort) }
+    if (!stopped && !signal.aborted) await new Promise(resolve => setTimeout(resolve, 2000))
   }
 }
 async function download(id: number, cutoff: number) {
@@ -163,13 +167,15 @@ onmessage = (event: MessageEvent<CameraWorkerInput>) => {
       try { await initialize(message.session, message.camera) } catch (error) { fail(error) }
       if (stopped) { releaseLock?.(); return }
       timer = setInterval(pump, 15)
-      void consume(message.url)
+      feed = new SharedFeed(message.url, (signal, publish, error) => consume(message.url, signal, publish, error), receiveFrame,
+        error => { status.streamError = error; report(true) })
     })()
   } else if (message.type === 'ack') previewPending = false
   else if (message.type === 'preview') { previewEnabled = message.enabled; if (previewEnabled) void preview() }
   else if (message.type === 'export') void download(message.id, message.cutoff)
   else if (message.type === 'stop') {
     stopped = true
+    feed?.close()
     controller?.abort(); clearInterval(timer)
     if (encoder && encoder.state !== 'closed') encoder.close()
     timeline.close()

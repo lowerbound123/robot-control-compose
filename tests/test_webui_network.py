@@ -48,6 +48,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/preview/') and self.path.endswith('.mjpg'):
             content_type = 'multipart/x-mixed-replace; boundary=frame'
             data = b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n\xff\xd8\xff\xd9\r\n--frame--\r\n'
+        elif self.path == '/state/stream':
+            content_type = 'text/event-stream'
+            data = b'data: {"sequence":1,"run_id":"proxy-fixture"}\n\n'
         else:
             content_type = 'application/json'
             data = json.dumps(dict(path=self.path, method=self.command, body=body,
@@ -122,6 +125,9 @@ def test_real_proxy_forwards_health_mcp_and_three_camera_streams(tmp_path, mode)
                 assert reply.headers['Content-Type'] == 'multipart/x-mixed-replace; boundary=frame'
                 assert reply.read() == (b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n'
                                         b'\xff\xd8\xff\xd9\r\n--frame--\r\n')
+        with opener.open(address + '/state/stream', timeout=5) as reply:
+            assert reply.headers['Content-Type'] == 'text/event-stream'
+            assert reply.read() == b'data: {"sequence":1,"run_id":"proxy-fixture"}\n\n'
         with opener.open(address + '/config.json', timeout=5) as reply:
             assert json.load(reply) == dict(llm=False, enabled=False, model='', timeout_s=30, effort=None)
     finally:

@@ -8,13 +8,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import CommandComposer from '@/components/CommandComposer.vue'
 import { useControlStore } from '@/stores/control'
 import { useCameraStore } from '@/stores/camera'
+import { usePoseStore } from '@/stores/pose'
 const route = useRoute()
 const control = useControlStore()
 const camera = useCameraStore()
+const pose = usePoseStore()
 const current = computed(() => String(route.meta.section || 'monitor'))
 const connection = computed(() => !control.connected ? '未连接' : control.status?.state === 'running' ? '运行中' : '已连接')
-onMounted(() => { void control.start(); camera.start() })
-onBeforeUnmount(() => { camera.dispose(); control.stop() })
+onMounted(() => { void control.start(); camera.start(); pose.start() })
+onBeforeUnmount(() => { camera.dispose(); pose.dispose(); control.stop() })
 </script>
 
 <template>
@@ -26,6 +28,8 @@ onBeforeUnmount(() => { camera.dispose(); control.stop() })
           <TabsTrigger value="monitor" as-child class="nav-tab">
             <RouterLink to="/monitor"><FontAwesomeIcon :icon="faDisplay" />监控</RouterLink>
           </TabsTrigger>
+          <TabsTrigger value="joints" as-child class="nav-tab"><RouterLink to="/joints">关节位姿</RouterLink></TabsTrigger>
+          <TabsTrigger value="eef" as-child class="nav-tab"><RouterLink to="/eef">末端位姿</RouterLink></TabsTrigger>
         </TabsList>
       </nav>
       <div class="top-actions">
@@ -45,7 +49,7 @@ onBeforeUnmount(() => { camera.dispose(); control.stop() })
       </div>
     </header>
     <main class="workspace">
-      <TabsContent value="monitor" class="monitor-content"><RouterView /></TabsContent>
+      <TabsContent :value="current" class="monitor-content"><RouterView /></TabsContent>
     </main>
     <CommandComposer />
   </Tabs>
