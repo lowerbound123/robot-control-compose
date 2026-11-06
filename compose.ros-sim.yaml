@@ -1,6 +1,10 @@
 services:
   ros-sim:
-    image: robot-control-compose-rc:local
+    image: robot-control-compose-acone-connector:local
+    network_mode: host
+    ipc: service:ipc-anchor
+    depends_on:
+      ipc-anchor: {condition: service_healthy}
     user: "${RC_UID}:${RC_GID}"
     environment:
       HOME: /tmp

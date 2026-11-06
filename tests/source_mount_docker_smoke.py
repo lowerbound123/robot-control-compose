@@ -4,6 +4,7 @@ Uses only a temporary deployment and a mock robot. Set RC_TEST_RC_IMAGE,
 RC_TEST_ANCHOR_IMAGE and RC_TEST_WORKER314_IMAGE to freshly built dependency images.
 """
 from config_helpers import read_config
+from source_helpers import configure_connector
 import json
 import os
 from pathlib import Path
@@ -126,10 +127,11 @@ def on_host():
         token = uuid.uuid4().hex[:12]
         project = 'rc-source-' + token
         context = dict(version=3, deployment_id=token, host_root=str(directory), client_root='/workspace',
-            base_project=project, rpc_volume=project+'-rpc', uid=os.getuid(), gid=os.getgid(),
+            base_project=project, rpc_volume=project+'-rpc',connector_rpc_volume=project+'-connector-rpc', uid=os.getuid(), gid=os.getgid(),
             docker_socket=endpoint, docker_gid=int(gid))
         (directory / '.setup/runtime.json').write_text(json.dumps(context))
         config = read_config(ROOT / 'configs/rc.mock.yaml.example')
+        configure_connector(config, directory)
         config.update(startup_policy='probe', timeouts=dict(initialize_s=30,inference_s=5,release_s=3,shutdown_s=30))
         (directory / 'configs/rc.mock.yaml').write_text(json.dumps(config))
         policy = directory / 'policy/probe'
@@ -155,7 +157,7 @@ def on_host():
         rc_file = directory / 'src/robot_control/controller.py'
         rc_original = rc_file.read_text()
         env = dict(os.environ,RC_BASE_PROJECT=project,RC_UID=str(os.getuid()),RC_GID=str(os.getgid()),
-            RC_RPC_VOLUME=context['rpc_volume'],RC_DOCKER_GID=gid,RC_DOCKER_SOCKET=endpoint,RC_MCP_PORT='0')
+            RC_RPC_VOLUME=context['rpc_volume'], RC_CONNECTOR_RPC_VOLUME=context['connector_rpc_volume'],RC_DOCKER_GID=gid,RC_DOCKER_SOCKET=endpoint,RC_MCP_PORT='0')
         compose = ['docker','compose','--env-file','/dev/null','--project-directory',str(directory),'-p',project,
             '-f',str(ROOT/'compose.yaml'),'-f',str(directory/'override.json')]
         reports = []

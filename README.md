@@ -2,7 +2,9 @@
 
 默认采用依赖镜像＋只读源码挂载。修改 RC、SDK、策略实现或 Qwen vendor/补丁后，按范围重新创建运行组或 switch 即可，无需 build；第三方依赖、系统环境和 ROS 消息变化仍需重建。首次迁移步骤及生效范围见 [部署准备](docs/setup.md#依赖镜像与只读源码)。
 
-独立的 Docker 机器人控制框架。RC 使用 ROS 2 Humble / Python 3.10，hold 和 example 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
+独立的 Docker 机器人控制框架。RC 和 mock connector 使用无 ROS 的 Python 3.10 镜像；ACOne connector 独占 ROS 2 Humble / Python 3.10 容器。hold 和 example 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
+
+connector 只查询状态和 FIFO 发送设备消息；RC 管理频率、限速和控制权，收到完整发布确认后消费目标。图像按 RC 请求写入 POSIX 共享内存，通信通道只传描述符。配置迁移和部署方式见 [connector 公约与使用说明](docs/connectors.md)。
 
 ## 准备与运行
 

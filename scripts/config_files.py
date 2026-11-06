@@ -64,6 +64,11 @@ def configuration_updates(root):
                        for p in files if p.name.endswith(('.json', '.json.example'))
                        and '.runtime' not in p.parts and not is_main_json(root, p)})
     changes, documents = [], {}
+    for template in sorted((root / 'connector').glob('*/devices/*.yaml.example')):
+        target = template.with_suffix('')
+        if target.is_symlink() or template.is_symlink():
+            raise ValueError(f'{target}: symlink configuration is not supported')
+        if not target.exists(): changes.append((target, template.read_bytes()))
     for target, template in mains + [(p, p.with_name(p.name + '.example')) for p in business]:
         if target.is_symlink() or any(p.is_symlink() for p in target.parents if p != root.parent):
             raise ValueError(f'{target}: symlink configuration is not supported')

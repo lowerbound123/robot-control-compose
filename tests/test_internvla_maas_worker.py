@@ -119,7 +119,7 @@ def test_monitor_and_hot_scheduling_work_during_real_worker_inference(tmp_path, 
 
 def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeypatch):
     from robot_control.controller import RobotController
-    from robot_control.robots import MockRobot
+    from connector_helpers import MockRobot
 
     class CameraRobot(MockRobot):
         def read_images(self):

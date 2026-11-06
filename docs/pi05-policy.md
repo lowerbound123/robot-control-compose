@@ -1,6 +1,6 @@
 # π0.5 / LeRobot 策略
 
-`pi05` 加载 **LeRobot 格式的 ACOne 微调 checkpoint**，在独立的 Python 3.12 镜像中运行。策略通过 RC 读取双臂状态和三路 RGB 图像，返回 14 维关节目标；只有 RC 控制线程发送 ROS 指令。
+`pi05` 加载 **LeRobot 格式的 ACOne 微调 checkpoint**，在独立的 Python 3.12 镜像中运行。策略通过 RC 读取双臂状态和三路 RGB 图像，返回 14 维关节目标；RC 控制线程提交目标，由独立 ACOne connector 发布 ROS 指令。
 
 实现以 LeRobot **0.6.1** 为兼容目标，运行依赖在 `policy/pi05/dependencies/requirements.lock` 固定。它与 Qwen 的 Transformers 实现、依赖和镜像相互独立。当前不是 OpenPI JAX checkpoint 加载器，也不自动转换仅含 LoRA/PEFT adapter 的目录。
 

@@ -63,6 +63,8 @@ def changed_config(config: dict, path: str, value: Any) -> tuple[dict, bool]:
 def load_rc(path: Path) -> dict:
     path = rc_config_path(path)
     config = load_yaml_config(path)
+    from .connector_config import validate_connectors
+    validate_connectors(config)
     try:
         return _validate_rc(config)
     except (ValueError, TypeError, KeyError):
@@ -77,8 +79,8 @@ def _validate_rc(config):
     hz = config.get("frequency_hz", 30)
     if isinstance(hz, bool) or not isinstance(hz, (int, float)) or not math.isfinite(hz) or hz <= 0:
         raise ValueError("frequency_hz 必须为有限正数")
-    if config.get("robot", {}).get("backend") not in {"mock", "acone"}:
-        raise ValueError("robot.backend 必须为 mock 或 acone")
+    from .connector_config import validate_connectors
+    validate_connectors(config)
     from .safety import finite_qpos, ModeLimiter
     from .direct import control_settings
     from .mcp_config import mcp_settings

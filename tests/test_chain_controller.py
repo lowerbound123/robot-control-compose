@@ -9,7 +9,7 @@ import pytest
 
 from robot_control.controller import RobotController
 from host_helpers import LocalPolicyProcess as PolicyProcess
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 from test_chain_config import add_chain, add_policy
 from test_controller import until
 

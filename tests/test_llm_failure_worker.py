@@ -1,4 +1,5 @@
 """Actual policy entry, SDK workers, POSIX frames and controller/MCP integration."""
+from config_helpers import connector_config
 from config_helpers import read_config
 from itertools import count
 import json
@@ -18,7 +19,7 @@ from rc_policy_sdk.images import ImagePool
 from robot_control.controller import RobotController
 from robot_control.global_state import GlobalStateService
 from robot_control.mcp_server import MCPService
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 
 
 NATIVE_MODES = ('choice', 'predicate', 'score')
@@ -304,7 +305,7 @@ def release(context): pass
           'max_delta_per_step': [.1] * 14}, 'reset_qpos': [0] * 14, 'outputs_directory': 'outputs',
           'timeouts': {'initialize_s': 10, 'inference_s': 5, 'release_s': 2}}
     path = tmp_path / 'rc.yaml'
-    path.write_text(json.dumps(rc))
+    path.write_text(json.dumps(connector_config(rc)))
     gate = threading.Event()
     body = response_for('deepseek', {'failed': True if verdict == 'tail_failure' else verdict})
     if switch_mode:
@@ -393,11 +394,11 @@ async def test_real_controller_registers_instance_widget_with_six_monitor_values
     server, root, create = setup
     create(mode)
     path = tmp_path / 'rc-monitor.yaml'
-    path.write_text(json.dumps({'schema_version': 3, 'frequency_hz': 50,
+    path.write_text(json.dumps(connector_config({'schema_version': 3, 'frequency_hz': 50,
         'policy_directory': 'policy', 'startup_policy': 'llm_failure',
         'robot': {'backend': 'mock'}, 'safety': {'enabled': False, 'reference_frequency_hz': 50,
         'max_delta_per_step': [.1] * 14}, 'reset_qpos': [0.] * 14, 'outputs_directory': 'outputs',
-        'timeouts': {'initialize_s': 10, 'inference_s': 5, 'release_s': 2}}))
+        'timeouts': {'initialize_s': 10, 'inference_s': 5, 'release_s': 2}})))
     controller = RobotController(path, robot=MockRobot(), process_factory=LocalPolicyProcess)
     controller.start()
     try:

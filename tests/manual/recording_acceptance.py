@@ -26,6 +26,8 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[2]
+for relative in ('src', 'tests', 'packages/policy-sdk/src', 'packages/connector-sdk/src'):
+    sys.path.insert(0, str(ROOT / relative))
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 SOURCE = '''
 import base64, io, json, urllib.request
@@ -101,7 +103,9 @@ def distribution(values):
 
 def source_hashes():
     names = ('src/robot_control/recording.py', 'src/robot_control/recording_writer.py',
-             'src/robot_control/robots/mock.py', 'src/robot_control/robots/acone.py', 'src/robot_control/process.py',
+             'src/robot_control/scheduling.py',
+             'connector/mock/main.py', 'connector/acone/main.py', 'src/robot_control/connector.py',
+             'packages/connector-sdk/src/rc_connector_sdk/server.py', 'src/robot_control/process.py',
              'packages/policy-sdk/src/rc_policy_sdk/host.py',
              'ros_ws/src/robot_control_test_sim/robot_control_test_sim/simulator.py',
              'tests/manual/recording_acceptance.py')
@@ -112,11 +116,16 @@ def docker_run(args, evidence):
     """Only the uniquely named container created here may be removed."""
     deployment = args.deployment_id
     source = evidence / 'source'
-    for name in ('src', 'packages/policy-sdk/src', 'ros_ws/src/robot_control_test_sim'):
+    for name in ('src', 'packages/policy-sdk/src', 'packages/connector-sdk/src', 'ros_ws/src/robot_control_test_sim'):
         shutil.copytree(ROOT / name, source / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.egg-info', '.DS_Store'))
     (source / 'tests/manual').mkdir(parents=True)
     shutil.copy2(__file__, source / 'tests/manual/recording_acceptance.py')
+    shutil.copy2(ROOT / 'tests/connector_helpers.py', source / 'tests/connector_helpers.py')
+    for driver in ('mock', 'acone'):
+        destination = source / 'connector' / driver
+        destination.mkdir(parents=True)
+        shutil.copy2(ROOT / 'connector' / driver / 'main.py', destination / 'main.py')
     image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', args.docker_image], text=True))[0]
     name = 'rc-record-' + deployment
     command = ['docker', 'run', '--rm', '--pull=never', '--name', name,
@@ -128,7 +137,8 @@ def docker_run(args, evidence):
                '--mount', f'type=bind,source={source},target=/workspace,readonly',
                '--mount', f'type=bind,source={evidence},target=/evidence',
                '--workdir', '/workspace', '--env', 'PYTHONDONTWRITEBYTECODE=1',
-               '--env', 'PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/ros_ws/src/robot_control_test_sim']
+               '--env', 'HOME=/tmp',
+               '--env', 'PYTHONPATH=/workspace/src:/workspace/tests:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src:/workspace/ros_ws/src/robot_control_test_sim']
     if args.ros:
         command += ['--env', 'ROS_LOCALHOST_ONLY=1', '--env', 'ROS_DOMAIN_ID=' + str(10 + int(deployment[:2], 36) % 190),
                     '--entrypoint', '/bin/bash', args.docker_image, '-lc',
@@ -176,14 +186,14 @@ def docker_run(args, evidence):
     return code
 
 
-def make_robot(width, height, pattern):
+def make_mock_driver(width, height, pattern):
     import numpy as np
-    from robot_control.robots import MockRobot
+    from connector_helpers import MockRobot
 
     class StreamingMockRobot(MockRobot):
         """Test-owned sensor thread; recorder calls still only read cached frames."""
-        def connect(self):
-            super().connect()
+        def connect(self, cancel_event=None):
+            super().connect(cancel_event=cancel_event)
             self.camera_stop = threading.Event()
             self.camera_frames = {}
             self.sensor_ticks = 0
@@ -234,8 +244,30 @@ def make_robot(width, height, pattern):
     return StreamingMockRobot({'image_size': (height, width), 'initial_qpos': [0.] * 14})
 
 
+def make_proxy(evidence, source, device, directory=None):
+    from robot_control.connector import ConnectorRobot
+    config_file = evidence / 'connector-device.json'
+    dump(config_file, device)
+    return ConnectorRobot({'frequency_hz': 100, 'connector_directory': str(directory or ROOT / 'connector'),
+        'connectors': {'body': {'source': source, 'config': str(config_file)}},
+        'robot': {'connector': 'body'}}, ROOT)
+
+
+def make_robot(args, evidence):
+    directory = evidence / 'connector-fixture'
+    source = directory / 'streaming'
+    source.mkdir(parents=True)
+    (source / 'main.py').write_text(
+        'import sys\n'
+        f'sys.path.insert(0, {str(ROOT / "tests/manual")!r})\n'
+        'from recording_acceptance import make_mock_driver\n'
+        'def create_connector(config):\n'
+        '    return make_mock_driver(config["width"], config["height"], config["pattern"])\n')
+    return make_proxy(evidence, 'streaming', {'width': args.width, 'height': args.height,
+                      'pattern': args.pattern}, directory)
+
+
 def make_ros_robot(args, evidence):
-    from robot_control.robots import ACOneRobot
     os.environ['ROS_LOCALHOST_ONLY'] = '1'
     os.environ['ROS_LOG_DIR'] = str(evidence / 'ros-logs')
     os.environ.setdefault('ROS_DOMAIN_ID', str(10 + int(args.deployment_id[:2], 36) % 190))
@@ -246,7 +278,7 @@ def make_ros_robot(args, evidence):
     log = (evidence / 'ros-simulator.log').open('w', encoding='utf-8')
     process = subprocess.Popen([sys.executable, str(source), namespace, str(args.width), str(args.height)],
         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    robot = ACOneRobot({'namespace': namespace, 'message_type': 'robot_control_test_msgs/msg/ArmState',
+    robot = make_proxy(evidence, 'acone', {'namespace': namespace, 'message_type': 'robot_control_test_msgs/msg/ArmState',
         'command_message_type': 'robot_control_test_msgs/msg/ArmCommand',
         'feedback_left_topic': topic('feedback/left'), 'feedback_right_topic': topic('feedback/right'),
         'command_left_topic': topic('command/left'), 'command_right_topic': topic('command/right'),
@@ -447,12 +479,15 @@ def verify_artifacts(folder, model_requests, expected_published, measured_s, arg
 def run_local(args, evidence):
     from rc_policy_sdk.images import ImagePool
     from robot_control.recording import RecordingService
+    from robot_control.scheduling import prepare_control_threads
+    prepare_control_threads()  # Match the RC interpreter setup used in production.
     simulator = simulator_log = None
     if args.ros:
         robot, simulator, simulator_log = make_ros_robot(args, evidence)
     else:
-        robot = make_robot(args.width, args.height, args.pattern)
+        robot = make_robot(args, evidence)
         robot.connect()
+    robot.wait_images(5)
     recorder_errors = []
     recorder = RecordingService(evidence / 'recording', args.deployment_id, robot.recording_snapshot,
         on_error=recorder_errors.append, sample_budget=args.sample_budget_mib * 1024 * 1024)
@@ -462,6 +497,7 @@ def run_local(args, evidence):
               'requested_duration_s': args.duration, 'width': args.width, 'height': args.height,
               'pattern': 'ros-static-png' if args.ros else args.pattern, 'robot_backend': 'acone_ros' if args.ros else 'mock',
               'camera_hz': 30, 'control_hz': args.control_hz,
+              'thread_switch_interval_s': sys.getswitchinterval(),
               'model_delay_s': args.model_delay, 'verdict': 'failed'}
     control_ms, total_ms, lateness_ms, statuses = [], [], [], []
     observed = [0]
@@ -502,10 +538,13 @@ def run_local(args, evidence):
             targets = {arm: {'mode': mode, 'values': target[index * 7:index * 7 + 7]}
                        for index, arm in enumerate(('left', 'right'))}
             before = time.perf_counter_ns()
-            recorder.control_attempt({'targets': targets, 'generation': 1, 'control_owner': 'fixture'})
+            attempt = recorder.control_attempt({'targets': targets, 'generation': 1, 'control_owner': 'fixture'})
             execute_started = time.perf_counter_ns()
-            robot.execute_arms(targets)
+            identity = robot.execute_arms(targets)
+            robot.bind_attempt(identity, attempt)
             after = time.perf_counter_ns()
+            for receipt in robot.poll_results():
+                if not receipt['success']: raise RuntimeError('device publish failed: ' + str(receipt))
             control_ms.append((after - execute_started) / 1e6)
             total_ms.append((after - before) / 1e6)
             response = worker.poll()
@@ -552,10 +591,16 @@ def run_local(args, evidence):
                     time.sleep(.005)
             if lease is not None:
                 raise RuntimeError('last model inference did not release images')
+        drain = time.monotonic() + 5
+        while robot.client._pending:
+            for receipt in robot.poll_results():
+                if not receipt['success']: raise RuntimeError('device publish failed: ' + str(receipt))
+            if time.monotonic() >= drain: raise TimeoutError('publication drain timed out')
+            time.sleep(.001)
         final_status = recorder.command('off').result(35)
         folder = Path(final_status['path'])
         report.update(recording_folder=str(folder.relative_to(evidence)), final_status=final_status,
-                      control_execute_ms=distribution(control_ms), control_attempt_and_execute_ms=distribution(total_ms),
+                      control_submit_ms=distribution(control_ms), control_attempt_and_submit_ms=distribution(total_ms),
                       control_start_lateness_ms=distribution(lateness_ms), actual_control_hz=len(control_ms) / (end - start),
                       max_pending_samples=max((status['pending_samples'] for status in statuses), default=0),
                       peak_pending_bytes=final_status['peak_pending_bytes'], sensor_ticks=getattr(robot, 'sensor_ticks', None))

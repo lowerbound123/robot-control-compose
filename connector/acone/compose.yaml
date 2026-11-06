@@ -1,0 +1,12 @@
+services:
+  connector:
+    image: robot-control-compose-acone-connector:local
+    build:
+      context: ../..
+      dockerfile: connector/acone/Dockerfile
+      target: runtime
+    network_mode: host
+    environment:
+      ROS_LOCALHOST_ONLY: "0"
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    restart: "no"

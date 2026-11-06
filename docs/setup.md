@@ -9,6 +9,8 @@ python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setu
 # 或准备任意合规范目录；省略 --policies 时准备全部有效策略
 ./setup.sh --policies my_policy,qwen35_twostage
 ./setup.sh --config-only
+# ACOne 或 ROS 模拟器部署时，显式构建 ROS connector。
+./setup.sh --policies example --connectors acone
 ```
 
 setup 直接使用 PATH 上的 `python3`（3.9 或更高版本）和 Docker CLI。也可用 `SETUP_PYTHON` 指定宿主解释器。若所选解释器缺少 `ruamel.yaml==0.19.1` 或版本不匹配，setup 会在写入配置前退出，并显示使用该解释器安装锁定依赖的命令。
@@ -20,6 +22,8 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 每个策略的 `compose.yaml` 只能有一个 `policy` 服务，必须显式指定 image。setup 对 build 声明构建镜像，直接复用已准备好的本地镜像，仅对缺少的预构建镜像执行 pull。相同 image tag 只有在 Dockerfile 内容、context、args、target 与其他有效输入一致时才能去重；不同输入报错。两个 Qwen 各有完整 build 声明与依赖锁，通过内容相同的私有依赖上下文共享镜像；单独选择 twostage 不依赖 single 的文件。
 
 运行期间只使用准备好的本地 image ID。模型权重与外部 mount 目录应提前准备，setup 不下载权重、不访问供应商、不验证真实推理。
+
+connector 镜像独立构建，默认只构建 `mock`；`--connectors mock,acone` 同时准备两种来源。设备参数位于 `connector/<source>/devices/`，setup 只创建缺失模板，不覆盖已有设备配置。旧 `robot.backend` 必须按 [connector 迁移说明](connectors.md) 改为实例引用。RC 本身不再包含 ROS，切换 policy 不会重启 connector。
 
 ## YAML 主配置与手动迁移
 

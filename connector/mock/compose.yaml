@@ -1,0 +1,8 @@
+services:
+  connector:
+    image: robot-control-compose-mock-connector:local
+    build:
+      context: ../..
+      dockerfile: connector/mock/Dockerfile
+      target: runtime
+    restart: "no"

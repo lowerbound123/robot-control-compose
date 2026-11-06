@@ -34,7 +34,7 @@ def prepare(tmp_path, policy, relative, monkeypatch):
     # Supply local deployment metadata; config-only setup still prepares all files.
     monkeypatch.setattr('setup_project.os.getuid', lambda: 1000)
     monkeypatch.setattr('setup_project.prepare_context', lambda *args, **kwargs: dict(
-        uid=1000, gid=1000, deployment_id='test', base_project='test', rpc_volume='rpc',
+        uid=1000, gid=1000, deployment_id='test', base_project='test', rpc_volume='rpc', connector_rpc_volume='connector-rpc',
         docker_socket='/tmp/test.sock', docker_gid=1000))
     (tmp_path / '.env.example').touch()
     setup(tmp_path, [], config_only=True)

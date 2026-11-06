@@ -1,5 +1,44 @@
 # Schema 3 动态策略容器验收
 
+## 轻量 connector 分离（2026-11-06）
+
+实现和迁移方式见 [connector 说明](connectors.md)。RC 与 mock 镜像没有 ROS；ACOne 的 ROS 依赖、消息构建和 topic 配置由独立来源维护。此次为单智能体实施与自审，没有修改 policy SDK 的动作／观测形状及依赖。
+
+- 完整接口套件：**1353 passed、64 skipped**，476.51 秒，13 条既有 Pillow 弃用警告。跳过项涉及宿主 ROS、可选模型／供应商依赖、Linux 专有行为和显式启用的 WebUI 镜像检查，不计通过。
+- 最后的退出预算补丁修复了回执回调占用时额外等待 1 秒的问题，回归先复现 50 ms 预算实际耗时约 1 秒，再验证使用剩余绝对预算。补丁后完整 example 基线 **78 passed、1 skipped**，68.70 秒；connector／录制退出／动态容器专项 **63 passed**，11.66 秒。日志 `/tmp/rc-connector-example-exit-final.log`、`/tmp/rc-connector-exit-final.log`。
+- Linux/Humble 的连接、FIFO、共享图像、消费确认、退出与真实 ROS 消息专项：**34 passed**，17.69 秒。其中历史 Conda ROS 用例已迁为 example＋独立 ACOne connector，覆盖慢推理 sync/async、policy 切换保留 connector及运动中退出。
+- 真正独立容器的 mock example／example 自链 **7 组通过**；动态容器与宿主 down **10 组通过**。无 ROS RC → ACOne connector → ROS 模拟器 **7 组通过**，核对 RC 无法导入 rclpy、policy 重建期间 connector 身份不变及资源清理。故障注入产生的强制清理退出码 1 按预期保留。
+- 自审回归覆盖关闭失败仍记录已收到的发布回执、重复回执不重复消费、FIFO 内校验错误不越过旧动作、输入图像慢读者保护、旧 RC 读者退出证明，以及 socket bind 与 listen 之间的启动竞态。
+
+Linux / OrbStack arm64、三路 640×480、开启录制时，各测量约 30 秒。以下是实测，不能视为硬实时保证：
+
+| RC 配置 | 实际提交 | 回执延迟 P95 | 峰值未确认请求 | 录制缺失帧／采样缺口 |
+| --- | ---: | ---: | ---: | ---: |
+| 30 Hz | 29.79 Hz | 2.23 ms | 1 | 0 / 0 |
+| 100 Hz | 94.49 Hz | 2.56 ms | 2 | 21 / 7 |
+
+两组录制结束后的待写字节和采样数均归零；可选诊断事件分别丢弃 23、489 条，报告保留这些计数。100 Hz 配置未达到持续精确 100 Hz，且该组合负载的录制仍有缺口；不能将配置值当作验收频率，也不能把下面 50 Hz 工作负载通过的录制验收推断为 100 Hz 保证。调整线程设置前另一次测量为 29.95／96.55 Hz、0／1 个采样缺口，保留原报告；这些不同负载时点的测量不能单独证明线程设置提高了吞吐。
+
+录制长测暴露新增 I/O 线程下的采样尾延迟。GC 诊断未发现足以解释这些缺口的长暂停；将 RC 的理想线程切换间隔上限从默认 5 ms 降至 1 ms 后，独立对照通过，随后纳入 RC 启动。保持操作者已有的更短间隔，connector 不增加调度职责。[CPython 的线程切换间隔](https://docs.python.org/3.10/library/sys.html#sys.setswitchinterval) 只是理想时间片，系统调度与长时间原生调用仍可能超过它。
+
+最终正式录制独立运行 60 秒：**通过原零缺口门槛**，1801 个采样、约 30.02 Hz，缺失帧／采样缺口／可选事件丢弃均为 0，4569 个唯一 PNG 像素哈希、5998 条逐臂发布事件及 60 次模型输入全部对齐；正常清理，无待写队列。证据在 `/tmp/rc-connector-record-isolated-delivery/`。
+
+独立 ACOne ROS 录制 10 秒冒烟通过：1000 条实际发布与模拟器收到的消息逐臂一致，图像和 10 次模型输入核对通过，无采样缺口或强制清理。它只算 ROS 冒烟，不替代 60 秒持续验收；证据在 `/tmp/rc-connector-record-ros-delivery/`。
+
+保留失败证据：调整前的 60 秒试验分别出现 3、1、1 个采样缺口，原 HEAD 对照在同环境通过；与完整接口套件同时运行时，调整后的录制仍有缺口，预览三路平均约 29.20 fps，未达 29.5 fps。独立负载通过不等于并行压力通过，也不构成硬实时保证。原始报告分别位于 `/tmp/rc-connector-record-60*/`、`/tmp/rc-connector-record-baseline/`、`/tmp/rc-connector-record-delivery/` 和 `/tmp/rc-connector-preview-delivery-600/`。
+
+生产 WebUI、独立 mock connector 和 example 自链连续运行 600.009 秒，三路均为 640×480。Chromium 按图像中的源序号统计实际显示的新帧，未把重复旧帧计为新帧；三路均通过原有 29.5 fps 门槛，浏览器错误为 0。
+
+| 相机 | 浏览器实际新帧率 | 延迟 P50 | 延迟 P95 | 最大延迟 |
+| --- | ---: | ---: | ---: | ---: |
+| 左腕 | 29.89 fps | 58.97 ms | 70.30 ms | 254.30 ms |
+| 头部 | 29.89 fps | 59.97 ms | 69.97 ms | 237.97 ms |
+| 右腕 | 29.89 fps | 61.30 ms | 80.30 ms | 272.30 ms |
+
+最终独立预览原始报告和截图位于 `/tmp/rc-connector-preview-isolated-600/`；部署与统一清理记录位于 `/tmp/rc-connector-preview-isolated/`。测试夹具已从进程内 mock 改为独立 connector，输入像素实际经过两段共享内存所有权。线程设置调整前的一轮 600 秒预览也通过，三路约 29.66–29.68 fps，保留于 `/tmp/rc-connector-preview-600/`。
+
+完整套件日志：`/tmp/rc-connector-interface-delivery.log`；Linux 专项：`/tmp/rc-connector-linux-delivery.log`。Docker 结果与清理证据：`/tmp/rc-connector-example-docker2/`、`/tmp/rc-connector-dynamic2/`、`/tmp/rc-connector-ros-reviewed/`。最终提交节奏报告：`/tmp/rc-connector-cadence-delivery/result.json`，调整前报告保留于 `/tmp/rc-connector-linux-cadence/final.json`。这些是本次本机证据，不提交运行产物。没有启动厂商驱动、真实模型供应商或机器人硬件。
+
 ## 按改动选择测试
 
 在已安装 RC 与测试依赖的 Python 环境中，从仓库根目录运行。入口会为测试及其子进程设置当前仓库的源码路径；不安装依赖、不构建模型镜像。范围由改动的实际语义决定，不用文件名推断接口是否改变。
@@ -15,17 +54,19 @@
 
 **example 基线的证据**来自 [策略回调](../tests/test_example_policy.py)、[真实 worker 和重复实例](../tests/test_example_worker.py)、[RC/TUI/MCP 闭环](../tests/test_example_controller.py)、[独立外部读者](../tests/test_example_reader.py) 和 [ROS 仿真](../tests/test_example_ros.py)。它覆盖 sync/async、qpos/epos/mixed、慢推理缓存、观测/图像、监控、录制/快照、姿态存取、配置、全局状态、暂停/完成/终止/故障与控制权。RC 故障注入、部分发布、超时清理等专项仍保留原有单测。
 
-容器生命周期、IPC 或部署改动时，在默认基线之外运行 `./setup.sh --policies example` 和 `python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence`。该脚本不需要 hold 或其他策略。ROS 缺失时相应测试会跳过；在已 source Humble/ros_ws 的环境用同一入口即可执行。也可以直接用 RC 测试镜像跑包含 ROS 仿真的 example 基线，无须在宿主安装 ROS：
+容器生命周期、IPC 或部署改动时，在默认基线之外运行 `./setup.sh --policies example` 和 `python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence`。该脚本不需要 hold 或其他策略。ROS 缺失时相应测试会跳过；在已 source Humble/ros_ws 的环境用同一入口即可执行。RC 镜像不再包含 ROS，可以使用 ACOne connector 的测试镜像跑 ROS 用例，无须在宿主安装 ROS：
 
 ```bash
-docker build -f docker/rc.Dockerfile --target test -t rc-example-tests:local .
+docker build -f connector/acone/Dockerfile --target test -t rc-example-tests:local .
 docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
   --workdir /workspace --mount "type=bind,source=$PWD,target=/workspace,readonly" \
-  -e HOME=/tmp -e 'PYTEST_ADDOPTS=-p no:cacheprovider' \
-  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src \
+  -e HOME=/tmp -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 -e 'PYTEST_ADDOPTS=-p no:cacheprovider' \
+  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src \
   -e 'RC_SOURCE_MODULES={"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}' \
   rc-example-tests:local python3 scripts/test_scope.py
 ```
+
+跨容器 ROS 验收使用 `python3 tests/example_docker_smoke.py --ros --evidence-dir /tmp/connector-ros`：RC 镜像必须无 rclpy，ACOne connector 与模拟器分别运行在独立容器中，共享 anchor IPC 并使用隔离的 namespace/domain。详情见 [connector 说明](connectors.md)。
 
 ### 0.13 同进程重初始化、实例与整链重载
 

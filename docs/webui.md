@@ -25,26 +25,15 @@ chmod 600 webui/config.json
 
 适用于本地 Linux Docker 部署。先准备 RC、anchor、所需策略及 WebUI 镜像；厂商机械臂和相机驱动由现场独立启动，ROS 域、话题和 safety 沿用已验证的真机配置。切换运行方式或修改 RC 监听地址前，先用**原部署的全部覆盖参数**执行 `./scripts/compose.sh ... down`，等待统一清理完成。
 
-真机覆盖文件让 RC 使用宿主机网络。将本机 `configs/rc.acone.yaml` 的 MCP 部分设置为以下值，保留其他字段；缺少文件时先从 `configs/rc.acone.yaml.example` 复制。仓库模板仍默认只监听本地地址。
+ACOne 的 ROS 连接已经移入独立 connector，只有该容器使用宿主机网络。RC 和 WebUI 使用基础 Docker 网络，真机与 mock 都使用默认上游 `http://robot-control:4000`。`compose.acone.yaml` 已将容器内 MCP 监听设为 `0.0.0.0:4000`；宿主端口仍由基础 Compose 的 `RC_MCP_PORT` 映射到 loopback。若配置了 `ROBOT_CONTROL_MCP_TOKEN`，RC 和 WebUI 保持相同值，代理会添加它。
 
-```yaml
-mcp:
-  host: 0.0.0.0
-  port: 4000
-  token_env: ROBOT_CONTROL_MCP_TOKEN
-```
+从旧部署迁移时，移除终端或 `.env` 中的 `RC_WEBUI_UPSTREAM=...host.docker.internal...`。这个覆盖仍可用于操作者单独部署在宿主机的 RC，但不再用于本项目的 ACOne Compose 组合。上游变量独立于下文 AI 的 `endpoint`，不会进入浏览器公共配置。
 
-此时 `4000` 是宿主机实际监听端口，不使用基础 Compose 的 `RC_MCP_PORT` 端口映射。若配置了 `ROBOT_CONTROL_MCP_TOKEN`，保持 RC 和 WebUI 使用相同值；WebUI 会在代理时添加它。监听全部 IPv4 地址不会自动扩大 RC 的 Host/Origin 白名单，本方案沿用代理的 `Host: localhost:4000`。
-
-WebUI 保留 Docker 内部网络，通过已有 `host-gateway` 映射连接 RC。生产上游由服务端环境变量 `RC_WEBUI_UPSTREAM` 选择：默认 `http://robot-control:4000`，真机使用 `http://host.docker.internal:4000`。生产入口只接受 `http://主机:端口`（DNS 主机名或 IPv4），不接受凭据、尾部斜线、路径、查询参数或 fragment。它独立于下文 AI 的 `endpoint`，不会进入浏览器公共配置。
-
-启动时读取容器 `/etc/hosts` 中 `host.docker.internal` 的 IPv4 映射，生成 Nginx 上游地址；映射缺失或地址非法会阻止启动，诊断不回显配置值。其他服务名继续通过 Docker DNS 动态解析。宿主机映射或环境变量变化后需重新创建 WebUI 容器。
-
-首次使用此功能需重建 WebUI 镜像。在已准备好 `webui/config.json` 的项目根目录中执行，ROS_DOMAIN_ID 使用现场值：
+在已准备好 `webui/config.json` 的项目根目录中执行；ROS 域和话题在 `connector/acone/devices/robot-main.yaml` 中使用现场值：
 
 ```sh
-# 在当前终端保留上游参数；也可以写入本机忽略的 .env
-export RC_WEBUI_UPSTREAM=http://host.docker.internal:4000
+unset RC_WEBUI_UPSTREAM
+./setup.sh --policies example --connectors acone
 ./scripts/compose.sh -f compose.acone.yaml -f compose.webui.yaml build webui
 ./scripts/compose.sh -f compose.acone.yaml -f compose.webui.yaml up -d --no-build
 ./scripts/compose.sh -f compose.acone.yaml -f compose.webui.yaml attach robot-control
@@ -55,7 +44,7 @@ export RC_WEBUI_UPSTREAM=http://host.docker.internal:4000
 
 浏览器访问 `http://127.0.0.1:8080/monitor`。WebUI 仍只发布到宿主机本地地址；从其他电脑访问可使用 `ssh -N -L 8080:127.0.0.1:8080 用户@机器人主机`，再打开本机同一网址。TUI 和网页连接同一个 RC，控制权与文本批次打断规则不变。TUI 的 `exit` 或退出快捷键会关闭 RC，网页随后失去后端连接。
 
-现场先检查连接状态及三路画面，再测试需要的控制操作。切回 mock 前先按上述组合 down，随后 `unset RC_WEBUI_UPSTREAM`（若写入 `.env`，同时移除该设置），再按普通 WebUI 流程启动。仅 WebUI 代码变化需要重建 WebUI；未更改 RC 依赖时无需重建 RC 镜像。
+现场先检查连接状态及三路画面，再测试需要的控制操作。切回 mock 前先按上述组合 down，再按普通 WebUI 流程启动。仅 WebUI 代码变化需要重建 WebUI；此次 connector 迁移则需要同时更新 RC、anchor 和 connector 镜像。
 
 ## API 配置
 

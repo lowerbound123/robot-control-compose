@@ -24,13 +24,17 @@ def test_example_with_ros_feedback_cameras_and_commands(tmp_path, monkeypatch):
     config = read_config(ROOT / "configs/rc.ros-test.yaml.example")
     config.update(policy_directory="policy", startup_policy="example", outputs_directory="outputs",
                   timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
-    robot = config["robot"]
+    robot = read_config(ROOT / 'connector/acone/devices/ros-test.yaml.example')
+    monkeypatch.setenv('ROS_DOMAIN_ID', str(robot['ros_domain_id']))
     old = robot["namespace"] + "/"
     robot["namespace"] = namespace
     for key in ("feedback_left_topic", "feedback_right_topic", "command_left_topic", "command_right_topic"):
         robot[key] = namespace + "/" + robot[key].removeprefix(old)
     robot["camera_topics"] = {name: namespace + "/" + topic.removeprefix(old)
                               for name, topic in robot["camera_topics"].items()}
+    device = tmp_path / 'acone-device.yaml'
+    device.write_text(json.dumps(robot))
+    config['connectors']['body']['config'] = str(device)
     (tmp_path / "rc.yaml").write_text(json.dumps(config))
     with (tmp_path / "simulator.log").open("w") as log:
         sim = subprocess.Popen([sys.executable, "-m", "robot_control_test_sim.simulator",

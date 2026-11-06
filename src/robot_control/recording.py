@@ -248,7 +248,8 @@ class RecordingService:
     def sent(self, event):
         with self._lock:
             if self._state != 'recording': return
-            event = {**event, 'values':list(event.get('values7', event.get('values', ()))), 'attempt_id':self._attempt}
+            event = {**event, 'values':list(event.get('values7', event.get('values', ()))),
+                     'attempt_id':event.get('attempt_id', self._attempt)}
             if event['monotonic_ns'] < self._boundary:
                 return
             if len(self._sent) == self._sent.maxlen:

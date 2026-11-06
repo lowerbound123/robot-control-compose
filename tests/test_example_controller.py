@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from config_helpers import read_config
+from config_helpers import read_config, connector_config
 from host_helpers import LocalPolicyProcess
 from project_templates import copy_templates
 from robot_control.controller import RobotController
@@ -27,7 +27,9 @@ def example_rc(tmp_path, monkeypatch, request):
     config = read_config(ROOT / "configs/rc.mock.yaml.example")
     config.update(policy_directory="policy", startup_policy="example", outputs_directory="outputs",
                   reset_qpos=[0.] * 14, timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
-    config["robot"].update(initial_qpos=[.01] * 14, initial_epos=[.02] * 14, image_size=[12, 16])
+    device = tmp_path / 'mock-device.yaml'
+    device.write_text(json.dumps(dict(initial_qpos=[.01] * 14, initial_epos=[.02] * 14, image_size=[12, 16])))
+    connector_config(config, device=device)
     (tmp_path / "rc.yaml").write_text(json.dumps(config))
     monkeypatch.chdir(tmp_path)  # snapshot and every other file belong to this deployment.
     rc = RobotController(tmp_path / "rc.yaml", process_factory=LocalPolicyProcess)
@@ -176,6 +178,7 @@ def test_snapshot_record_pose_and_config_lifecycle(example_rc):
         until(lambda: rc.status()["hold_name"] == "reset")
         command(rc, "load example_pose")
         until(lambda: rc.status()["hold_name"] == "example_pose")
+        until(lambda: abs(rc.robot.read_state()["qpos"][0] - .01) < 1e-8)
         assert rc.robot.read_state()["qpos"][0] == pytest.approx(.01)
         command(rc, "set-chunk-size 6")
         assert old.cleanup_confirmed and rc._worker is not old and rc.status()["state"] == "paused"

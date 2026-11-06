@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from robot_control.robots import ACOneRobot, MockRobot, make_robot
+from connector_helpers import ACOneRobot, MockRobot
+from robot_control.robots import make_robot
 
 
 def wait_until(check, timeout=1):
@@ -91,7 +92,7 @@ class FakeExecutor:
 
 @pytest.fixture
 def fake_ros(monkeypatch):
-    from robot_control.robots import acone
+    from connector_helpers import acone
     node = FakeNode()
     binding = SimpleNamespace(
         rclpy=SimpleNamespace(
@@ -139,17 +140,17 @@ def robot_config(**patch):
     }
 
 
-def test_mock_has_no_ros_import_and_factory_validates_backend():
+def test_rc_has_no_device_import_and_factory_rejects_legacy_backend():
     completed = subprocess.run(
         [sys.executable, "-c", "import sys; from robot_control.robots import make_robot; "
-         "r=make_robot({'robot': {'backend': 'mock'}}); r.connect(); "
-         "assert not any(k == 'rclpy' or k.startswith('rclpy.') for k in sys.modules); r.close()"],
+         "assert not any(k == 'rclpy' or k.startswith('rclpy.') for k in sys.modules)"],
         capture_output=True, text=True, check=False,
     )
     assert completed.returncode == 0, completed.stderr
     with pytest.raises(ValueError, match="backend"):
         make_robot({"robot": {"backend": "unknown"}})
-    assert isinstance(make_robot({"robot": {"backend": "acone"}}), ACOneRobot)
+    with pytest.raises(ValueError, match='backend'):
+        make_robot({"robot": {"backend": "acone"}})
 
 
 def test_mock_feedback_follows_commands_and_returns_json_state():
@@ -271,7 +272,7 @@ def test_event_cancel_while_waiting_for_feedback(fake_ros):
 
 
 def test_event_cancel_before_ros_import_and_mock_connect(fake_ros, monkeypatch):
-    from robot_control.robots import acone
+    from connector_helpers import acone
     cancel = threading.Event()
     cancel.set()
 
@@ -290,7 +291,7 @@ def test_event_cancel_before_ros_import_and_mock_connect(fake_ros, monkeypatch):
 
 
 def test_event_cancel_after_native_init_cleans_context(fake_ros, monkeypatch):
-    from robot_control.robots import acone
+    from connector_helpers import acone
     original_loader = acone._load_ros
     cancel = threading.Event()
 
@@ -314,7 +315,7 @@ def test_event_cancel_after_native_init_cleans_context(fake_ros, monkeypatch):
 
 
 def test_close_deadline_during_ros_initialization(fake_ros, monkeypatch):
-    from robot_control.robots import acone
+    from connector_helpers import acone
     original_loader = acone._load_ros
     entered = threading.Event()
     unblock = threading.Event()
@@ -367,7 +368,7 @@ def test_malformed_feedback_invalidates_previous_sample(fake_ros):
 def test_compressed_decode_rgb_latest_queue_and_staleness(fake_ros, monkeypatch):
     from io import BytesIO
     from PIL import Image
-    from robot_control.robots import acone
+    from connector_helpers import acone
     red = np.zeros((3, 5, 3), dtype=np.uint8)
     red[:] = [220, 20, 10]
     encoded = BytesIO()

@@ -1,4 +1,5 @@
 """RC display thresholds must not hide command replies or recording evidence."""
+from config_helpers import connector_config
 import io
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ from textual.widgets import Static
 from robot_control.cli import drain_events
 from robot_control.config import load_rc
 from robot_control.controller import RobotController
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 from robot_control.terminal_commands import TerminalCommandRouter
 from robot_control.tui import RobotControlApp
 from robot_control.log_tui import StructuredLog
@@ -37,7 +38,7 @@ def rc(tmp_path):
         'reset_qpos': [0]*14, 'outputs_directory': 'outputs',
     }
     path = tmp_path / 'rc.yaml'
-    path.write_text(json.dumps(config))
+    path.write_text(json.dumps(connector_config(config)))
     controller = RobotController(path, robot=MockRobot(), process_factory=lambda *a, **k: None)
     yield controller
     if controller._recorder._manager is not None:
@@ -49,7 +50,7 @@ def rc(tmp_path):
 def test_logging_level_is_case_insensitive_and_normalized(rc, level):
     config = json.loads(rc.config_path.read_text())
     config['logging'] = {'level': level}
-    rc.config_path.write_text(json.dumps(config))
+    rc.config_path.write_text(json.dumps(connector_config(config)))
     assert load_rc(rc.config_path)['logging']['level'] == level.upper()
 
 
@@ -58,7 +59,7 @@ def test_logging_level_is_case_insensitive_and_normalized(rc, level):
 def test_invalid_logging_settings_are_rejected(rc, settings):
     config = json.loads(rc.config_path.read_text())
     config['logging'] = settings
-    rc.config_path.write_text(json.dumps(config))
+    rc.config_path.write_text(json.dumps(connector_config(config)))
     with pytest.raises(ValueError, match='invalid RC schema'):
         load_rc(rc.config_path)
 

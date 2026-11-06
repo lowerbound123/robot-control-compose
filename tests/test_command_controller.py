@@ -1,3 +1,4 @@
+from config_helpers import connector_config
 import asyncio
 import json
 import sys
@@ -7,7 +8,7 @@ import pytest
 
 from robot_control.controller import RobotController
 from host_helpers import LocalPolicyProcess as PolicyProcess
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 from test_controller import until
 from test_command_worker import SOURCE, worker_config
 
@@ -32,7 +33,7 @@ def command_controller(tmp_path, monkeypatch, request):
               # deadlines; allow container CPU scheduling during suite setup.
               "timeouts": {"initialize_s": 10, "inference_s": 3, "release_s": .2}}
     path = tmp_path / "rc.yaml"
-    path.write_text(json.dumps(config))
+    path.write_text(json.dumps(connector_config(config)))
     def factory(*args, **kwargs):
         return PolicyProcess(*args, python_command=[sys.executable], **kwargs)
     controller = RobotController(path, robot=MockRobot(), process_factory=factory)

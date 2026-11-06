@@ -9,7 +9,7 @@ frequency_hz: 30
 policy_directory: policy
 startup_policy: hold
 robot:
-  backend: mock
+  connector: body
 safety:
   enabled: true
   reference_frequency_hz: 50
@@ -95,3 +95,8 @@ tui:
       - 0.05
       - 0.05
       - 0.12
+connector_directory: connector
+connectors:
+  body:
+    source: mock
+    config: devices/default.yaml

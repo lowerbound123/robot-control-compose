@@ -23,6 +23,8 @@ class ActionBuffer:
         self._actions = np.empty((0, 14), dtype=np.float32)
         self._modes = ()
         self._cursor = 0
+        self._submitted = 0
+        self._pinned = False
 
     def install(self, actions) -> None:
         value = normalize_actions(actions)
@@ -30,6 +32,8 @@ class ActionBuffer:
             self._actions = value.actions.copy()
             self._modes = value.modes
             self._cursor = 0
+            self._submitted = 0
+            self._pinned = False
 
     def remaining(self) -> np.ndarray:
         with self.lock:
@@ -37,11 +41,36 @@ class ActionBuffer:
 
     def current(self) -> np.ndarray | None:
         with self.lock:
-            return self._actions[self._cursor].copy() if self._cursor < len(self._actions) else None
+            return self._actions[self._submitted].copy() if self._submitted < len(self._actions) else None
 
     def current_mode(self):
         with self.lock:
-            return self._modes[self._cursor] if self._cursor < len(self._modes) else None
+            return self._modes[self._submitted] if self._submitted < len(self._modes) else None
+
+    def pin_current(self):
+        """A partially submitted slew target cannot be replaced by inference."""
+        with self.lock:
+            if self._submitted >= len(self._actions): raise RuntimeError('cannot pin empty action buffer')
+            self._pinned = True
+
+    def reserve(self):
+        """Advance submission only; consumption waits for its publication receipt."""
+        with self.lock:
+            if self._submitted >= len(self._actions): raise RuntimeError('cannot reserve empty action buffer')
+            self._submitted += 1
+            self._pinned = False
+            return RequestToken(self.generation, self.consumed + self._submitted - self._cursor)
+
+    def confirm(self, token):
+        with self.lock:
+            if token.generation != self.generation or token.consumed <= self.consumed:
+                return False
+            if token.consumed != self.consumed + 1 or self._cursor >= self._submitted:
+                raise RuntimeError('out-of-order action publication confirmation')
+            self._cursor += 1
+            self.consumed += 1
+            self.consumed_since_request += 1
+            return True
 
     def remaining_payload(self, control_mode="qpos"):
         with self.lock:
@@ -52,6 +81,8 @@ class ActionBuffer:
             if self._cursor >= len(self._actions):
                 raise RuntimeError("不能消费空动作缓存")
             self._cursor += 1
+            self._submitted = max(self._submitted, self._cursor)
+            self._pinned = False
             self.consumed += 1
             self.consumed_since_request += 1
 
@@ -65,11 +96,14 @@ class ActionBuffer:
         with self.lock:
             if request.generation != self.generation:
                 return False
-            self.last_trim = self.consumed - request.consumed
+            protected_end = self._submitted + int(self._pinned)
+            protected = protected_end - self._cursor
+            self.last_trim = self.consumed - request.consumed + protected
             if self.last_trim >= len(value.actions):
                 return False
-            self._actions = value.actions[self.last_trim:].copy()
-            self._modes = value.modes[self.last_trim:]
+            self._actions = np.concatenate((self._actions[self._cursor:protected_end], value.actions[self.last_trim:]))
+            self._modes = self._modes[self._cursor:protected_end] + value.modes[self.last_trim:]
+            self._submitted -= self._cursor
             self._cursor = 0
             return True
 
@@ -80,3 +114,5 @@ class ActionBuffer:
             self._modes = ()
             self._cursor = 0
             self.consumed_since_request = 0
+            self._submitted = 0
+            self._pinned = False

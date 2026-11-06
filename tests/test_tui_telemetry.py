@@ -34,7 +34,7 @@ def test_tui_settings_reject_invalid_config(raw):
 
 
 def test_mock_camera_sequence_is_driven_by_time_not_reads(monkeypatch):
-    from robot_control.robots import mock
+    from connector_helpers import mock
     now = [100.]
     monkeypatch.setattr(mock.time, "monotonic", lambda: now[0])
     robot = mock.MockRobot()

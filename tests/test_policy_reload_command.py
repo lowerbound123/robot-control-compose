@@ -1,4 +1,5 @@
 """Reload effects exercise real worker exit/initialization and controller receipts."""
+from config_helpers import connector_config
 import json
 import sys
 
@@ -7,7 +8,7 @@ import pytest
 from rc_policy_sdk.commands import command_specs
 from robot_control.controller import RobotController
 from host_helpers import LocalPolicyProcess as PolicyProcess
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 from test_controller import until
 from test_command_controller import completed
 
@@ -61,7 +62,7 @@ def reload_controller(tmp_path, request):
           "reset_qpos": [0]*14, "outputs_directory": "outputs",
           "timeouts": {"initialize_s": getattr(request, "param", 3), "inference_s": .1, "release_s": .3}}
     path = tmp_path / "rc.yaml"
-    path.write_text(json.dumps(rc))
+    path.write_text(json.dumps(connector_config(rc)))
     def factory(*args, **kwargs): return PolicyProcess(*args, python_command=[sys.executable], **kwargs)
     controller = RobotController(path, robot=MockRobot(), process_factory=factory)
     controller.start()

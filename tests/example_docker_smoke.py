@@ -140,17 +140,26 @@ def in_container():
         return result.get("result")
 
     def containers():
-        return controller.runtime._ids({"io.robot-control.deployment": controller.runtime.context["deployment_id"]},
-                                       time.monotonic() + 10)
+        return [h.container_id for h in controller.runtime.reconcile_owned(time.monotonic() + 10)
+                if h.kind == 'policy']
 
     def member_ids():
         return {name: dict(container=w.endpoint.container_id, host=w.host.instance_id,
                            process=w.runtime_id, pid=w.pid, version=w.config_version)
                 for name, w in controller._worker.member_workers().items()}
 
+    connector_identity = None
+    same_connector = False
     controller.start()
     try:
         wait(lambda: controller._connected and controller._operation is None)
+        import importlib.util
+        assert importlib.util.find_spec('rclpy') is None, 'RC must run without ROS'
+        is_ros = controller.robot.spec['source'] == 'acone'
+        initial_position = 0. if is_ros else .125
+        connector_identity = (controller.robot.handle.container_id, controller.robot.client.info['runtime_id'])
+        report['connector'] = {'source': controller.robot.spec['source'], 'container': connector_identity[0],
+                               'runtime': connector_identity[1], 'rc_without_ros': True}
         assert controller.status()["policy"] is None and not containers()
         assert "policy example example" in command("help example")
         command("switch example")
@@ -172,10 +181,10 @@ def in_container():
         assert running["calls"] > 0 and running["observations"] > 0
         images = json.loads(running["images"])
         assert len(images) == 3 and all(value["readonly"] for value in images.values())
-        assert images["head"]["sample"] == "180"
+        assert images["head"]["sample"] == ('220' if is_ros else '180')
         assert images["left_wrist"]["sample"] == images["right_wrist"]["sample"] == "0"
-        assert all(value["shape"] == [64, 96, 3] and value["dtype"] == "uint8" for value in images.values())
-        assert all(abs(value - .125) < 1e-6 for value in controller.robot.read_state()["qpos"])
+        assert all(value["shape"] == ([48, 64, 3] if is_ros else [64, 96, 3]) and value["dtype"] == "uint8" for value in images.values())
+        assert all(abs(value - initial_position) < 1e-6 for value in controller.robot.read_state()["qpos"])
         command("pause")
         report["running_snapshot"] = running
         report["checks"].append("resume, current-pose hold, three readonly shared cameras, observe and monitor")
@@ -201,7 +210,7 @@ def in_container():
             snapshot = command(f"policy {instance} example")
             assert snapshot["calls"] > 0 and snapshot["instance"] == instance
             assert command(f"{instance}-example")["image_count"] == 3
-        assert all(abs(value - .125) < 1e-6 for value in controller.robot.read_state()["qpos"])
+        assert all(abs(value - initial_position) < 1e-6 for value in controller.robot.read_state()["qpos"])
         hot_before = member_ids()
         hot_contexts = {i: command(f'{i}-example')['context_id'] for i in hot_before}
         with patch.object(controller.runtime, 'runner', side_effect=AssertionError('hot command called Docker')):
@@ -333,11 +342,14 @@ def in_container():
         print(json.dumps(controller.read_events(), ensure_ascii=False, default=str), flush=True)
         raise
     finally:
+        if connector_identity is not None:
+            same_connector = (controller.robot.handle.container_id, controller.robot.client.info['runtime_id']) == connector_identity
         router.close()
         controller.submit("exit")
         assert controller.done.wait(30), controller.status()
         (root / "outputs/example-smoke.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
     forced_projects = {h.project for h in controller.runtime.handles.values() if h.cleanup_forced}
+    assert same_connector
     assert forced_projects == ({lost.project} if lost.cleanup_forced else set())
     assert controller.exit_code == int(lost.cleanup_forced) and controller.robot.closed
     assert not containers() and controller._pool._bytes == 0
@@ -347,7 +359,7 @@ def in_container():
     print(json.dumps(report, ensure_ascii=False), flush=True)
 
 
-def on_host(evidence):
+def on_host(evidence, *, ros=False):
     from source_helpers import anchor_override
     # All generated configuration and deployment identity belong to this temp project.
     from project_templates import copy_templates
@@ -356,9 +368,11 @@ def on_host(evidence):
 
     evidence.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="rc-example-smoke-"))
-    for name in ("src", "packages/policy-sdk", "docker"):
+    for name in ("src", "packages/policy-sdk", "packages/connector-sdk", "docker", "ros_ws/src/robot_control_test_sim"):
         shutil.copytree(ROOT / name, directory / name, ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
     (directory / "configs").mkdir()
+    from source_helpers import copy_connectors
+    copy_connectors(directory)
     shutil.copyfile(ROOT / ".env.example", directory / ".env.example")
     example = copy_templates(ROOT / "policy/example", directory / "policy/example")
     if os.environ.get("RC_TEST_WORKER314_IMAGE"):
@@ -366,9 +380,22 @@ def on_host(evidence):
         (example / "compose.yaml").write_text(json.dumps({"services": {"policy": {
             "image": os.environ["RC_TEST_WORKER314_IMAGE"]}}}))
     copy_templates(ROOT / "policy/example_chain", directory / "policy/example_chain")
-    config = read_config(ROOT / "configs/rc.mock.yaml.example")
+    config = read_config(ROOT / ('configs/rc.ros-test.yaml.example' if ros else 'configs/rc.mock.yaml.example'))
     config.update(startup_policy=None, frequency_hz=30)
-    config["robot"]["initial_qpos"] = [.125] * 14
+    config['connector_directory'] = '../connector'
+    config['connectors']['body']['config'] = 'devices/ros-test.yaml' if ros else 'devices/default.yaml'
+    (directory / 'connector/mock/devices/default.yaml').write_text(json.dumps({'initial_qpos': [.125] * 14}))
+    if ros:
+        device = read_config(directory / 'connector/acone/devices/ros-test.yaml')
+        namespace = '/connector_' + directory.name.rsplit('-', 1)[-1].replace('-', '_')
+        domain = 100 + os.urandom(1)[0] % 100
+        device['ros_domain_id'] = domain
+        old_namespace = device['namespace']
+        device['namespace'] = namespace
+        for key in ('feedback_left_topic', 'feedback_right_topic', 'command_left_topic', 'command_right_topic'):
+            device[key] = device[key].replace(old_namespace, namespace, 1)
+        device['camera_topics'] = {name: topic.replace(old_namespace, namespace, 1) for name, topic in device['camera_topics'].items()}
+        (directory / 'connector/acone/devices/ros-test.yaml').write_text(json.dumps(device))
     config["timeouts"] = dict(initialize_s=30, inference_s=5, release_s=3, shutdown_s=25)
     (directory / "configs/rc.mock.yaml").write_text(json.dumps(config))
     assert setup(directory, ["example_chain"], config_only=True) == ["example"]
@@ -387,21 +414,40 @@ def on_host(evidence):
         ],
     }}}
     anchor_override(override["services"])
+    if ros:
+        override['services']['ros-sim'] = {
+            'image': 'robot-control-compose-acone-connector:local', 'network_mode': 'host',
+            'ipc': 'service:ipc-anchor', 'depends_on': {'ipc-anchor': {'condition': 'service_healthy'}},
+            'user': f"{context['uid']}:{context['gid']}",
+            'environment': {'HOME': '/tmp', 'PYTHONPATH': '/sim', 'PYTHONDONTWRITEBYTECODE': '1', 'ROS_DOMAIN_ID': str(domain)},
+            'volumes': [{'type': 'bind', 'source': str(directory / 'ros_ws/src/robot_control_test_sim'), 'target': '/sim', 'read_only': True}],
+            'command': ['python3', '-m', 'robot_control_test_sim.simulator', '--namespace', namespace, '--frequency-hz', '90']}
+        override['services']['robot-control']['depends_on'] = {'ros-sim': {'condition': 'service_started'}}
     override["services"]["robot-control"]["image"] = os.environ.get("RC_TEST_RC_IMAGE", "robot-control-compose-rc:local")
     (directory / "override.json").write_text(json.dumps(override))
     env = dict(os.environ, RC_BASE_PROJECT=context["base_project"], RC_UID=str(context["uid"]),
                RC_GID=str(context["gid"]), RC_DOCKER_GID=str(context["docker_gid"]),
-               RC_DOCKER_SOCKET=context["docker_socket"], RC_RPC_VOLUME=context["rpc_volume"], RC_MCP_PORT="0")
+               RC_DOCKER_SOCKET=context["docker_socket"], RC_RPC_VOLUME=context["rpc_volume"],
+               RC_CONNECTOR_RPC_VOLUME=context['connector_rpc_volume'], RC_MCP_PORT="0")
     compose = ["docker", "compose", "--env-file", "/dev/null", "--project-directory", str(directory),
                "-p", context["base_project"], "-f", str(ROOT / "compose.yaml"), "-f", str(directory / "override.json")]
     try:
         subprocess.run(compose + ["up", "-d", "--no-build"], env=env, check=True, timeout=90)
         cid = subprocess.check_output(compose + ["ps", "-aq", "robot-control"], env=env, text=True).strip()
         try:
-            code = subprocess.check_output(["docker", "wait", cid], text=True, timeout=180).strip()
+            code = subprocess.check_output(["docker", "wait", cid], text=True, timeout=240).strip()
         finally:
             logs = subprocess.check_output(["docker", "logs", cid], text=True, stderr=subprocess.STDOUT)
             (evidence / "container.log").write_text(logs)
+            owned = subprocess.check_output(['docker', 'ps', '-aq', '--filter',
+                'label=io.robot-control.deployment=' + context['deployment_id']], text=True).split()
+            for owned_id in owned:
+                detail = subprocess.run(['docker', 'logs', owned_id], capture_output=True, text=True)
+                (evidence / ('owned-' + owned_id[:12] + '.log')).write_text(detail.stdout + detail.stderr)
+            if ros:
+                sim_id = subprocess.check_output(compose + ['ps', '-aq', 'ros-sim'], env=env, text=True).strip()
+                detail = subprocess.run(['docker', 'logs', sim_id], capture_output=True, text=True)
+                (evidence / 'simulator.log').write_text(detail.stdout + detail.stderr)
         output = directory / "outputs/example-smoke.json"
         if output.exists():
             shutil.copyfile(output, evidence / "result.json")
@@ -430,8 +476,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--container", action="store_true")
     parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument('--ros', action='store_true', help='Use isolated ACOne connector and ROS simulator; never hardware')
     args = parser.parse_args()
     if args.container:
         in_container()
     else:
-        on_host(args.evidence_dir or Path(tempfile.mkdtemp(prefix="rc-example-evidence-")))
+        on_host(args.evidence_dir or Path(tempfile.mkdtemp(prefix="rc-example-evidence-")), ros=args.ros)

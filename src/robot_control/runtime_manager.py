@@ -16,6 +16,7 @@ import uuid
 from rc_policy_sdk.catalog import socket_path
 from .config import atomic_json
 from .runtime_spec import LABEL, DeploymentSpec, DeploymentHandle, ContainerExitProof, map_host_path, project_name
+from .connector_runtime import ConnectorRuntime
 
 
 class BlockedCleanup(RuntimeError):
@@ -83,7 +84,7 @@ def docker_command(args, *, timeout, env=None, cwd=None, cancel=None):
     return stdout
 
 
-class ComposeRuntimeManager:
+class ComposeRuntimeManager(ConnectorRuntime):
     def __init__(self, context, state_dir, *, run_id=None, runner=docker_command):
         self.context = dict(context)
         self.state_dir = Path(state_dir)
@@ -170,6 +171,7 @@ class ComposeRuntimeManager:
                 raise BlockedInfrastructure(f'{name}: base container is not running')
             return item
         anchor, rc = service('ipc-anchor'), service('robot-control')
+        self.rc_container_id = rc['Id']
         identity = anchor['Id']
         epoch = anchor['State'].get('StartedAt')
         from datetime import datetime
@@ -280,8 +282,9 @@ class ComposeRuntimeManager:
         if (self.anchor_epoch or '') != spec.anchor_epoch:
             raise BlockedInfrastructure('anchor IPC generation changed after preflight')
         handle = DeploymentHandle(self.context['deployment_id'], self.daemon_id, spec.policy_id,
-            self.run_id, generation, project_name(self.context['deployment_id'], spec.policy_id, self.run_id, generation),
-            spec.anchor_id, spec.socket, anchor_epoch=spec.anchor_epoch)
+            self.run_id, generation, project_name(self.context['deployment_id'],
+                ('connector:' if spec.kind == 'connector' else '') + spec.policy_id, self.run_id, generation),
+            spec.anchor_id, spec.socket, anchor_epoch=spec.anchor_epoch, kind=spec.kind, connector_journal=spec.connector_journal)
         self._save(handle)  # Persist intent before the first mutating daemon request.
         model = json.loads(spec.model_json)
         model['name'] = handle.project
@@ -291,7 +294,7 @@ class ComposeRuntimeManager:
         for name, network in model.get('networks', {}).items():
             if not network.get('external'):
                 network['name'] = f'{handle.project}_{name}'
-        service = model['services']['policy']
+        service = model['services'][spec.kind]
         service['labels'] = {**service.get('labels', {}), **handle.labels()}
         service['environment'].update(RC_DEPLOYMENT_ID=handle.deployment_id, RC_RUN_ID=handle.run_id,
                                       RC_GENERATION=str(generation))
@@ -407,6 +410,8 @@ class ComposeRuntimeManager:
                 forced |= item['State'].get('ExitCode') in (137, 143)
             if item['State'].get('Running') or item['State'].get('Dead'):
                 raise BlockedCleanup('container exit not confirmed')
+            if handle.kind == 'connector' and item['State'].get('ExitCode', 0) != 0:
+                forced = True
             self._run(['rm', cid], deadline)
         if self._ids(handle.labels(), deadline) or handle.container_id in self._ids({}, deadline):
             raise BlockedCleanup('container removal not confirmed')
@@ -422,9 +427,10 @@ class ComposeRuntimeManager:
         return ContainerExitProof(handle.deployment_id, handle.daemon_id, handle.policy_id, handle.run_id,
             handle.generation, handle.container_id, handle.host_instance_id, True, forced, self.authority)
 
-    def cleanup_owned(self, deadline):
+    def cleanup_owned(self, deadline, *, include_connectors=True):
         errors = []
         for handle in self.reconcile_owned(deadline):
+            if handle.kind == 'connector' and not include_connectors: continue
             try:
                 self.stop_and_remove(handle, deadline)
             except Exception as exc:
@@ -432,14 +438,16 @@ class ComposeRuntimeManager:
         if errors:
             self.phase = 'BLOCKED_CLEANUP'
             raise BlockedCleanup('; '.join(errors))
+        if include_connectors: self.record_connector_orphans()
 
-    def record_pool(self, pool_id):
+    def record_pool(self, pool_id, *, reader_container_id=None):
         import re
         if not re.fullmatch(r'[0-9a-f]{12}',pool_id):
             raise ValueError('invalid shared image pool identity')
         atomic_json(self.state_dir / f'pool-{pool_id}.json', dict(version=3, pool_id=pool_id,
             deployment_id=self.context['deployment_id'], daemon_id=self.daemon_id,
-            run_id=self.run_id, anchor_id=self.anchor_id, anchor_epoch=self.anchor_epoch))
+            run_id=self.run_id, anchor_id=self.anchor_id, anchor_epoch=self.anchor_epoch,
+            **({'reader_container_id': reader_container_id} if reader_container_id else {})))
 
     def forget_pool(self, pool_id):
         (self.state_dir / f'pool-{pool_id}.json').unlink(missing_ok=True)
@@ -472,6 +480,11 @@ class ComposeRuntimeManager:
                     raise BlockedInfrastructure('old image pool anchor remains; recreate RC plus anchor')
                 path.unlink()
                 continue
+            reader = data.get('reader_container_id')
+            if reader and reader in self._ids({}, deadline):
+                state = self._inspect([reader], deadline)[0]['State']
+                if state.get('Running') or state.get('Dead'):
+                    raise BlockedCleanup('connector image reader container exit is unconfirmed')
             if not Path('/dev/shm').is_dir():
                 raise BlockedCleanup('pool recovery requires the original Linux IPC namespace')
             descriptors=[]

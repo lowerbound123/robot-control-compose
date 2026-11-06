@@ -36,6 +36,9 @@ from .chain_management import ChainManagement
 from .policy_results import PolicyResultSupport
 from .global_state_control import GlobalStateControl
 from .recording_control import RecordingControl, RECORD_HELP
+from .connector_control import ConnectorControl
+from .connector import ImagesPending
+from .scheduling import next_deadline, prepare_control_threads
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from .operations import ControlRequest, Operations
 from .terminal_batches import TerminalBatches
@@ -67,13 +70,13 @@ class ActionRequestSnapshot:
     cached: int
 
 
-class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl, RecordingControl):
+class RobotController(ConnectorControl, MemberReloadSupport, PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl, RecordingControl):
     def __init__(self, config_path, *, robot=None, process_factory=PolicyProcess, runtime_manager=None):
         self.config_path = Path(config_path).resolve()
         self.config = load_rc(self.config_path)
         self.root = self.config_path.parent
         self.registry = PolicyRegistry(self.root / self.config["policy_directory"])
-        self.robot = robot or make_robot(self.config)
+        self.robot = robot or make_robot(self.config, self.root)
         self.process_factory = process_factory
         self.events = queue.Queue(maxsize=10000)
         self.done = threading.Event()
@@ -118,6 +121,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._exit_operations = []
         self._publish_fault = False
         self._published_targets = {}
+        self._publications = {}
+        self._last_submission = None
+        self._last_send_at = 0.
         self.operations = Operations(control_lock=self._lock, control_snapshot=lambda: {
             'run_id': self.run_id, 'control_epoch': self._control_epoch, 'generation': self.buffer.generation})
         self._init_policy_results()
@@ -135,6 +141,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             context_path = os.environ.get('RC_RUNTIME_CONTEXT', str(self.registry.directory.parent / '.setup/runtime.json'))
             self.runtime = ComposeRuntimeManager.from_file(context_path, run_id=self.run_id)
         self._runtime_groups = {}
+        if getattr(self.robot, 'asynchronous', False):
+            self.robot.runtime = self.runtime
+            self.robot.wake = self._wake.set
         self._recovery = (self.runtime.state_dir.parent if self.runtime else self.outputs) / 'recovery'
         self._external = ExternalResources(self._pool, self._recovery / f'{self.run_id}.json',
                                            deployment_id=self.runtime.context['deployment_id'] if self.runtime else None)
@@ -196,6 +205,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             if self._thread is not None:
                 return
             try:
+                prepare_control_threads()
                 self._recorder.start()
                 self._manager = threading.Thread(target=self._manager_loop, name="rc-lifecycle", daemon=False)
                 self._thread = threading.Thread(target=self._control_loop, name="rc-control", daemon=False)
@@ -539,6 +549,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
     def capture_snapshot(self):
         """Capture cached feedback and retain immutable frames for background I/O."""
         from .telemetry import CAMERAS
+        if hasattr(self.robot, 'wait_images'): self.robot.wait_images()
 
         with self._lock:
             if not self._connected or self._stop.is_set():
@@ -775,7 +786,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     failures.append(str(exc))
             if self.runtime:
                 try:
-                    self.runtime.cleanup_owned(deadline)
+                    self.runtime.cleanup_owned(deadline, include_connectors=False)
                 except Exception as exc:
                     failures.append(str(exc))
             try:
@@ -794,7 +805,10 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             self._close_worker(job["worker"])
             return {}
         if kind == "close_robot":
-            self.robot.close()
+            if getattr(self.robot, 'asynchronous', False):
+                self.robot.close(deadline=self._cleanup_deadline())
+            else:
+                self.robot.close()
             return {}
         if kind == "reset_context":
             job["worker"].reset_context(cancel_event=cancel)
@@ -898,7 +912,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     cleanup_error = exc
             if self.runtime:
                 try:
-                    self.runtime.cleanup_owned(cleanup_deadline)
+                    self.runtime.cleanup_owned(cleanup_deadline, include_connectors=False)
                 except Exception as exc:
                     cleanup_error = exc
             if cleanup_error:
@@ -1245,7 +1259,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._recorder.observation(runtime['observation_id'], observation, published, descriptors=lease.descriptors)
         return observation,lease,runtime
 
-    def _observe_tick(self):
+    def _collect_observation(self):
         if self._observe_inflight:
             worker,lease,epoch = self._observe_inflight
             response = worker.poll_observation()
@@ -1257,10 +1271,15 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 if (response and response['type']=='observation_error' and self._state=='running'
                         and not self._stop.is_set() and epoch==self.buffer.generation):
                     raise RuntimeError(response['error'])
+    def _observe_tick(self):
+        self._collect_observation()
         if (self._state!='running' or self._operation is not None or self._worker is None
                 or not getattr(self._worker,'supports_observe',False) or self._observe_inflight):
             return None
-        snapshot = self._snapshot()
+        try:
+            snapshot = self._snapshot()
+        except ImagesPending:
+            return None
         observation,lease,runtime = snapshot
         record = self.registry.get(self._identity)
         request = {'request_id':self._observation_serial,'generation':self.buffer.generation,
@@ -1282,7 +1301,10 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         if snapshot and snapshot[2]["consumed_actions"] != self.buffer.consumed:
             snapshot = None
         if snapshot is None:
-            observation,lease,runtime = self._snapshot()
+            try:
+                observation,lease,runtime = self._snapshot()
+            except ImagesPending:
+                return
         else:
             observation,original,runtime = snapshot
             lease = self._pool.retain(original.descriptors)
@@ -1301,6 +1323,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         self._needs_request = False
 
     def _tick(self):
+        self._collect_observation()
         if (self._worker is not None and self._operation is None and not self._stop.is_set()
                 and not self._awaiting_member_retry()
                 and not getattr(self._worker, 'runnable', self._worker.alive)):
@@ -1312,8 +1335,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             self._emit('policy host 不可运行；清理运行组，等待手动重载', 'error')
             self._operation_start('unload', worker=self._worker, preserve_state=self.control_owner == 'mcp')
             self._fail_policy_wait('policy host 不可运行')
-        snapshot = self._observe_tick()
-        if not self._connected or self._publish_fault:
+        snapshot = None
+        if not self._connected or self._publish_fault or self._stop.is_set():
             return
         if self.control_owner == "mcp" and self._return_requested:
             return
@@ -1324,37 +1347,45 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         if self._motion is not None and not self._stop.is_set():
             self.robot.read_state()
             motion = self._motion
+            if motion.get('awaiting_publication'):
+                self._send_hold()
+                return
             action, consumed = self._send_limited(motion["target"], "qpos")
             self._hold = action
             if consumed:
-                self._motion = None
-                self._hold_name = motion["source"]
-                self._state = "paused"
-                if motion.get("complete") is not None:
-                    motion["complete"].set()
-                self._emit(f"到达 {motion['source']} 指令目标；等待 resume")
-                self.operations.update(motion.get("public_id"), "succeeded", result=self.status())
+                if getattr(self.robot, 'asynchronous', False):
+                    motion['awaiting_publication'] = self._last_submission
+                    self._publications[self._last_submission]['motion'] = motion
+                else:
+                    self._complete_motion(motion)
             return
         if self._state == "running" and self.control_owner == "policy" and not self._stop.is_set():
             self.robot.read_state()
             record = self.registry.get(self._identity)
             if self._inflight is not None and record.execution["mode"] == "sync":
+                self._observe_tick()
                 return
             due = self._needs_request or self.buffer.current() is None or self.buffer.consumed_since_request >= record.execution["call_every_actions"]
             if due and record.execution["mode"] == "sync":
                 # A hot patch can delay the callback at a completed target.
                 # Complete that decision before starting the next slew target.
                 if self._inflight is None and self._operation is None and self._worker is not None:
+                    snapshot = self._observe_tick()
                     self._submit_prediction(snapshot)
                 return
             action = self.buffer.current()
             if action is not None:
                 command, consumed = self._send_limited(action, self.buffer.current_mode())
                 self._hold = command
-                if consumed:
+                if getattr(self.robot, 'asynchronous', False):
+                    self.buffer.pin_current()
+                    if consumed:
+                        self._publications[self._last_submission]['buffer_token'] = self.buffer.reserve()
+                elif consumed:
                     self.buffer.consume()
             elif self._hold is not None:
                 self._send_hold()
+            snapshot = self._observe_tick()
             due = self._needs_request or self.buffer.current() is None or self.buffer.consumed_since_request >= record.execution["call_every_actions"]
             if due and self._inflight is None and self._operation is None and self._worker is not None:
                 self._submit_prediction(snapshot)
@@ -1368,16 +1399,20 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
             'mode':mode, 'owner':self.control_owner, 'generation':self.buffer.generation})
         try:
             if mode == "qpos":
-                self.robot.execute(command)
+                identity = self.robot.execute(command)
             else:
-                self.robot.execute(command, mode=mode)
+                identity = self.robot.execute(command, mode=mode)
+            self._last_send_at = time.monotonic()
         except Exception as exc:
             self._recorder.event('control', {'event':'control.error', 'attempt_id':attempt, 'error':str(exc)}, priority=True)
             self.limiter.restore(previous)
             self._published_targets.clear()
             self._publish_fault = True
             raise
-        self._published_targets.update(arm_targets(command, mode))
+        if getattr(self.robot, 'asynchronous', False):
+            self._register_publication(identity, arm_targets(command, mode), attempt)
+        else:
+            self._published_targets.update(arm_targets(command, mode))
         return command, consumed
 
     def _send_direct(self, targets, state):
@@ -1386,7 +1421,8 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
         attempt = self._recorder.control_attempt({'requested':targets, 'limited':commands,
             'owner':self.control_owner, 'generation':self.buffer.generation})
         try:
-            self.robot.execute_arms(commands)
+            identity = self.robot.execute_arms(commands)
+            self._last_send_at = time.monotonic()
         except Exception as exc:
             self._recorder.event('control', {'event':'control.error', 'attempt_id':attempt, 'error':str(exc)}, priority=True)
             self.limiter.restore(previous)
@@ -1394,7 +1430,10 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                 self._published_targets.pop(arm, None)
             self._publish_fault = True
             raise
-        self._published_targets.update(copy.deepcopy(commands))
+        if getattr(self.robot, 'asynchronous', False):
+            self._register_publication(identity, commands, attempt)
+        else:
+            self._published_targets.update(copy.deepcopy(commands))
         self._hold = self.limiter.previous.copy()
         return commands, complete
 
@@ -1627,6 +1666,7 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                         urgent = None
                     if urgent:
                         self._dispatch(urgent)
+                    self._collect_publications()
                     self._poll_policy_commands()
                     self._handle_internal()
                     self._unload_command_fault()
@@ -1650,7 +1690,9 @@ class RobotController(MemberReloadSupport, PolicyCommandSupport, ChainManagement
                     now = time.monotonic()
                     if now >= deadline:
                         self._tick()
-                        deadline = time.monotonic() + period
+                        deadline = next_deadline(deadline, now, self._last_send_at, period)
+                        if deadline < time.monotonic():
+                            deadline = time.monotonic() + period
                 except Exception as exc:
                     self._cancel_direct(f"control failure: {exc}")
                     self._pause("fault", cancel_wait=False)

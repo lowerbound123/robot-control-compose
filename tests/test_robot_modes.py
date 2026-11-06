@@ -1,6 +1,6 @@
 import pytest
 
-from robot_control.robots import ACOneRobot, MockRobot
+from connector_helpers import ACOneRobot, MockRobot
 from test_robots import fake_ros as fake_ros, connect_fake, robot_config
 
 

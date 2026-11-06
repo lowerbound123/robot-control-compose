@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from robot_control.controller import RobotController
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 from qwen_helpers import ROOT, events, prepare_policies, set_controls, wait
 
 
