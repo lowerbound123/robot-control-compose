@@ -23,6 +23,23 @@ python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setu
 
 基础 Compose 只有 `robot-control` 与 `ipc-anchor`。RC 先处于空策略状态，连接机器人后读取 `startup_policy`，通过生命周期线程创建策略容器；`null` 保持空策略。默认策略失败不会启动备用 hold，管理命令仍可使用。
 
+四个快捷入口都可从其他工作目录调用，沿用 `SETUP_PYTHON`；使用前先完成 setup：
+
+```bash
+# 自动加入 compose.yaml，其余文件按参数顺序追加 -f，执行 up -d
+./scripts/up.sh compose.acone.yaml compose.webui.yaml
+# 自动寻找构建定义，只构建指定服务；rc 是 robot-control 的别名
+./scripts/build.sh rc
+./scripts/build.sh webui
+./scripts/build.sh example  # 策略使用来源目录名，读取自己的 deployment.env
+# 固定连接 robot-control，不接收参数
+./scripts/attach.sh
+# 无需重复传覆盖文件，清理当前部署的全部容器及动态策略
+./scripts/down.sh
+```
+
+`up.sh` 只接收 Compose 文件路径（相对仓库根目录或绝对路径），无参数时只用基础文件。`build.sh` 恰好接收一个服务名或策略来源名，在基础文件、根目录 `compose*.yaml` / `compose*.yml` 和对应策略的 `compose.yaml` 中查找；找不到构建定义或多个覆盖文件定义同一目标时会报错。`down.sh` 复用原有退出证明与资源回收流程，并通过 `--remove-orphans` 清掉 WebUI、ROS 仿真等附加容器；范围仅限当前部署，不删除镜像或命名卷。需要额外 Compose 选项时继续使用 `scripts/compose.sh`。
+
 ```text
 policy list
 policy help hold
