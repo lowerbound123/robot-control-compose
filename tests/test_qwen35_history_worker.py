@@ -30,7 +30,7 @@ def events(directory, phase):
 @pytest.fixture(params=[False, True])
 def running(tmp_path, monkeypatch, request):
     from robot_control.controller import RobotController
-    from robot_control.robots import MockRobot
+    from connector_helpers import MockRobot
     from host_helpers import LocalPolicyProcess
     source = ROOT / 'policy/qwen35_history/main.py'
     assert source.exists(), 'production entry missing'
