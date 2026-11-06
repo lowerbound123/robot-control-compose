@@ -41,6 +41,14 @@ http {
             proxy_read_timeout 5s;
             add_header Cache-Control "no-store" always;
         }
+        location = /state/stream {
+            proxy_pass http://$rc_upstream;
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 10s;
+            send_timeout 3s;
+            gzip off;
+        }
         location /preview/ {
             proxy_pass http://$rc_upstream;
             proxy_buffering off;

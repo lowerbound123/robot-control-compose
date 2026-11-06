@@ -19,7 +19,7 @@ export default defineConfig({
     strictPort: true,
     fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml',
       '**/.git/**', '**/config.json', configPath] },
-    proxy: Object.fromEntries(['/mcp', '/preview/', '/health'].map(path => [path, {
+    proxy: Object.fromEntries(['/mcp', '/preview/', '/state/stream', '/health'].map(path => [path, {
       target: process.env.RC_WEBUI_UPSTREAM || 'http://127.0.0.1:4000',
       changeOrigin: true,
       headers: process.env.ROBOT_CONTROL_MCP_TOKEN ? { Authorization: `Bearer ${process.env.ROBOT_CONTROL_MCP_TOKEN}` } : {},

@@ -1,5 +1,32 @@
 # Schema 3 动态策略容器验收
 
+## WebUI 深浅主题切换（2026-11-06）
+
+顶部太阳／月亮按钮切换深浅主题，默认沿用浅色并记住浏览器偏好；全页面及 Canvas 配色适配，主题切换保持录像、位姿历史和 AI 请求连续。
+
+- `npm test`：**166 passed**；`npm run build` 与 `git diff --check` 通过。
+- 完整 Playwright：**43 passed**，覆盖原有功能和新增的主题切换、Canvas 实际颜色、首屏恢复、刷新/跨标签同步、存储失败、AI 请求期间切换与 320～1440px 布局。
+- 最后视觉检查加深了深色日志底板，避免后方相机文字干扰阅读；修正后主题专项 **4 passed**，构建再次通过，最终截图位于 `/tmp/rc-theme-visual-final/`。
+- 生产构建在完全禁用 `localStorage` getter 后仍可双向切换，页面错误为空。开发服务器的存储依赖通过仅对主题键注入读写故障单独验证。
+- 首次完整回归中 mock RC 在第 4 项后阻塞，健康接口也超时，导致 8 项连锁失败；中断并确认测试进程退出后，在禁止复用服务的新隔离环境中完整重跑通过。未将该次失败计为通过，未在本次主题改动中修改 RC。
+
+证据：`/tmp/rc-theme-vitest.log`、`/tmp/rc-theme-build.log`、`/tmp/rc-theme-e2e-clean.log`、`/tmp/rc-theme-production-check.log`；截图在 `/tmp/rc-theme-e2e-clean/`，首次阻塞日志保留于 `/tmp/rc-theme-e2e-final.log`。单智能体实施与自审；本次仅修改 WebUI，未执行 Docker、ROS 或硬件验收。
+
+## WebUI 位姿曲线验收（2026-11-06）
+
+新增关节与末端两页、每臂 7 张自适应正方形曲线、60 秒独立视窗与全网页会话历史。RC 以共享采样器提供 50 Hz 目标状态 SSE；原 MCP state、SDK 与 policy 契约不变。多页面共用网络接收，各自保留历史和录像。
+
+- `python3 scripts/test_scope.py`：**78 passed、1 skipped**（ROS 环境缺失，跳过不计通过），包括 example 和 example 自链。
+- 状态流、原图像流、MCP、本地调用和 Web 控制代次专项：**42 passed、3 skipped**；3 项 Docker 代理检查未运行，本机 Docker 守护进程不可用。覆盖鉴权、共享采样、慢读者、反馈错误与恢复、退出唤醒、统一期限与清理失败非零退出。
+- WebUI `npm test`：**166 passed**；`npm run build` 通过。
+- WebUI `npm run test:e2e`：**39 passed**。Chromium 156、本地 Vite + mock RC + 真实 example worker；检查 320/390/768/1440px 布局、独立滚轮与跟随、切页、真实服务端断流恢复、三页面共享接收及接收页面关闭后的接替，原录像、AI、直接命令和控制权流程均通过。
+- 真实 HTTP → Worker → 页面持续接收 20.009 秒、903 个有效快照，**45.13 Hz**，达到至少 30 Hz 的目标。此为 mock 快照接收性能，不代表硬件传感器帧率。
+- 分块历史性能样本：3,001 条与 360,001 条记录下，14 图当前窗口提取和降采样中位耗时分别 **1.406ms / 1.368ms**，输出均为 5,070 个显示点；两小时后最早一分钟的 3,001 条原始样本仍可读取。这是数据处理基准，不是两小时浏览器或硬件耐久测试。
+
+初次完整浏览器回归发现第四条常驻流耗尽多页面 HTTP/1 连接池，导致第二页录像不可用；已通过 Worker 内 Web Locks/BroadcastChannel 共用接收修复，并由完整套件验证。沙箱下 IPC/本地端口受限的运行不计通过；上述通过结果使用隔离测试所需权限。
+
+证据：`/tmp/rc-pose-example.log`、`/tmp/rc-pose-backend-final.log`、`/tmp/rc-pose-vitest-final.log`、`/tmp/rc-pose-e2e-final.log`、`/tmp/rc-pose-history-benchmark.json`，截图与频率数据位于 `/tmp/rc-pose-e2e-final/`。单智能体实施与自审；未启动 Docker 部署、ROS、真实模型或硬件。
+
 ## Qwen3.5 视觉历史策略（2026-11-06）
 
 新增独立 `qwen35_history`，使用现有每动作回调、消费计数和生命周期，不修改RC/SDK接口或旧Qwen。实现及部署边界见 [策略说明](qwen35-history-policy.md)。

@@ -214,6 +214,14 @@ def main():
             def do_POST(self):
                 length = int(self.headers.get('Content-Length', 0))
                 body = json.loads(self.rfile.read(length) or b'{}')
+                if self.path == '/test/disconnect-state':
+                    # Cut the actual streaming response; browser offline emulation
+                    # does not reliably close an already-open Worker connection.
+                    with service.state_feed.condition:
+                        for reader in tuple(service.state_feed.readers):
+                            reader.close()
+                    self.reply({'ready': True})
+                    return
                 if self.path == '/test/stream-hold':
                     stream_gate.clear()
                     self.reply({'ready': True})
