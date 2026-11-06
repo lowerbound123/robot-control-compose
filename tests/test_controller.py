@@ -1,4 +1,4 @@
-from config_helpers import read_config
+from config_helpers import read_config, connector_config
 import json
 import copy
 import queue
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from robot_control.controller import RobotController
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 
 
 def until(predicate, timeout=3):
@@ -113,7 +113,7 @@ def setup_controller(tmp_path):
         (directory / "policy.yaml").write_text(json.dumps({"schema_version": 3, "id": identity,  "execution": {"mode": "sync", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"value": 1}, "hot_reloadable": ["params.value", "execution.mode"]}))
     config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first", "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [0.1]*14}, "reset_qpos": [0]*14, "outputs_directory": "outputs", "timeouts": {"initialize_s": 2, "inference_s": 2, "release_s": 1}}
     path = tmp_path / "rc.yaml"
-    path.write_text(json.dumps(config))
+    path.write_text(json.dumps(connector_config(config)))
     robot = MockRobot()
     controller = RobotController(path, robot=robot, process_factory=FakeProcess)
     yield controller, robot, tmp_path
@@ -142,7 +142,7 @@ def test_sync_wait_stops_robot_sends_and_exit_remains_responsive(setup_controlle
     assert len(robot.commands) == count
     controller.submit("exit")
     assert controller.done.wait(2)
-    assert process.closed and controller.exit_code == 0
+    assert process.closed and controller.exit_code == 0, controller.read_events()
 
 
 def test_async_single_request_and_consumption_progress(setup_controller):

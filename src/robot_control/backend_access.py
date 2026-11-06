@@ -81,7 +81,10 @@ class BackendAccess:
     def execute_arms(self, targets):
         return self._call('execute_arms', targets)[0]
 
-    def close(self):
+    def close(self, *, deadline=None):
         self.suspend()
         if self.raw is not None:
-            self.raw.close()
+            if getattr(self.raw, 'asynchronous', False):
+                self.raw.close(deadline=deadline)
+            else:
+                self.raw.close()

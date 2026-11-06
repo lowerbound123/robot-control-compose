@@ -14,6 +14,11 @@ config rc show
 config rc set frequency_hz 50
 config rc save
 
+backend list
+backend status
+backend switch mock
+backend retry
+
 global show
 global show task
 global set task {"phase":"grasp"}
@@ -58,6 +63,8 @@ mcp state {"include_images":false}
 `config rc set` 只修改内存中的冷配置草稿，不重建或修改当前 RC。`config rc show` 返回 active、draft 和 changes；changes 按字段路径给出 active/draft 值。`config rc save` 将草稿写入 RC 配置文件，重启后生效。未保存草稿在退出后丢弃。
 
 `policy <实例> config set <key> <raw_value>` 保留 key 之后完整原文，由策略 `configure(context, candidate, key, value, callback) -> None` 解析。策略可以普通提交、请求 reset，或请求原进程 reinitialize。reset/reinitialize 完成后保持暂停，需显式恢复。显示和保存使用已提交配置，保存目标必须是明确实例。重复来源按出现顺序使用 -0/-1/...，不会把来源名隐式指向某个实例。
+
+`backend switch <名称>` 使用命名 connector profile 热切换连接，正常 policy 容器保留；成功后暂停，失败后仅显式 `backend retry` 或 `policy <实例> retry` 恢复。profile 结构及退出证明要求见 [backend 热切换](backend-switching.md)。
 
 `resume` 只恢复 policy 拥有控制权时的运行，不隐式归还 MCP 控制权。本地接管/归还使用 `mcp take` / `mcp return`；HTTP 的结构化工具名仍为 take/return。MCP 工具参数只能是 JSON 对象，无参数工具可省略对象。`mcp help` 显示工具目录。
 

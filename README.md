@@ -2,7 +2,9 @@
 
 默认采用依赖镜像＋只读源码挂载。修改 RC、SDK、策略实现或 Qwen vendor/补丁后，按范围重新创建运行组或 policy switch 即可，无需 build；第三方依赖、系统环境和 ROS 消息变化仍需重建。首次迁移步骤及生效范围见 [部署准备](docs/setup.md#依赖镜像与只读源码)。
 
-独立的 Docker 机器人控制框架。RC 使用 ROS 2 Humble / Python 3.10，hold 和 example 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
+独立的 Docker 机器人控制框架。RC 和 mock connector 使用无 ROS 的 Python 3.10 镜像；ACOne connector 独占 ROS 2 Humble / Python 3.10 容器。hold 和 example 使用 Python 3.14；两个 Qwen 使用相同 Python 3.11 镜像，各自独占容器、执行进程、context 与 socket。SDK 只依赖 NumPy 和 posix-ipc，不依赖 ROS、TUI 或模型框架。
+
+connector 只查询状态和 FIFO 发送设备消息；RC 管理频率、限速和控制权，收到完整发布确认后消费目标。图像按 RC 请求写入 POSIX 共享内存，通信通道只传描述符。配置迁移和部署方式见 [connector 公约与使用说明](docs/connectors.md)。
 
 ## 准备与运行
 
@@ -13,9 +15,11 @@
 python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock
 # 只准备所需策略镜像，不启动机器人或策略
 ./setup.sh --policies hold
-./scripts/compose.sh up -d
-./scripts/compose.sh attach robot-control
+./scripts/up.sh
+./scripts/attach.sh
 ```
+
+常用入口为 `scripts/up.sh [Compose 覆盖文件...]`、`scripts/attach.sh` 和 `scripts/down.sh`。按目标构建可用 `scripts/build.sh rc`、`scripts/build.sh ipc-anchor`、`scripts/build.sh webui`、`scripts/build.sh <策略来源>`；connector 使用明确前缀，例如 `scripts/build.sh connector:mock` 或 `scripts/build.sh connector:acone`。完整参数仍可通过 `scripts/compose.sh` 使用。
 
 基础 Compose 只有 `robot-control` 与 `ipc-anchor`。RC 先处于空策略状态，连接机器人后读取 `startup_policy`，通过生命周期线程创建策略容器；`null` 保持空策略。默认策略失败不会启动备用 hold，管理命令仍可使用。
 
@@ -35,7 +39,7 @@ exit
 
 ```bash
 # 先关闭 RC，再回收动态策略与外部资源，最后关闭基础设施
-./scripts/compose.sh down
+./scripts/down.sh
 ```
 
 使用项目提供的 down 入口；基础 `docker compose down` 无法独自覆盖动态策略 project。清理无法证明时不会关闭 anchor，也不会启动新策略。`BLOCKED_INFRA` 表示 RC 与 anchor 的 IPC 绑定不再一致，应先完成收尾，再一起重建两者。
@@ -69,7 +73,7 @@ policy/my_policy/
 
 RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。两个 LLM 策略各自通过 `params.provider_config_path` 读取供应商 YAML。在 TUI 中用 `policy <实例> switch-provider <文件路径>` 切换，成功后只重建该实例并暂停整链。目标初始化失败可修正文件后执行 `policy <实例> retry`。
 
-RC/SDK 0.15 支持 [机器人 backend 热切换](docs/backend-switching.md)：`backend switch <命名配置>` 更换连接，RC 与策略容器持续运行，完成后暂停。每个策略的 `execution.on_backend_switch` 默认 `reinitialize_policy`，可热改为 `reset` 保留原 context；混合链按实例执行，录制自动分会话。
+RC/SDK 0.16 支持 [机器人 backend 热切换](docs/backend-switching.md)：`backend switch <命名配置>` 退出旧 connector 并创建新 connector，RC 与策略容器持续运行，完成后暂停。每个策略的 `execution.on_backend_switch` 默认 `reinitialize_policy`，可热改为 `reset` 保留原 context；混合链按实例执行，录制自动分会话。
 
 主配置和 LLM 供应商配置使用 `.yaml.example`，模型配置使用 `.json.example`，部署环境使用 `deployment.env.example`。setup 从模板生成缺失文件，保留已有供应商文件。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。
 

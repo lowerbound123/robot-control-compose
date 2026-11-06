@@ -121,6 +121,8 @@ class HumanCommandSupport:
         parsed = parse_command(line)
         if not parsed.readonly:
             raise ValueError('not a read command')
+        if parsed.kind == 'backend' and parsed.args == ('list',):
+            return self.backend_profiles.list()
         with self._lock:
             return self._query_parsed(parsed)
 

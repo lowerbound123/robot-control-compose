@@ -65,7 +65,7 @@ def main():
     parser.add_argument("--collect-only", action="store_true", help="只列出将运行的用例")
     args = parser.parse_args()
     policies = set(args.policy)
-    packages = {"policy-sdk"}
+    packages = {"policy-sdk", "connector-sdk"}
     if args.interface:
         packages.update(p.parent.name for p in (ROOT / "packages").glob("*/src"))
     else:

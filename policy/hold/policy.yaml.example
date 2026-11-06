@@ -11,6 +11,7 @@ hot_reloadable:
 - execution.mode
 - execution.call_every_actions
 - params.chunk_size
+- execution.on_backend_switch
 config_hints:
   help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
   settings:
@@ -34,4 +35,9 @@ config_hints:
     execution.tui_command_workers:
       type: int
       help: 命令执行线程数；修改后重新初始化并暂停
-- execution.on_backend_switch
+    execution.on_backend_switch:
+      type: enum
+      choices:
+      - reset
+      - reinitialize_policy
+      help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换

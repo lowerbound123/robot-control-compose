@@ -7,7 +7,8 @@ def test_structured_backend_tools_discover_and_switch_under_mcp(example_rc, exam
     rc, service = example_rc, example_mcp
     name = profile(rc)
     listed = query(service, 'backend_profiles')
-    assert any(row['name'] == name and row['valid'] for row in listed['result'])
+    assert any(row['name'] == name and row['valid'] and row['source'] == 'mock'
+               and row['connector'] == 'body' for row in listed['result'])
     assert service.submit_tool('switch_backend', {'profile': name}).result(5).is_error
     tool(service, 'take')
     stale = {key: rc.status()[key] for key in ('run_id', 'control_epoch', 'generation')}
@@ -15,7 +16,6 @@ def test_structured_backend_tools_discover_and_switch_under_mcp(example_rc, exam
     assert receipt['result']['backend']['profile'] == name
     assert rc.status()['control_owner'] == 'mcp'
     props = query(service, 'props')
-    assert props['robot']['backend'] == 'mock'
     assert props['robot']['initial_qpos'] == [.2]*14
     assert props['backend']['profile'] == name
     rejected = service.submit_tool('switch_backend', {'profile': name, 'expected_control': stale}).result(5)

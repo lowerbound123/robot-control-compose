@@ -7,6 +7,7 @@ import copy
 import importlib
 import io
 import math
+import os
 import threading
 import time
 import uuid
@@ -16,8 +17,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .mock import validate_qpos
-from ..safety import arm_targets, validate_arm_targets
+from rc_connector_sdk.actions import validate_qpos, arm_targets, validate_arm_targets
 
 
 DEFAULT_CAMERA_TOPICS = {
@@ -134,6 +134,8 @@ class ACOneRobot:
         return value
 
     def connect(self, cancel_event=None):
+        if 'ros_domain_id' in self.config:
+            os.environ['ROS_DOMAIN_ID'] = str(self.config['ros_domain_id'])
         with self._resources_lock:
             if self.closed or self._stop.is_set():
                 raise RuntimeError("robot is closed")
@@ -480,3 +482,7 @@ class ACOneRobot:
             self._cleanup_done = True
         finally:
             self._close_lock.release()
+
+
+def create_connector(config):
+    return ACOneRobot(config)

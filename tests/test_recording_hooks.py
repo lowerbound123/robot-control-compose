@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 from rc_policy_sdk.images import ImagePool
 
-from robot_control.robots import ACOneRobot, MockRobot
+from connector_helpers import ACOneRobot, MockRobot
 from robot_control.process import PolicyProcess
 from robot_control.chain_process import ChainProcess
 from robot_control.config import PolicyRegistry

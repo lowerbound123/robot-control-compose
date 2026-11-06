@@ -28,6 +28,8 @@ ros_ws/log/
 /policy/**/*.json
 /policy/**/.env
 /.setup/
+/connector/*/devices/*.yaml
+/connector/*/devices/*.yml
 
 /policy/**/.runtime/
 /policy/**/deployment.env

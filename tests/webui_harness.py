@@ -15,14 +15,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'packages/policy-sdk/src'), str(ROOT / 'tests')]
+sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'packages/policy-sdk/src'),
+                str(ROOT / 'packages/connector-sdk/src'), str(ROOT / 'tests')]
 
 import numpy as np
-from PIL import Image, ImageDraw
 from config_helpers import read_config
 from project_templates import copy_templates
 from robot_control.controller import RobotController
-from robot_control.robots.mock import MockRobot
+from connector_helpers import MockRobot
 from robot_control.mcp_server import MCPService
 
 
@@ -114,14 +114,12 @@ class PreviewTestRobot(MockRobot):
         for i, name in enumerate(('head', 'left_wrist', 'right_wrist')):
             rng = np.random.default_rng(120 + i)
             pixels = np.clip(rng.normal(167, 18, (480, 640, 3)), 0, 255).astype(np.uint8)
-            picture = Image.fromarray(pixels)
-            draw = ImageDraw.Draw(picture)
-            for x in range(0, 640, 40): draw.line((x, 0, x, 480), fill=(110, 115, 125), width=1)
-            for y in range(0, 480, 40): draw.line((0, y, 640, y), fill=(110, 115, 125), width=1)
-            draw.rectangle((160 + i * 15, 150, 350, 370), fill=(65 + i * 30, 110, 135 + i * 30))
-            draw.ellipse((400, 170, 540, 310), fill=(185, 100 + i * 25, 65))
-            draw.text((22, 26), 'MOCK CAMERA / ' + name.upper(), fill='white')
-            self.backgrounds[name] = np.array(picture)
+            pixels[:, ::40] = (110, 115, 125)
+            pixels[::40, :] = (110, 115, 125)
+            pixels[150:371, 160+i*15:351] = (65+i*30, 110, 135+i*30)
+            yy, xx = np.ogrid[:480, :640]
+            pixels[((xx-470)/70)**2 + ((yy-240)/70)**2 <= 1] = (185, 100+i*25, 65)
+            self.backgrounds[name] = pixels
 
     def _camera_snapshot_locked(self):
         if self._camera_epoch is None:
@@ -141,6 +139,18 @@ class PreviewTestRobot(MockRobot):
         return self.samples
 
 
+def prepare_preview_connector(directory):
+    """Install a marked synthetic source only into an isolated test deployment."""
+    import inspect
+    import shutil
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / 'connector/mock/main.py', directory / 'mock_driver.py')
+    (directory / 'main.py').write_text(
+        'import sys, time\nfrom pathlib import Path\nimport numpy as np\n'
+        'sys.path.insert(0, str(Path(__file__).parent))\nfrom mock_driver import MockRobot\n'
+        + inspect.getsource(PreviewTestRobot) + '\ndef create_connector(config): return PreviewTestRobot(config)\n')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', default='127.0.0.1')
@@ -155,7 +165,7 @@ def main():
         if args.config:
             path = args.config.resolve()
             config = read_config(path)
-            if config['robot'].get('backend') != 'mock':
+            if config['connectors'][config['robot']['connector']]['source'] != 'mock':
                 raise ValueError('WebUI harness accepts only an explicit mock deployment')
         else:
             copy_templates(ROOT / 'policy/example', root / 'policy/example')
@@ -165,15 +175,19 @@ def main():
                 startup_policy=None if args.empty_policy else 'example',
                 global_state={'path': str(root / 'global.env')},
                 timeouts=dict(initialize_s=10, inference_s=5, release_s=3, shutdown_s=15))
-            config['robot']['image_size'] = [480, 640]
+            directory = root / 'connector/mock'
+            prepare_preview_connector(directory)
+            (directory / 'device.json').write_text(json.dumps({'image_size': [480, 640]}))
+            config.update(connector_directory=str(root / 'connector'),
+                          connectors={'body': {'source': 'mock', 'config': 'device.json'}}, robot={'connector': 'body'})
             path = root / 'rc.yaml'
             path.write_text(json.dumps(config))
-        robot = PreviewTestRobot(config['robot'])
         if args.config:
-            controller = RobotController(path, robot=robot)
+            controller = RobotController(path)
         else:
             from host_helpers import LocalPolicyProcess
-            controller = RobotController(path, robot=robot, process_factory=LocalPolicyProcess)
+            controller = RobotController(path, process_factory=LocalPolicyProcess)
+        robot = controller.robot
         service = MCPService(controller, {'host': args.host, 'port': args.port})
         batch_gate, batch_held = threading.Event(), threading.Event()
         batch_gate.set()
@@ -208,7 +222,9 @@ def main():
             def do_GET(self):
                 if self.path == '/health': self.reply({'ready': True})
                 elif self.path == '/test/requests': self.reply(requests)
-                elif self.path == '/test/clock': self.reply({'camera_wall_epoch': robot._camera_wall_epoch, 'now': time.time()})
+                elif self.path == '/test/clock':
+                    frame = robot.recording_snapshot()['frames']['head']
+                    self.reply({'camera_wall_epoch': frame['timestamp']-(frame['sequence']-1)/30, 'now': time.time()})
                 elif self.path == '/test/batch-state':
                     self.reply({'held': batch_held.is_set(), 'config': controller.query('policy example config show')})
                 else: self.reply({'error': 'not found'}, 404)

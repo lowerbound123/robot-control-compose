@@ -34,7 +34,7 @@ def vector(value, field):
 def validate_rc(config):
     if config.get('schema_version') != 3:
         raise ValueError('RC schema_version does not match this repository')
-    load('src/robot_control/backend_profiles.py').validate_robot(config.get('robot'), selector=True)
+    load('src/robot_control/connector_config.py').validate_connectors(config)
     positive(config.get('frequency_hz', 30), 'frequency_hz')
     vector(config.get('reset_qpos'), 'reset_qpos')
     safety = config.get('safety')
@@ -79,6 +79,6 @@ def validate_documents(documents):
             elif len(location.parts) == 3 and location.parts[0] == 'policy' and location.name == 'policy.yaml':
                 validate_policy(value, location.parent.name)
             elif location.parent == Path('configs/robots') and location.suffix == '.yaml':
-                load('src/robot_control/backend_profiles.py').validate_robot(value)
+                load('src/robot_control/connector_config.py').validate_connector_profile(value)
         except (ValueError, TypeError, KeyError):
             raise ValueError(f'{path}: invalid main configuration schema') from None

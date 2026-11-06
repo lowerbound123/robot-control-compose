@@ -5,7 +5,7 @@ import time
 from collections import deque
 
 import numpy as np
-from ..safety import arm_targets, validate_arm_targets
+from rc_connector_sdk.actions import arm_targets, validate_arm_targets
 
 
 def validate_qpos(action):
@@ -18,6 +18,9 @@ def validate_qpos(action):
 class MockRobot:
     def __init__(self, config=None):
         self.config = dict(config or {})
+        self._feedback_hz = self.config.get('feedback_hz', 100)
+        if type(self._feedback_hz) not in (int, float) or not np.isfinite(self._feedback_hz) or self._feedback_hz <= 0:
+            raise ValueError('feedback_hz must be finite and positive')
         self.commands = []
         self.command_modes = []
         self.closed = False
@@ -32,6 +35,11 @@ class MockRobot:
         self._camera_wall_epoch = None
         self._recording_state = None
         self._command_observer = None
+        self._sample_stop = threading.Event()
+        self._sample_thread = None
+        self._feedback_received = 0.
+        self._feedback_timestamp = 0.
+        self.camera_topics = {name: name for name in ('head', 'left_wrist', 'right_wrist')}
 
     def connect(self, cancel_event=None):
         with self._lock:
@@ -51,7 +59,23 @@ class MockRobot:
             self._camera_epoch = time.monotonic()
             self._camera_wall_epoch = time.time()
             self._connected = True
-            self._recording_state = self._state_locked()
+            self._sample_locked()
+            self._sample_thread = threading.Thread(target=self._sample_loop, name='mock-feedback', daemon=True)
+            self._sample_thread.start()
+
+    def _sample_locked(self):
+        self._seq += 1
+        self._feedback_received, self._feedback_timestamp = time.monotonic(), time.time()
+        for i, arm in enumerate(('left', 'right')):
+            self._history[arm].append({'seq': self._seq, 'received': self._feedback_received,
+                'qpos': self._qpos[i*7:i*7+7].tolist(), 'epos': self._epos[i*7:i*7+7].tolist()})
+        self._recording_state = self._state_locked()
+
+    def _sample_loop(self):
+        while not self._sample_stop.wait(1 / self._feedback_hz):
+            with self._lock:
+                if self.closed: return
+                self._sample_locked()
 
     def _check_ready(self):
         if self.closed:
@@ -62,18 +86,14 @@ class MockRobot:
     def read_state(self):
         with self._lock:
             self._check_ready()
-            self._seq += 1
-            for i, arm in enumerate(("left", "right")):
-                self._history[arm].append({"seq": self._seq, "received": time.monotonic(),
-                                          "qpos": self._qpos[i*7:i*7+7].tolist(), "epos": self._epos[i*7:i*7+7].tolist()})
-            self._recording_state = self._state_locked()
-            return copy.deepcopy(self._recording_state)
+            return self._state_locked()
 
     def _state_locked(self):
         return {
             "qpos": self._qpos.tolist(), "qvel": [0.0] * 14,
             "effort": [0.0] * 14, "eef": self._epos.tolist(),
-            "timestamp": time.time(),
+            "timestamp": self._feedback_timestamp,
+            "feedback_age_s": {arm: time.monotonic() - self._feedback_received for arm in self._history},
             "sequences": {arm: self._seq for arm in self._history},
         }
 
@@ -143,10 +163,19 @@ class MockRobot:
                 self._observe_command(arm, target)
             self.commands.append(command)
             self.command_modes.append({arm: target["mode"] for arm, target in targets.items()})
-            self._recording_state = self._state_locked()
+            # Inspection history must not grow for the lifetime of the service.
+            del self.commands[:-4096]
+            del self.command_modes[:-4096]
+            self._sample_locked()
 
     def close(self):
+        self._sample_stop.set()
         with self._lock:
             self.closed = True
             self._connected = False
             self._images.clear()
+        if self._sample_thread is not None: self._sample_thread.join(1)
+
+
+def create_connector(config):
+    return MockRobot(config)

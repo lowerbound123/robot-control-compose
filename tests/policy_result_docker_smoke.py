@@ -5,6 +5,7 @@ and robot-control-compose-policy-result-worker:local with policy/hold/Dockerfile
 Then run this script on the Docker host. No model or hardware service is used.
 """
 from config_helpers import read_config
+from source_helpers import configure_connector
 import json
 import os
 from pathlib import Path
@@ -173,10 +174,11 @@ def host():
         for folder in ('configs', '.setup', 'outputs', 'snapshot', 'policy'):
             (directory / folder).mkdir()
         context = dict(version=3, deployment_id=token, host_root=temporary, client_root='/workspace',
-                       base_project=project, rpc_volume=project+'-rpc', uid=os.getuid(), gid=os.getgid(),
+                       base_project=project, rpc_volume=project+'-rpc',connector_rpc_volume=project+'-connector-rpc', uid=os.getuid(), gid=os.getgid(),
                        docker_socket=endpoint, docker_gid=int(gid))
         (directory / '.setup/runtime.json').write_text(json.dumps(context))
         config = read_config(root / 'configs/rc.mock.yaml.example')
+        configure_connector(config, directory)
         config.update(startup_policy='pair', frequency_hz=50,
                       timeouts=dict(initialize_s=30, inference_s=30, release_s=3, shutdown_s=25))
         (directory / 'configs/rc.mock.yaml').write_text(json.dumps(config))
@@ -197,7 +199,7 @@ def host():
         anchor_override(override['services'])
         (directory / 'override.json').write_text(json.dumps(override))
         env = dict(os.environ, RC_BASE_PROJECT=project, RC_UID=str(os.getuid()), RC_GID=str(os.getgid()),
-                   RC_RPC_VOLUME=context['rpc_volume'], RC_DOCKER_GID=gid, RC_DOCKER_SOCKET=endpoint, RC_MCP_PORT='0')
+                   RC_RPC_VOLUME=context['rpc_volume'], RC_CONNECTOR_RPC_VOLUME=context['connector_rpc_volume'], RC_DOCKER_GID=gid, RC_DOCKER_SOCKET=endpoint, RC_MCP_PORT='0')
         compose = ['docker', 'compose', '--env-file', '/dev/null', '--project-directory', temporary, '-p', project,
                    '-f', str(root / 'compose.yaml'), '-f', str(directory / 'override.json')]
         try:

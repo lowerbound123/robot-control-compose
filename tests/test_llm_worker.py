@@ -22,7 +22,7 @@ from robot_control.chain_process import ChainProcess
 from robot_control.config import PolicyRegistry
 from robot_control.controller import RobotController
 from host_helpers import LocalPolicyProcess as PolicyProcess
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 from llm_http_helpers import model_server, response_for
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,7 +187,7 @@ def make_controller(setup, tmp_path, monkeypatch, startup='llm_direction'):
     config = read_config(template_path(ROOT / 'configs/rc.mock.yaml'))
     config.update(policy_directory=str(root), startup_policy=startup,
                   outputs_directory=str(tmp_path / 'outputs'), frequency_hz=50, **kwargs)
-    config['robot'] = {'backend': 'mock'}
+    config['robot'] = {'connector': 'body'}
     config['safety']['enabled'] = False
     config['timeouts'] = {'initialize_s': 10, 'inference_s': 5, 'release_s': 1}
     path = tmp_path / 'rc.yaml'

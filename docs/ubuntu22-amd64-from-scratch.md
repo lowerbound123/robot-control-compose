@@ -1,10 +1,10 @@
 # Ubuntu 22.04 amd64 部署
 
-部署使用本地 Linux Docker daemon，RC 容器运行 ROS 2 Humble / Python 3.10。宿主需要 Python 3.9 或更高版本，安装 YAML 依赖所用的 pip 由 Ubuntu 的 `python3-pip` 包提供。厂商硬件驱动由操作者独立启动和验收。
+部署使用本地 Linux Docker daemon，RC 和 mock connector 使用无 ROS 的 Python 3.10 镜像，ACOne connector 独立运行 ROS 2 Humble / Python 3.10。宿主需要 Python 3.9 或更高版本，安装 YAML 依赖所用的 pip 由 Ubuntu 的 `python3-pip` 包提供。厂商硬件驱动由操作者独立启动和验收。
 
 1. 按 [Docker 官方 Ubuntu 安装文档](https://docs.docker.com/engine/install/ubuntu/) 安装 Docker Engine 与 Compose 插件。让日常用户能够访问 Unix socket，重新登录后验证 docker info；不要把 socket chmod 为 666。
 2. 将仓库放到稳定路径，在项目根目录用普通用户运行 `python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock`，为宿主 Python 安装 YAML 依赖。再运行 `./setup.sh --config-only`，确认 configs、policy、outputs、snapshot 可由此用户读写。
-3. 编辑 `configs/rc.mock.yaml`，初次建议 startup_policy 为 null；真实配置在 `configs/rc.acone.yaml`。不填旧 host/socket 表。
+3. 编辑 `configs/rc.mock.yaml`，初次建议 startup_policy 为 null；真实配置在 `configs/rc.acone.yaml`。设备话题和 ROS 域配置在 `connector/acone/devices/robot-main.yaml`；旧 `robot.backend` 需按 [connector 迁移说明](connectors.md) 拆分。
 4. `./setup.sh --policies hold` 构建基础镜像和 Python 3.14 策略镜像。其他策略按目录选择；Qwen 需先准备 GPU、NVIDIA Container Toolkit、模型和缓存目录，参见 Qwen 文档。
 5. `./scripts/compose.sh up -d --no-build` 启动两个基础容器，再 `./scripts/compose.sh attach robot-control`。先检查 status 和 policy list，再 policy switch hold；初始化后暂停，只有 resume 才推理。
 6. 使用 exit 退出 RC，再 `./scripts/compose.sh down` 完成动态容器与外部资源收尾。
@@ -12,6 +12,8 @@
 ## ROS 仿真与真机
 
 ```bash
+# 准备独立 ACOne connector 镜像，ROS 模拟器也使用它
+./setup.sh --policies example --connectors acone
 # 仿真：第三个容器是显式启用的 ROS 测试模拟器
 ./scripts/compose.sh -f compose.ros-sim.yaml up -d --no-build
 ./scripts/compose.sh attach robot-control
@@ -19,7 +21,7 @@
 ./scripts/compose.sh -f compose.acone.yaml up -d --no-build
 ```
 
-切换运行方式前先 down。厂商消息仅从 ros_ws/src 构建，vendor 备份不参与构建。MCP 默认只读，默认端口仅绑定宿主 loopback；显式接管/归还遵守控制权代次检查。
+切换运行方式前先用当前部署的全部覆盖文件 down。模拟器配置使用 `connector/acone/devices/ros-test.yaml`，真机使用 `robot-main.yaml`；RC 启动时动态创建 connector 容器。厂商消息仅在 ACOne 镜像从 ros_ws/src 构建，vendor 备份不参与构建。MCP 默认只读，默认端口仅绑定宿主 loopback；显式接管/归还遵守控制权代次检查。
 
 ## 退出与故障
 

@@ -60,14 +60,21 @@ def configuration_updates(root):
     root = Path(root).resolve()
     mains = main_config_targets(root)  # Reject legacy main files before preparing any changes.
     profile_dir = root / 'configs/robots'
-    for template in sorted(profile_dir.glob('*.yaml.example')):
-        target = template.with_suffix('')
-        mains.append((target, template if not target.exists() else None))
+    profiles = {p.with_suffix('') if p.name.endswith('.example') else p
+                for p in profile_dir.glob('*.yaml*') if p.name.endswith(('.yaml', '.yaml.example'))}
+    for target in sorted(profiles):
+        template = target.with_name(target.name + '.example')
+        mains.append((target, template if not target.exists() and template.is_file() else None))
     files = [*(root / 'configs').rglob('*.json*'), *(root / 'policy').rglob('*.json*')]
     business = sorted({p.with_suffix('') if p.name.endswith('.json.example') else p
                        for p in files if p.name.endswith(('.json', '.json.example'))
                        and '.runtime' not in p.parts and not is_main_json(root, p)})
     changes, documents = [], {}
+    for template in sorted((root / 'connector').glob('*/devices/*.yaml.example')):
+        target = template.with_suffix('')
+        if target.is_symlink() or template.is_symlink():
+            raise ValueError(f'{target}: symlink configuration is not supported')
+        if not target.exists(): changes.append((target, template.read_bytes()))
     for target, template in mains + [(p, p.with_name(p.name + '.example')) for p in business]:
         if target.is_symlink() or any(p.is_symlink() for p in target.parents if p != root.parent):
             raise ValueError(f'{target}: symlink configuration is not supported')

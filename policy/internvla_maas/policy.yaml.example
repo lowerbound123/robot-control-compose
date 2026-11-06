@@ -46,3 +46,9 @@ config_hints:
     execution.tui_command_workers:
       type: int
       help: 命令执行线程数；修改后重新初始化并暂停
+    execution.on_backend_switch:
+      type: enum
+      choices:
+      - reset
+      - reinitialize_policy
+      help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换

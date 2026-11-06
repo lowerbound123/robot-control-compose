@@ -8,6 +8,11 @@
 !policy/*/
 !policy/*/Dockerfile
 !policy/*/*.lock
+!connector/
+!connector/*/
+!connector/*/Dockerfile
+!connector/*/entrypoint.sh
+!connector/*/*.lock
 !ros_ws/
 !ros_ws/src/
 !ros_ws/src/arx5_arm_msg/

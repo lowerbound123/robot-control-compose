@@ -66,7 +66,7 @@ record stop
 
 ## 可复现验收和压测
 
-`tests/manual/recording_acceptance.py` 使用真实 `RecordingService`、SDK host/worker、POSIX 共享内存和 loopback HTTP 模型。默认以三路持续变化的 640×480 RGB、30 Hz 相机／录制、50 Hz 控制发送运行 60 秒。它逐个核对采样提交和 CSV，以逐 arm 发布事件重算控制 CSV，并对每个唯一 PNG 做无损像素哈希验证；每次模型实际收到的三路像素还会与保存的观察输入比较。
+`tests/manual/recording_acceptance.py` 使用真实 `RecordingService`、SDK host/worker、独立 connector 进程、Unix socket、POSIX 共享内存和 loopback HTTP 模型。默认以三路持续变化的 640×480 RGB、30 Hz 相机／录制、50 Hz 控制提交运行 60 秒。它逐个核对采样提交和 CSV，以逐 arm 实际发布回执重算控制 CSV，并对每个唯一 PNG 做无损像素哈希验证；每次模型实际收到的三路像素还会与保存的观察输入比较。
 
 使用已有 RC 测试镜像启动隔离验收：
 
@@ -101,9 +101,9 @@ python3 tests/manual/recording_acceptance.py \
   --evidence /tmp/rc-recording-ros-smoke
 ```
 
-这条命令启动 `ACOneRobot` 和已有 `robot_control_test_sim` 的独立进程，使用真实 ROS 2 消息、压缩图像订阅和命令发布。仿真反馈为 90 Hz，相机每三个反馈周期发布一次，即 30 Hz。除了录制文件对齐，还逐 arm 核对仿真端实际收到的模式和 7 维目标；回执与 simulator 日志保留在证据目录。ROS namespace、domain 和容器部署标签均独立；不启动厂商驱动。ROS 模式使用固定合成 RGB 图像，动态编码压力由前述 Mock 压测覆盖。
+ROS 命令需将 `--docker-image` 换为 `connector/acone/Dockerfile --target test` 构建的测试镜像。它启动独立 ACOne connector 和已有 `robot_control_test_sim` 进程，使用真实 ROS 2 消息、压缩图像订阅和命令发布；connector 到录制端的图像仍通过共享内存复制。仿真反馈为 90 Hz，相机每三个反馈周期发布一次，即 30 Hz。除了录制文件对齐，还逐 arm 核对仿真端实际收到的模式和 7 维目标；回执与 simulator 日志保留在证据目录。ROS namespace、domain 和容器部署标签均独立；不启动厂商驱动。ROS 模式使用固定合成 RGB 图像，动态编码压力由前述 Mock 压测覆盖。
 
-证据包括 `report.json`、`status-history.json`、`model-requests.json`、policy host 日志和完整录制文件；Docker 运行另存 `deployment.json`、`teardown.json`、`container.log` 及源码快照。报告给出实际采样／控制频率、各路缺失和重复、源帧序号跳跃、队列字节峰值、轮询观察到的队列采样峰值、动作发送及发送前记录总耗时的 p50/p95/p99/max，以及控制启动迟到量。`teardown.json` 按本轮唯一部署标签核对容器是否全部退出；发生强制容器移除时验收命令返回非零。
+证据包括 `report.json`、`status-history.json`、`model-requests.json`、policy host 日志和完整录制文件；Docker 运行另存 `deployment.json`、`teardown.json`、`container.log` 及源码快照。报告给出实际采样／控制频率、各路缺失和重复、源帧序号跳跃、队列字节峰值、轮询观察到的队列采样峰值、动作提交及提交前记录总耗时的 p50/p95/p99/max，以及控制启动迟到量。提交耗时不代表设备发布或到位耗时，逐臂发布时间保留在回执事件中。`teardown.json` 按本轮唯一部署标签核对容器是否全部退出；发生强制容器移除时验收命令返回非零。
 
 `tests/test_recording_signal.py` 另外覆盖真实 RC 子进程收到 SIGTERM 时的录制收尾：正在录制的 session 需要正常停止、CSV 已写入、writer 进程和 recorder 线程均退出。该测试使用策略替身验证 RC 的信号清理路径；上述手动脚本验证独立 recorder 的持续吞吐和实际 SDK/HTTP/ROS 传输，二者证据范围不同。
 

@@ -96,6 +96,7 @@ def prepare_context(root, *, config_only):
     identity = old.get('deployment_id') or uuid.uuid4().hex
     context = dict(version=3, deployment_id=identity, base_project=old.get('base_project', 'rc-'+identity[:12]),
         host_root=str(root), client_root='/workspace', rpc_volume=old.get('rpc_volume','rc-'+identity[:12]+'-rpc'),
+        connector_rpc_volume=old.get('connector_rpc_volume', 'rc-'+identity[:12]+'-connector-rpc'),
         docker_socket=socket, docker_gid=gid, uid=os.getuid(), gid=os.getgid())
     if not config_only:
         context['daemon_id'] = run_command(['docker','info','--format','{{.ID}}'],root,capture=True).stdout.strip()
@@ -112,9 +113,16 @@ def policy_compose(root, identity):
     return command
 
 
-def prepare_images(root, policies, context):
+def prepare_images(root, policies, context, connectors=('mock',)):
     from compose_project import compose_command
     run_command(compose_command(root,['build','ipc-anchor','robot-control']),root)
+    for source in connectors:
+        if source not in ('mock', 'acone'):
+            raise ValueError(f'unknown connector source: {source}')
+        path = root / 'connector' / source / 'compose.yaml'
+        if path.exists():
+            run_command(['docker', 'compose', '--project-directory', str(path.parent), '--env-file', '/dev/null',
+                         '-f', str(path), 'build', 'connector'], root)
     seen = {}
     env = {k:v for k,v in os.environ.items() if k in ('PATH','HOME','LANG','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CERT_PATH','DOCKER_TLS_VERIFY')}
     env.update(RC_HOST_PROJECT_ROOT=str(root), RC_UID=str(context['uid']), RC_GID=str(context['gid']))
@@ -142,7 +150,7 @@ def prepare_images(root, policies, context):
                 run_command(command+['pull','policy'],root,env=env)
 
 
-def setup(root, policies=None, *, config_only=False):
+def setup(root, policies=None, *, config_only=False, connectors=None):
     root = Path(root).resolve()
     if sys.version_info < (3, 9):
         raise ValueError('setup requires Python 3.9+; select it with SETUP_PYTHON')
@@ -176,6 +184,7 @@ def setup(root, policies=None, *, config_only=False):
     changes.append((root/'.setup/runtime.json',(json.dumps(context,indent=2)+'\n').encode()))
     managed = dict(RC_UID=context['uid'], RC_GID=context['gid'], RC_DEPLOYMENT_ID=context['deployment_id'],
                   RC_BASE_PROJECT=context['base_project'], RC_RPC_VOLUME=context['rpc_volume'],
+                  RC_CONNECTOR_RPC_VOLUME=context['connector_rpc_volume'],
                   RC_HOST_PROJECT_ROOT=str(root), RC_DOCKER_SOCKET=context['docker_socket'], RC_DOCKER_GID=context['docker_gid'])
     # Single quotes make $ literal for Compose; do not shell-source this file.
     def quote(value):
@@ -189,7 +198,8 @@ def setup(root, policies=None, *, config_only=False):
     requested = policies if policies is not None else [r['id'] for r in catalog.discover(root/'policy') if r['valid']]
     selected=select_policies(root,requested)
     if not config_only:
-        prepare_images(root,selected,context)
+        if connectors is None: prepare_images(root,selected,context)
+        else: prepare_images(root,selected,context,connectors=connectors)
     print('配置已准备；基础启动仅 RC 和 ipc-anchor。' if config_only else '镜像与配置已准备；尚未启动容器。')
     return selected
 
@@ -198,9 +208,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policies',help='comma-separated discovered policy IDs; default: all configured policies')
     parser.add_argument('--config-only',action='store_true')
+    parser.add_argument('--connectors', help='comma-separated connector images to build; default: mock')
     args=parser.parse_args()
     try:
-        setup(ROOT, None if args.policies is None else [p for p in args.policies.split(',') if p],config_only=args.config_only)
+        setup(ROOT, None if args.policies is None else [p for p in args.policies.split(',') if p],config_only=args.config_only,
+              connectors=None if args.connectors is None else [p for p in args.connectors.split(',') if p])
     except (OSError,ValueError,subprocess.CalledProcessError) as exc:
         print(f'setup failed: {exc}',file=sys.stderr)
         raise SystemExit(1)

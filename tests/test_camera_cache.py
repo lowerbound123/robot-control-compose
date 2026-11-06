@@ -15,7 +15,7 @@ def compressed():
 
 
 def test_camera_preview_preserves_receive_age_and_sequence_without_arm_feedback(fake_ros):
-    from robot_control.robots import ACOneRobot
+    from connector_helpers import ACOneRobot
     robot = ACOneRobot(robot_config(camera_topics={"head": "camera"}))
     connect_fake(robot, fake_ros)
     try:
@@ -42,7 +42,7 @@ def test_camera_preview_preserves_receive_age_and_sequence_without_arm_feedback(
 
 
 def test_camera_preview_works_while_initial_arm_feedback_is_missing(fake_ros):
-    from robot_control.robots import ACOneRobot
+    from connector_helpers import ACOneRobot
     robot = ACOneRobot(robot_config(camera_topics={"head": "camera"}, connect_timeout_s=5))
     result = []
     thread = threading.Thread(target=lambda: _capture_connect(robot, result))

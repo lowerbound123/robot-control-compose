@@ -15,37 +15,12 @@ def profile_name(value):
 
 
 def validate_robot(config, *, selector=False):
-    if not isinstance(config, dict):
-        raise ValueError('robot must be an object')
-    if selector and 'profile' in config:
-        if set(config) != {'profile'}:
-            raise ValueError('robot.profile cannot be mixed with inline connection settings')
+    """Validate a named connector selection, never a device implementation."""
+    if selector and isinstance(config, dict) and set(config) == {'profile'}:
         profile_name(config['profile'])
         return
-    if config.get('backend') not in ('mock', 'acone') or 'profile' in config:
-        raise ValueError('robot.backend must be mock or acone')
-    if 'domain_id' in config and (type(config['domain_id']) is not int or config['domain_id'] < 0):
-        raise ValueError('domain_id must be a nonnegative integer')
-    for key in ('connect_timeout_s', 'close_timeout_s', 'feedback_timeout_s', 'camera_timeout_s'):
-        value = config.get(key, 10 if key == 'connect_timeout_s' else 2)
-        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
-            raise ValueError(f'{key} must be positive and finite')
-    for key in ('initial_qpos', 'initial_epos'):
-        if key in config:
-            value = config[key]
-            if (not isinstance(value, list) or len(value) != 14 or
-                    any(type(v) not in (int, float) or not math.isfinite(v) for v in value)):
-                raise ValueError(f'{key} requires 14 finite numbers')
-    if 'image_size' in config:
-        value = config['image_size']
-        if not isinstance(value, list) or len(value) != 2 or any(type(v) is not int or v <= 0 for v in value):
-            raise ValueError('image_size requires two positive integers')
-    if 'camera_topics' in config:
-        topics = config['camera_topics']
-        if not isinstance(topics, dict) or set(topics) != CAMERAS or any(not isinstance(v, str) or not v for v in topics.values()):
-            raise ValueError('camera_topics requires head, left_wrist and right_wrist')
-    if any(key in config for key in ('frequency_hz', 'safety', 'reset_qpos')):
-        raise ValueError('backend profiles cannot change controller settings')
+    from .connector_config import validate_connector_profile
+    validate_connector_profile(config)
 
 
 class BackendProfiles:
@@ -67,7 +42,8 @@ class BackendProfiles:
         for path in sorted(self.directory.glob('*.yaml')):
             try:
                 config = self.read(path.stem)
-                rows.append(dict(name=path.stem, backend=config['backend'], valid=True))
+                rows.append(dict(name=path.stem, backend=config['source'], source=config['source'],
+                                 connector=config['connector'], config=config['config'], valid=True))
             except (ValueError, OSError) as exc:
                 rows.append(dict(name=path.stem, valid=False, error=str(exc)))
         return rows

@@ -23,6 +23,9 @@ def run():
     for item in root.iterdir():
         if item.is_file() or item.is_socket():
             os.chown(item, uid, gid, follow_symlinks=False)
+    connectors = Path('/run/rc-connectors')
+    os.chown(connectors, uid, gid)
+    os.chmod(connectors, 0o700)
     os.setgroups([])
     os.setgid(gid)
     os.setuid(uid)

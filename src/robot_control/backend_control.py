@@ -16,7 +16,7 @@ class BackendControl:
     def _init_backend(self, robot):
         directory = self.config.get('robot_profiles_directory', 'robots')
         self.backend_profiles = BackendProfiles(self.root / directory)
-        self._initial_robot_config = copy.deepcopy(self.config['robot'])
+        self._initial_robot_config = copy.deepcopy(self.config)
         self._backend_profile = self.config['robot'].get('profile')
         self._backend_target = self._backend_profile
         self._backend_phase = 'created'
@@ -28,7 +28,22 @@ class BackendControl:
         self._backend_record_transition = False
         self._backend_record_wanted = False
         self._backend_record_previous = None
-        self.robot = BackendAccess(robot or (make_robot(self.config) if 'backend' in self.config['robot'] else None))
+        self.robot = BackendAccess(robot or (make_robot(self.config, self.root) if 'connector' in self.config['robot'] else None))
+
+    def _backend_connection_config(self, name):
+        config = copy.deepcopy(self._initial_robot_config)
+        if name is not None:
+            profile = self.backend_profiles.read(name)
+            identity = profile['connector']
+            config['robot'] = {'connector': identity}
+            config['connectors'] = {identity: {key: profile[key] for key in ('source', 'config')}}
+        return config
+
+    def _bind_backend_runtime(self, robot):
+        if robot is not None and getattr(robot, 'asynchronous', False):
+            robot.runtime = self.runtime
+            robot.wake = self._wake.set
+        return robot
 
     def backend_status(self):
         return dict(profile=self._backend_profile, target_profile=self._backend_target,
@@ -137,6 +152,8 @@ class BackendControl:
                 self._hold_name = None
                 self._publish_fault = False
                 self._published_targets.clear()
+                self._publications.clear()
+                self._last_submission = None
                 self.direct.targets.clear()
                 job['backend_committed'] = True
                 self._backend_retry_available = False
@@ -167,8 +184,8 @@ class BackendControl:
     def _connect_initial_backend(self, job):
         try:
             if self.robot.raw is None:
-                config = self.backend_profiles.read(self._backend_profile)
-                self.robot.bind(make_robot({'robot': config}))
+                config = self._backend_connection_config(self._backend_profile)
+                self.robot.bind(self._bind_backend_runtime(make_robot(config, self.root)))
             self.robot.raw.connect(cancel_event=job['cancel'])
             self._backend_phase = 'ready'
         except Exception as exc:
@@ -178,13 +195,20 @@ class BackendControl:
             self._backend_retry_available = True
             raise
 
-    def _close_backend_candidate(self, robot):
+    def _close_backend_candidate(self, robot, *, deadline=None):
         if robot not in self._backend_pending_cleanup:
             self._backend_pending_cleanup.append(robot)
-        robot.close()
+        try:
+            if getattr(robot, 'asynchronous', False):
+                robot.close(deadline=deadline)
+            else:
+                robot.close()
+        finally:
+            if getattr(robot, 'cleanup_forced', False):
+                self.exit_code = 1
         self._backend_pending_cleanup.remove(robot)
 
-    def _close_backends(self):
+    def _close_backends(self, *, deadline=None):
         self.robot.suspend()
         robots = list(self._backend_pending_cleanup)
         if self.robot.raw is not None and self.robot.raw not in robots:
@@ -192,7 +216,7 @@ class BackendControl:
         failures = []
         for robot in robots:
             try:
-                self._close_backend_candidate(robot)
+                self._close_backend_candidate(robot, deadline=deadline)
             except Exception as exc:
                 failures.append(str(exc))
         if failures:
@@ -202,16 +226,14 @@ class BackendControl:
         record, group, cancel = job['record'], job['old_worker'], job['cancel']
         members = record.members if record and record.is_chain else (record,) if record else ()
         workers = self._backend_workers(record, group)
-        config = (self.backend_profiles.read(job['profile']) if job['profile'] is not None
-                  else copy.deepcopy(self._initial_robot_config))
-        validate_robot(config)
-        # Resolve bindings before touching the old connection, but do not initialize ROS.
-        if config['backend'] == 'acone':
-            from .robots.acone import _load_ros
-            _load_ros((config.get('feedback_message_type', config.get('message_type', 'arx5_arm_msg/msg/RobotStatus')),
-                       config.get('command_message_type', 'arx5_arm_msg/msg/RobotCmd')))
+        connection_config = self._backend_connection_config(job['profile'])
+        candidate = self._bind_backend_runtime(make_robot(connection_config, self.root))
+        # Parse/freeze device inputs and resolve the deployment image before the
+        # old connection, policy contexts or recording session are touched.
+        candidate.prepare(cancel, deadline=time.monotonic() + self.config.get('timeouts', {}).get('initialize_s', 600))
+        config = candidate.config
         job['deadline'] = time.monotonic() + (config.get('connect_timeout_s', 10) +
-            config.get('close_timeout_s', 2) + self.config.get('timeouts', {}).get('release_s', 30) * 2 +
+            config.get('close_timeout_s', 5) + self.config.get('timeouts', {}).get('release_s', 30) * 2 +
             max((w.inference_timeout_s for w in workers.values()), default=1) +
             sum(w.init_timeout_s + w.release_timeout_s + w.inference_timeout_s for w in workers.values()))
         states = {}
@@ -224,7 +246,6 @@ class BackendControl:
             if action == 'reinitialize_policy':
                 worker.validate_reinitialize(member.runtime_config, member.version + 1, cancel)
         self._backend_control_step(job, 'prepare', members=states)
-        candidate = None
         try:
             if record and record.is_chain:
                 group.wait_other_readers(None, time.monotonic() + min(group.inference_timeout_s, self._backend_remaining(job)), cancel)
@@ -238,15 +259,25 @@ class BackendControl:
                     raise TimeoutError('等待旧 backend 图像读者确认超时')
                 cancel.wait(.01)
             with self._backend_reader_barrier(job, members, workers, deadline):
+                # Only the control thread accounts receipts. Preparation stops
+                # new submissions, so this is a finite FIFO drain before the
+                # recording boundary and before closing either connection.
+                while True:
+                    with self._lock:
+                        self._check_backend_job(job)
+                        if not self._publications:
+                            break
+                    cancel.wait(min(.01, self._backend_remaining(job)))
                 self._backend_stop_recording(job)
                 self._backend_control_step(job, 'disconnect')
-                self._close_backends()
+                close_deadline = min(job['deadline'], time.monotonic() + config.get('close_timeout_s', 5),
+                                     self._shutdown_deadline or float('inf'))
+                self._close_backends(deadline=close_deadline)
                 self._backend_remaining(job)
                 with self._lock:
                     self._check_backend_job(job)
-                candidate = make_robot({'robot': config})
                 self._backend_pending_cleanup.append(candidate)
-                candidate.connect(cancel_event=cancel)
+                candidate.connect(cancel_event=cancel, deadline=job['deadline'])
                 ready_deadline = min(job['deadline'], time.monotonic() + config.get('connect_timeout_s', 10))
                 while True:
                     with self._lock:
@@ -308,7 +339,8 @@ class BackendControl:
             return {}
         finally:
             if candidate is not None:
-                self._close_backend_candidate(candidate)
+                self._close_backend_candidate(candidate, deadline=min(job['deadline'],
+                    time.monotonic() + config.get('close_timeout_s', 5), self._shutdown_deadline or float('inf')))
             with self._lock:
                 self._backend_record_transition = False
                 if record and record.is_chain:

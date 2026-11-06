@@ -35,12 +35,12 @@ def test_profile_reads_fresh_file_without_accepting_paths_or_symlinks(tmp_path):
     folder = tmp_path / 'robots'
     folder.mkdir()
     path = folder / 'lab.yaml'
-    path.write_text(json.dumps({'backend': 'mock', 'initial_qpos': [1.] * 14}))
+    path.write_text(json.dumps({'connector': 'body', 'source': 'mock', 'config': 'devices/first.yaml'}))
     profiles = BackendProfiles(folder)
     first = profiles.read('lab')
-    path.write_text(json.dumps({'backend': 'mock', 'initial_qpos': [2.] * 14}))
-    assert profiles.read('lab')['initial_qpos'][0] == 2
-    assert first['initial_qpos'][0] == 1
+    path.write_text(json.dumps({'connector': 'body', 'source': 'mock', 'config': 'devices/second.yaml'}))
+    assert profiles.read('lab')['config'] == 'devices/second.yaml'
+    assert first['config'] == 'devices/first.yaml'
     for name in ('../lab', '/lab', 'lab.yaml'):
         with pytest.raises(ValueError):
             profiles.read(name)
@@ -67,16 +67,36 @@ def test_setup_upgrades_policy_field_without_overwriting_hot_list_or_choice(tmp_
     assert updated['hot_reloadable'] == ['params.nested.value', 'execution.on_backend_switch']
 
 
-def test_setup_keeps_legacy_robot_and_creates_profiles_only_once(tmp_path):
+def test_setup_keeps_direct_connector_and_creates_profiles_only_once(tmp_path):
     from test_setup_config import helpers
-    (tmp_path / 'rc.yaml').write_text(json.dumps({'robot': {'backend': 'mock', 'image_size': [4, 8]}}))
+    direct = {'robot': {'connector': 'body'}, 'connector_directory': 'connector',
+              'connectors': {'body': {'source': 'mock', 'config': 'devices/custom.yaml'}}}
+    (tmp_path / 'rc.yaml').write_text(json.dumps(direct))
     (tmp_path / 'rc.yaml.example').write_text(json.dumps({'robot': {'profile': 'mock'}, 'robot_profiles_directory': 'configs/robots'}))
     folder = tmp_path / 'configs/robots'
     folder.mkdir(parents=True)
-    (folder / 'mock.yaml.example').write_text('backend: mock\n')
+    profile = {'connector': 'body', 'source': 'mock', 'config': 'devices/default.yaml'}
+    (folder / 'mock.yaml.example').write_text(json.dumps(profile))
     changes, documents = helpers().configuration_updates(tmp_path)
-    assert documents['rc.yaml']['robot'] == {'backend': 'mock', 'image_size': [4, 8]}
-    assert documents['configs/robots/mock.yaml'] == {'backend': 'mock'}
+    assert documents['rc.yaml']['robot'] == direct['robot']
+    assert documents['rc.yaml']['connectors'] == direct['connectors']
+    assert documents['configs/robots/mock.yaml'] == profile
     helpers().write_updates(tmp_path, changes)
-    (folder / 'mock.yaml').write_text('backend: mock\nimage_size: [8, 12]\n')
-    assert helpers().configuration_updates(tmp_path)[1]['configs/robots/mock.yaml']['image_size'] == [8, 12]
+    profile['config'] = 'devices/custom.yaml'
+    (folder / 'mock.yaml').write_text(json.dumps(profile))
+    assert helpers().configuration_updates(tmp_path)[1]['configs/robots/mock.yaml'] == profile
+
+
+def test_setup_checks_custom_profiles_without_a_template(tmp_path):
+    from test_setup_config import helpers
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('backend_setup_validation', ROOT / 'scripts/config_validation.py')
+    validation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validation)
+    folder = tmp_path / 'configs/robots'
+    folder.mkdir(parents=True)
+    (folder / 'custom.yaml').write_text('backend: mock\n')
+    _, documents = helpers().configuration_updates(tmp_path)
+    assert 'configs/robots/custom.yaml' in documents
+    with pytest.raises(ValueError, match='configs/robots/custom.yaml'):
+        validation.validate_documents(documents)

@@ -1,6 +1,6 @@
 # Schema 3 部署准备
 
-连接配置与升级见 [backend 热切换](backend-switching.md)。`./setup.sh --config-only` 增补公共policy切换配置和缺失连接模板，保留旧RC内联机器人配置及既有profile文件。
+连接配置与升级见 [backend 热切换](backend-switching.md)。`./setup.sh --config-only` 增补公共policy切换配置和缺失连接模板，保留既有设备配置及 profile 文件；旧内联 `robot.backend` 必须先手动迁移。
 
 ## 配置和镜像
 
@@ -11,6 +11,8 @@ python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setu
 # 或准备任意合规范目录；省略 --policies 时准备全部有效策略
 ./setup.sh --policies my_policy,qwen35_twostage
 ./setup.sh --config-only
+# ACOne 或 ROS 模拟器部署时，显式构建 ROS connector。
+./setup.sh --policies example --connectors acone
 ```
 
 setup 直接使用 PATH 上的 `python3`（3.9 或更高版本）和 Docker CLI。也可用 `SETUP_PYTHON` 指定宿主解释器。若所选解释器缺少 `ruamel.yaml==0.19.1` 或版本不匹配，setup 会在写入配置前退出，并显示使用该解释器安装锁定依赖的命令。
@@ -22,6 +24,28 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 每个策略的 `compose.yaml` 只能有一个 `policy` 服务，必须显式指定 image。setup 对 build 声明构建镜像，直接复用已准备好的本地镜像，仅对缺少的预构建镜像执行 pull。相同 image tag 只有在 Dockerfile 内容、context、args、target 与其他有效输入一致时才能去重；不同输入报错。两个 Qwen 各有完整 build 声明与依赖锁，通过内容相同的私有依赖上下文共享镜像；单独选择 twostage 不依赖 single 的文件。
 
 运行期间只使用准备好的本地 image ID。模型权重与外部 mount 目录应提前准备，setup 不下载权重、不访问供应商、不验证真实推理。
+
+connector 镜像独立构建，默认只构建 `mock`；`--connectors mock,acone` 同时准备两种来源。设备参数位于 `connector/<source>/devices/`，setup 只创建缺失模板，不覆盖已有设备配置。旧 `robot.backend` 必须按 [connector 迁移说明](connectors.md) 改为实例引用。RC 本身不再包含 ROS，切换 policy 不会重启 connector。
+
+## Compose 快捷入口
+
+完成 setup 后可使用以下入口。up 默认加入基础 `compose.yaml`，后续覆盖文件按参数顺序合并；不带参数只启动基础服务。
+
+```bash
+./scripts/up.sh
+./scripts/up.sh compose.acone.yaml compose.webui.yaml
+./scripts/attach.sh
+./scripts/down.sh
+
+./scripts/build.sh rc
+./scripts/build.sh ipc-anchor
+./scripts/build.sh webui
+./scripts/build.sh example
+./scripts/build.sh connector:mock
+./scripts/build.sh connector:acone
+```
+
+build 按单个目标查找 Compose 构建声明。裸目录名表示 policy 来源，connector 必须写 `connector:<来源>`；不会因为名称相同而混用。build 只构建镜像，不启动目标。down 继续使用项目统一退出和资源回收流程；需要额外 Compose 参数时使用 `scripts/compose.sh`。
 
 ## YAML 主配置与手动迁移
 
@@ -48,7 +72,8 @@ RC 从 `/workspace/src` 导入，SDK 从 `/workspace/packages/policy-sdk/src` �
 | Qwen vendor 或 Transformers 补丁 | 重新 switch，创建新的策略容器 |
 | Python ROS 仿真程序 | 重新创建 ros-sim 容器 |
 | 第三方依赖、Python/CUDA/系统环境 | 修改对应依赖声明并重建相关镜像 |
-| ROS 消息定义 | 重建 RC 镜像，重新编译消息包 |
+| connector 实现 | 通过命名 profile 执行 `backend switch <名称>`，或正常 down/up 重新创建连接 |
+| ROS 消息定义 | 重建 ACOne connector 镜像，重新编译消息包 |
 
 首次迁移需要一次完整构建：先用原部署的 `./scripts/compose.sh down` 正常收尾，再更新源码、执行 `./setup.sh --policies <需要的策略>`，最后使用原有 Compose 覆盖参数 `up -d --no-build`。两个 Qwen 仍按相同构建输入去重。以后普通源码修改无需 setup/build。迁移前的旧镜像仍含旧实现，不能作为“源码已外置”的验收镜像。
 
@@ -112,3 +137,9 @@ RC 和 SDK 同步升级到 0.14，主配置保持 schema 3。命令按 [统一�
 RC 与 SDK 同步升级到 0.15.0，清单仍为 schema 3。更新源码后完整重建运行组以加载新 host；本次没有新增第三方依赖。旧 `args: [str, int]` 继续执行，新增对象参数和 `config_hints` 可按 [策略编写说明](policy-authoring.md#参数提示与路径补全015) 逐步添加。setup 保留已有本地 YAML，不自动覆盖用户声明；九个内置来源的示例清单已补齐提示。
 
 本地 TUI 增加跨重启历史虚影、显式确认的 Tab 菜单及非阻塞格式提示，按键说明见 [输入辅助](commands.md#输入辅助rcsdk-015)。HTTP 能力查询增加参数提示元数据，原结构化命令的基础参数类型及执行约束不变。历史按配置文件隔离保存在 outputs 下，不进入来源清单或模型配置。
+
+## 从 0.15 升级到 0.16
+
+RC 与 SDK 同步升级到 0.16.0，schema 保持 3。RC 镜像移除 ROS，独立 connector 提供设备连接；`./setup.sh --policies example --connectors mock,acone` 准备所需镜像，setup 不覆盖本地设备 YAML。旧 `robot.backend` 必须手动迁移，见 [connector 配置](connectors.md)。命名 backend profile 改为 `{connector: body, source: acone, config: devices/robot-main.yaml}`，设备参数位于 connector 来源目录；旧 profile 中的 `domain_id` 改为设备配置的 `ros_domain_id`。
+
+`backend switch` 现在重建 connector 并保留正常 policy 容器。完成后保持暂停；policy 的 reset/reinitialize 选择、逐实例冷重试与录制分会话继续有效，见 [热切换说明](backend-switching.md)。TUI 0.15 的命令树、配置入口、候选菜单及容器路径补全保留。

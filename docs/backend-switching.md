@@ -1,24 +1,34 @@
 # 机器人 backend 热切换
 
-RC/SDK 0.15 支持在原 RC 进程中更换机器人连接。TUI、MCP、基础设施及正常 policy 容器不重建；切换后保持暂停，等待显式 `resume` 或归还控制权。
+RC/SDK 0.16 支持在原 RC 进程中更换机器人连接。TUI、MCP、基础设施及正常 policy 容器不重建；切换后保持暂停，等待显式 `resume` 或归还控制权。
 
 ## 配置与升级
 
 运行 `./setup.sh --config-only` 创建缺失的 `configs/robots/*.yaml` 并增补各 policy 的公共配置。已有连接文件原样保留；本机配置不提交，模板使用 `.yaml.example`。RC 和 SDK 需同步升级，并重新创建一次原运行组以协商 `backend_switch_v1`；旧能力在破坏原状态前被拒绝。
 
-每个命名 YAML 保存原 `robot` 块的连接参数。提供 mock、acone、ros-test 三份模板，也可复制 acone 模板建立多台同型机器人的连接。文件只描述 backend、话题、消息类型、超时和可选 `domain_id`；不包含控制频率、限幅或复位目标。
+每个命名 YAML 引用一个独立 connector 实例及设备配置。提供 mock、acone、ros-test 三份模板，也可复制 acone 模板建立多台同型机器人的连接。profile 不包含控制频率、限幅或复位目标；话题、消息类型、超时和 `ros_domain_id` 属于设备 YAML。
+
+```yaml
+# configs/robots/acone.yaml
+connector: body
+source: acone
+config: devices/robot-main.yaml
+```
+
+`connector` 是运行实例身份，`source` 是 connector 来源目录，`config` 相对于该来源目录解析，也可引用 RC 容器内可读的绝对文件路径。多个 profile 可以共用来源目录及镜像。
 
 `robot_profiles_directory` 相对于 RC 文件解析，`configs/rc.*.yaml` 使用 `robots`，根目录 `rc.yaml` 使用 `configs/robots`。命名启动配置：
 
 ```yaml
+connector_directory: ../connector
 robot_profiles_directory: robots
 robot:
   profile: acone
 ```
 
-旧 `robot.backend` 内联配置仍可启动；不能与 `profile` 混写。已有模板保留内联启动方式。切换不落盘，`config rc save` 才保存当前命名选择，不修改连接文件。名称最多48字符，只接受小写字母、数字、下划线和连字符；不接受路径或符号链接。每次显式切换重新读取文件，同名切换也重新连接。
+旧 `robot.backend` 内联配置被明确拒绝，需迁移到 connector。已有模板使用 `robot.connector` 和 `connectors` 声明，仍可直接启动；命名启动使用 `robot.profile`，不能与 `robot.connector` 混写。切换不落盘，`config rc save` 才保存当前命名选择，不修改连接文件。名称最多48字符，只接受小写字母、数字、下划线和连字符；不接受路径或符号链接。每次显式切换重新读取文件，同名切换也重新连接。
 
-网络、ROS消息包、依赖和设备权限须在启动时就绪。默认 mock Compose 网络不保证能发现宿主真机；需要 mock↔真机切换时，以真机的 host 网络方式启动，再在 RC 配置选择初始 profile。`domain_id` 显式传入新 ROS Context，省略时沿用环境。项目仍不启动厂商硬件驱动。
+切换前须通过 `./setup.sh --connectors mock,acone --policies example` 准备所需镜像。网络、ROS 消息包、依赖和设备权限由 connector 来源的 Compose 管理；ACOne connector 使用 host 网络，RC 自身保持无 ROS 的基础网络环境。设备配置中的 `ros_domain_id` 决定新 connector 的 ROS 域。项目仍不启动厂商硬件驱动。
 
 ## 每个 policy 的行为
 
@@ -53,7 +63,7 @@ resume
 
 MCP使用只读 `backend_profiles` 查询。先 `take`，再调用 `switch_backend(profile="acone")`。`retry_backend` 用于用户明确要求的连接恢复。写工具支持 `expected_control`、操作回执和可选等待；HTTP超时/断连不取消已受理事务，不应自动重发。无连接时可以接管用于恢复，运动入口不可用。
 
-切换先预检查，再暂停推理与手动动作，收齐全链本地及外部图像读者确认。旧连接关闭期间不发送目标；新双臂反馈与三路图像就绪后，从新机器人实际位置建立保持目标，再逐实例处理policy。旧动作、图像和迟到预览结果不得进入新连接。
+切换先预检查，再暂停推理与手动动作，收齐全链本地及外部图像读者确认。旧 connector 先排空已提交动作，再确认进程树、容器和 reader 退出；确认前不创建新 connector，关闭期间不发送新目标；新双臂反馈与三路图像就绪后，从新机器人实际位置建立保持目标，再逐实例处理policy。旧动作、图像和迟到预览结果不得进入新连接。
 
 `status.backend` 显示当前/目标profile、连接代次、阶段、错误和逐实例结果。MCP操作保留控制权；所有成功路径都保持暂停，不自动复位或恢复运动。
 

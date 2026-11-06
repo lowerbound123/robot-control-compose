@@ -1,16 +1,11 @@
-"""Robot backends. Importing this package never initializes or imports ROS."""
-from .acone import ACOneRobot
-from .mock import MockRobot
+"""RC knows only the connector proxy; device implementations live outside RC."""
+from ..connector import ConnectorRobot
+from ..connector_config import validate_connectors
 
 
-def make_robot(config: dict):
-    robot_config = config["robot"]
-    backend = robot_config.get("backend", "mock")
-    if backend == "mock":
-        return MockRobot(robot_config)
-    if backend == "acone":
-        return ACOneRobot(robot_config)
-    raise ValueError(f"unknown robot backend: {backend!r}")
+def make_robot(config, root='.'):
+    validate_connectors(config)
+    return ConnectorRobot(config, root)
 
 
-__all__ = ["make_robot", "MockRobot", "ACOneRobot"]
+__all__ = ['make_robot', 'ConnectorRobot']

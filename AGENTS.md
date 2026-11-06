@@ -2,7 +2,8 @@
 
 默认中文交流。独立项目，不从原 robot-control、deploydev 或训练仓库导入。
 
-- 主容器为 ROS 2 Humble / Python 3.10，hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
+- RC 与 mock connector 使用无 ROS 的 Python 3.10 镜像；ACOne connector 独占 ROS 2 Humble / Python 3.10 容器。hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
+- connector 仅查询设备状态和 FIFO 发送消息，不管理控制周期、控制权、动作过期或重发。take/pause/switch 不取消已提交动作；RC 按 Hz 提交并在设备完整发布确认后消费目标。图像仅在 get_images 请求后写入只读 POSIX 共享内存，socket 只传描述符；RC 复制并明确释放输入租约，policy 使用原 RC 图像池。
 - 每个可执行 policy 实例独占一个容器、host 和执行进程；原生 chain 自身不增加容器，每个环节独立实例化。重复策略按出现顺序命名为 policyName-0/1/2，来源目录与镜像保持共用。显式 switch 和 reload_all_policy 在整个旧组退出证明齐备后重建全组。reload_policy 仅重建命令目标实例，先证明其进程树、容器及外部 reader 已退出。其他成员的在途共享图像必须独立确认释放。
 - SDK 仅依赖 NumPy 与 posix-ipc，不引入 ROS/TUI/模型框架。
 - `reinitialize_policy` 在原执行进程和已加载模块中交接目标 context。先暂停并收齐读者确认，再在旧绑定上 release、新绑定上 initialize。初始化或提交失败只能手动冷重试该实例。普通动作请求摘要进状态栏，逐条输出使用 TRACE。

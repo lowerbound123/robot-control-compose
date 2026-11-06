@@ -19,7 +19,7 @@ from internvla_maas_helpers import ROOT, images, model_server, settings, wait
 
 def container():
     from robot_control.controller import RobotController
-    from robot_control.robots import MockRobot
+    from connector_helpers import MockRobot
     from source_helpers import source_report
 
     class CameraRobot(MockRobot):
@@ -112,12 +112,15 @@ def host(evidence):
     policy_image = os.environ.get('RC_TEST_MAAS_IMAGE', 'robot-control-compose-internvla-maas:local')
     with tempfile.TemporaryDirectory(prefix='rc-maas-smoke-') as temporary:
         directory = Path(temporary)
-        for name in ('src', 'packages/policy-sdk', 'packages/internvla-maas-policy', 'docker'):
+        for name in ('src', 'packages/policy-sdk', 'packages/connector-sdk', 'packages/internvla-maas-policy', 'docker'):
             shutil.copytree(ROOT / name, directory / name, ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
         (directory / 'configs').mkdir()
         shutil.copyfile(ROOT / '.env.example', directory / '.env.example')
         source = copy_templates(ROOT / 'policy/internvla_maas', directory / 'policy/internvla_maas')
         rc = read_config(ROOT / 'configs/rc.mock.yaml.example')
+        from source_helpers import copy_connectors, configure_connector
+        copy_connectors(directory)
+        configure_connector(rc, directory)
         rc.update(startup_policy='internvla_maas', frequency_hz=30,
                   timeouts=dict(initialize_s=35, inference_s=65, release_s=8, shutdown_s=25))
         rc['safety']['enabled'] = False
@@ -143,7 +146,8 @@ def host(evidence):
         (directory / 'override.json').write_text(json.dumps(override))
         env = dict(os.environ, RC_BASE_PROJECT=context['base_project'], RC_UID=str(context['uid']),
                    RC_GID=str(context['gid']), RC_DOCKER_GID=str(context['docker_gid']),
-                   RC_DOCKER_SOCKET=context['docker_socket'], RC_RPC_VOLUME=context['rpc_volume'], RC_MCP_PORT='0')
+                   RC_DOCKER_SOCKET=context['docker_socket'], RC_RPC_VOLUME=context['rpc_volume'],
+                   RC_CONNECTOR_RPC_VOLUME=context['connector_rpc_volume'], RC_MCP_PORT='0')
         compose = ['docker', 'compose', '--env-file', '/dev/null', '--project-directory', temporary,
                    '-p', context['base_project'], '-f', str(ROOT / 'compose.yaml'), '-f', str(directory / 'override.json')]
         try:

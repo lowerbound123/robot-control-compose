@@ -31,7 +31,7 @@ class Engine:
             model = read_config(file)
             if 'create' in args:
                 cid = 'container-' + str(len(self.events))
-                service = model['services']['policy']
+                service = next(iter(model['services'].values()))
                 self.containers[cid] = {'Id':cid, 'Config':{'Labels':service['labels']},
                     'HostConfig':{'IpcMode':service['ipc']}, 'State':{'Running':False,'Dead':False,'Status':'created','ExitCode':0}}
                 self.events.append(('create', cid))

@@ -15,7 +15,7 @@ import uuid
 import numpy as np
 import pytest
 
-from robot_control.robots import ACOneRobot
+from connector_helpers import ACOneRobot
 
 
 def _stop_simulator(process):

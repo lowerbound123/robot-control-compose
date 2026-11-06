@@ -1,1 +1,3 @@
-backend: mock
+connector: body
+source: mock
+config: devices/default.yaml

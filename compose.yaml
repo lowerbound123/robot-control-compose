@@ -13,6 +13,7 @@ services:
     shm_size: ${RC_SHM_SIZE:-512m}
     volumes:
       - rpc:/run/robot-control
+      - connector-rpc:/run/rc-connectors
       - type: bind
         source: ./docker
         target: /workspace/docker
@@ -35,14 +36,11 @@ services:
     tty: true
     environment:
       HOME: /tmp
-      PYTHONPATH: /workspace/src:/workspace/packages/policy-sdk/src
+      PYTHONPATH: /workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src
       PYTHONPYCACHEPREFIX: /tmp/rc-pycache
-      RC_SOURCE_MODULES: '{"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}'
+      RC_SOURCE_MODULES: '{"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src","rc_connector_sdk":"/workspace/packages/connector-sdk/src"}'
       TERM: ${TERM:-xterm-256color}
       COLORTERM: ${COLORTERM:-truecolor}
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-83}
-      ROS_LOCALHOST_ONLY: ${ROS_LOCALHOST_ONLY:-0}
-      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
       ROBOT_CONTROL_MCP_TOKEN: ${ROBOT_CONTROL_MCP_TOKEN:-}
       RC_RUNTIME_CONTEXT: /workspace/.setup/runtime.json
       DOCKER_HOST: unix:///var/run/docker.sock
@@ -50,6 +48,12 @@ services:
     ports: ["127.0.0.1:${RC_MCP_PORT:-4000}:4000"]
     volumes:
       - rpc:/run/robot-control
+      - connector-rpc:/run/rc-connectors
+      - type: bind
+        source: ./connector
+        target: /workspace/connector
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ./src
         target: /workspace/src
@@ -95,3 +99,5 @@ services:
 volumes:
   rpc:
     name: ${RC_RPC_VOLUME:?Run setup.sh first}
+  connector-rpc:
+    name: ${RC_CONNECTOR_RPC_VOLUME:?Run setup.sh first}

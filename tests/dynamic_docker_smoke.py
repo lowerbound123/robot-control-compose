@@ -1,5 +1,6 @@
 """Host launcher for isolated live Docker acceptance; no hardware or provider access."""
 from config_helpers import read_config
+from source_helpers import configure_connector
 import json
 import os
 from pathlib import Path
@@ -45,12 +46,13 @@ def main():
         '--mount','type=bind,source='+endpoint+',target=/socket',
         os.environ.get('RC_TEST_WORKER314_IMAGE','robot-control-compose-policy:local'),'-c','%g','/socket'],text=True).strip())
     context=dict(version=3,deployment_id=token,host_root=str(directory),client_root='/workspace',base_project=project,
-        rpc_volume=project+'-rpc',uid=os.getuid(),gid=os.getgid(),docker_socket=endpoint,docker_gid=socket_gid)
+        rpc_volume=project+'-rpc',connector_rpc_volume=project+'-connector-rpc',uid=os.getuid(),gid=os.getgid(),docker_socket=endpoint,docker_gid=socket_gid)
     (directory/'.setup/runtime.json').write_text(json.dumps(context))
     config=read_config(ROOT/'configs/rc.mock.yaml.example')
+    configure_connector(config, directory)
     config.update(startup_policy=None,reset_qpos=[.25]*14,frequency_hz=50)
     config['safety']['enabled']=False
-    config['robot']['initial_qpos']=[0]*14
+    configure_connector(config, directory, initial_qpos=[0]*14)
     config['timeouts']=dict(initialize_s=20,inference_s=4,release_s=.2,shutdown_s=22)
     (directory/'configs/rc.mock.yaml').write_text(json.dumps(config))
     for name,params in [('a',{}),('b',{}),('c',{}),('failed',{'fail':True}),('slow',{'release_delay':40})]:
@@ -69,7 +71,7 @@ def main():
         'volumes':[{'type':'bind','source':str(ROOT/'tests'),'target':'/validation','read_only':True}]}}}
     anchor_override(override['services'])
     (directory/'override.json').write_text(json.dumps(override))
-    env=dict(os.environ,RC_BASE_PROJECT=project,RC_UID=str(os.getuid()),RC_GID=str(os.getgid()),RC_RPC_VOLUME=context['rpc_volume'],
+    env=dict(os.environ,RC_BASE_PROJECT=project,RC_UID=str(os.getuid()),RC_GID=str(os.getgid()),RC_RPC_VOLUME=context['rpc_volume'], RC_CONNECTOR_RPC_VOLUME=context['connector_rpc_volume'],
         RC_DOCKER_GID=str(context['docker_gid']),RC_DOCKER_SOCKET=endpoint,RC_MCP_PORT='0')
     compose=['docker','compose','--env-file','/dev/null','--project-directory',str(directory),'-p',project,
         '-f',str(ROOT/'compose.yaml'),'-f',str(directory/'override.json')]

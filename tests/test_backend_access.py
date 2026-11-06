@@ -3,7 +3,7 @@ import threading
 import pytest
 
 from robot_control.backend_access import BackendAccess
-from robot_control.robots.mock import MockRobot
+from connector_helpers import MockRobot
 
 
 def test_late_reader_never_returns_retired_connection_data():

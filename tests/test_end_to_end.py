@@ -3,6 +3,7 @@
 Only interpreter selection is injected. Real subprocesses, mmap image leases,
 config acknowledgments, policy callbacks and process cleanup remain in use.
 """
+from config_helpers import connector_config
 from config_helpers import read_config
 from project_templates import template_path, copy_templates
 
@@ -20,7 +21,7 @@ import pytest
 
 from robot_control.controller import RobotController
 from host_helpers import LocalPolicyProcess as PolicyProcess
-from robot_control.robots import MockRobot
+from connector_helpers import MockRobot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +84,7 @@ class EndToEnd:
             "timeouts": {"initialize_s": 4, "inference_s": inference_s, "release_s": release_s},
         }
         path = self.directory / "rc.yaml"
-        path.write_text(json.dumps(config))
+        path.write_text(json.dumps(connector_config(config)))
 
         def real_process_factory(*args, **kwargs):
             self.prior_workers_alive_at_creation.append([worker.alive for worker in self.workers])

@@ -48,7 +48,7 @@ def make():
 
 
 def ids(controller):
-    return controller.runtime._ids({'io.robot-control.deployment':controller.runtime.context['deployment_id']},time.monotonic()+10)
+    return [h.container_id for h in controller.runtime.reconcile_owned(time.monotonic()+10) if h.kind == 'policy']
 
 
 def run():
@@ -125,9 +125,11 @@ def run():
         assert not new&set(ids(controller))
         outcomes.append('deleted old Compose still cleans by CID/labels')
         command(controller,'policy switch failed','failed')
+        assert controller.robot.client.failure is None, 'policy failure stopped connector'
         assert controller.status()['policy'] is None and not ids(controller)
         outcomes.append('initialize failure leaves FAULT_EMPTY with no orphan')
         command(controller,'policy switch partial','failed')
+        assert controller.robot.client.failure is None, 'partial policy initialization stopped connector'
         assert controller.status()['policy'] is None and not ids(controller)
         outcomes.append('chain partial initialize failure reclaims every created member')
         command(controller,'policy switch slow')
@@ -137,6 +139,7 @@ def run():
         assert controller.exit_code==1 and controller.status()['runtime']['cleanup_forced']
         outcomes.append('hanging release forces bounded cleanup; paused successor; nonzero fact retained')
         command(controller,'policy switch a --reset')
+        wait(lambda: all(abs(x-.25)<1e-5 for x in controller.robot.read_state()['qpos']))
         assert all(abs(x-.25)<1e-5 for x in controller.robot.read_state()['qpos'])
         outcomes.append('explicit --reset moves only through control thread')
         controller.submit('exit');assert controller.done.wait(25)

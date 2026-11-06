@@ -63,6 +63,8 @@ def changed_config(config: dict, path: str, value: Any) -> tuple[dict, bool]:
 def load_rc(path: Path) -> dict:
     path = rc_config_path(path)
     config = load_yaml_config(path)
+    from .connector_config import validate_connectors
+    validate_connectors(config)
     try:
         return _validate_rc(config)
     except (ValueError, TypeError, KeyError):
@@ -77,10 +79,8 @@ def _validate_rc(config):
     hz = config.get("frequency_hz", 30)
     if isinstance(hz, bool) or not isinstance(hz, (int, float)) or not math.isfinite(hz) or hz <= 0:
         raise ValueError("frequency_hz 必须为有限正数")
-    from .backend_profiles import validate_robot
-    validate_robot(config.get('robot'), selector=True)
-    if 'robot_profiles_directory' in config and (not isinstance(config['robot_profiles_directory'], str) or not config['robot_profiles_directory']):
-        raise ValueError('robot_profiles_directory must be a nonempty path')
+    from .connector_config import validate_connectors
+    validate_connectors(config)
     from .safety import finite_qpos, ModeLimiter
     from .direct import control_settings
     from .mcp_config import mcp_settings

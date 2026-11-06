@@ -43,7 +43,7 @@ def main():
     command = None
     ready = False
     try:
-        for name in ('src', 'packages/policy-sdk', 'docker'):
+        for name in ('src', 'packages/policy-sdk', 'packages/connector-sdk', 'docker'):
             shutil.copytree(ROOT / name, root / name, ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
         for name in ('.env.example', 'compose.yaml', 'compose.webui.yaml'):
             shutil.copyfile(ROOT / name, root / name)
@@ -54,7 +54,11 @@ def main():
         config = read_config(ROOT / 'configs/rc.mock.yaml.example')
         config.update(startup_policy=None, frequency_hz=30,
                       timeouts=dict(initialize_s=30, inference_s=5, release_s=3, shutdown_s=25))
-        config['robot']['image_size'] = [480, 640]
+        from source_helpers import copy_connectors, configure_connector
+        copy_connectors(root)
+        from webui_harness import prepare_preview_connector
+        prepare_preview_connector(root / 'connector/mock')
+        configure_connector(config, root, image_size=[480, 640])
         (root / 'configs/rc.mock.yaml').write_text(json.dumps(config))
         setup(root, ['example_chain'], config_only=True)
         context = read_config(root / '.setup/runtime.json')

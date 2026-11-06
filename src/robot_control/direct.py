@@ -167,7 +167,14 @@ class DirectMotion:
             arrival = {}
             for arm, goal in active["goals"].items():
                 if sent and tick >= active["ticks"][arm] and arm not in active["boundary"]:
-                    active["boundary"][arm] = after["sequences"][arm]
+                    if getattr(self.robot, 'asynchronous', False):
+                        submissions = active.setdefault('publication_requests', {})
+                        submissions.setdefault(arm, self.robot.last_submission)
+                        response = self.robot.publication(submissions[arm])
+                        if response is not None and response['success']:
+                            active['boundary'][arm] = response['feedback_watermarks'].get(arm, after['sequences'][arm])
+                    else:
+                        active["boundary"][arm] = after["sequences"][arm]
                 if arm in active["boundary"]:
                     for sample in self.robot.feedback_since(arm, active["boundary"][arm]):
                         fresh = time.monotonic() - sample["received"] <= self.config["feedback_max_age_s"]

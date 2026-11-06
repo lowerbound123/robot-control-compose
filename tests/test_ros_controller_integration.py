@@ -1,26 +1,21 @@
-"""Opt-in full RC / production Conda policy / genuine ROS simulator acceptance."""
-from config_helpers import read_config
-from project_templates import template_path, copy_templates
-import importlib.util
+"""RC -> independent ACOne connector -> genuine ROS simulator; example only."""
 import json
-import os
-from pathlib import Path
-import shutil
-import signal
 import subprocess
 import sys
-import threading
 import time
-import uuid
+from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pytest
 
+from config_helpers import read_config
+from host_helpers import LocalPolicyProcess
+from project_templates import copy_templates
+from robot_control.controller import RobotController
+from test_ros_integration import _stop_simulator
+
 ROOT = Path(__file__).resolve().parents[1]
-CONDA = os.environ.get("RC_TEST_CONDA")
-pytestmark = pytest.mark.skipif(
-    not CONDA, reason="set RC_TEST_CONDA and source ROS/ros_ws for full RC ROS acceptance",
-)
 
 
 def until(predicate, controller, timeout=20):
@@ -31,215 +26,103 @@ def until(predicate, controller, timeout=20):
             return value
         if controller.status()["state"] == "fault":
             pytest.fail(f"RC fault: {controller.status()}\n{list(controller.events.queue)}")
-        time.sleep(0.01)
+        time.sleep(.01)
     pytest.fail(f"ROS RC condition timed out: {controller.status()}\n{list(controller.events.queue)}")
 
 
-class RosRig:
-    def __init__(self, controller, command_times):
-        self.controller = controller
-        self.command_times = command_times
-        self.workers = []
-        self.image_directory = controller._pool.directory
-
-    def remember_worker(self):
-        self.workers.append(self.controller._worker)
-        return self.workers[-1]
-
-    def stop(self):
-        self.controller.submit("exit")
-        assert self.controller.done.wait(20), self.controller.status()
-        self.controller._thread.join(1)
-        assert self.controller.exit_code == 0, list(self.controller.events.queue)
-        assert not self.controller._thread.is_alive()
-        assert not self.controller._manager.is_alive()
-        assert self.controller.robot.closed
-        assert not self.controller.robot._spin_thread.is_alive()
-        assert not self.controller.robot._decoder_thread.is_alive()
-        assert not self.image_directory.exists()
-        for worker in self.workers:
-            assert not worker.alive
-            with pytest.raises(ProcessLookupError):
-                os.killpg(worker.pid, 0)
-            assert not worker._directory.exists()
-        # Drain already queued DDS deliveries, then prove publication stops.
-        time.sleep(0.15)
-        count = len(self.command_times)
-        time.sleep(0.2)
-        assert len(self.command_times) == count
-
-
 @pytest.fixture
-def ros_rc(tmp_path, monkeypatch):
-    rclpy = pytest.importorskip("rclpy", reason="source ROS 2 Humble")
-    messages = pytest.importorskip("robot_control_test_msgs.msg", reason="build/source ros_ws")
-    assert importlib.util.find_spec("robot_control_test_sim.simulator")
-    from rclpy.context import Context
-    from rclpy.executors import SingleThreadedExecutor
-    from rclpy.node import Node
-    from robot_control.controller import RobotController
-
-    monkeypatch.setenv("ROS_DOMAIN_ID", os.environ.get("ROS_DOMAIN_ID", "83"))
+def ros_rc(tmp_path, monkeypatch, request):
+    pytest.importorskip("rclpy", reason="requires ROS 2 and the built test messages")
+    pytest.importorskip("robot_control_test_msgs.msg")
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
-    namespace = "/robot_control_test/rc_" + uuid.uuid4().hex[:8]
-    policies = tmp_path / "policy"
-    copy_templates(ROOT / "policy", policies)
-    manifest_path = policies / "delayed_hold" / "policy.yaml"
+    namespace = "/robot_control_test/rc_" + uuid4().hex[:8]
+    copy_templates(ROOT / "policy/example", tmp_path / "policy/example")
+    manifest_path = tmp_path / "policy/example/policy.yaml"
     manifest = read_config(manifest_path)
-    manifest["params"]["delay_s"] = 0.8
+    mode = getattr(request, "param", "async")
+    manifest["execution"].update(mode=mode, call_every_actions=1)
+    manifest["params"].update(chunk_size=32, inference_delay_s=.8)
     manifest_path.write_text(json.dumps(manifest))
-    proof = tmp_path / "policy-proof.json"
-    # The probe executes inside the isolated policy interpreter on real frames.
-    policy_path = policies / "hold" / "main.py"
-    policy_path.write_text(policy_path.read_text() + '''
-import importlib.util, json, sys
-from pathlib import Path
-_original_policy = policy
-def policy(context, state, action_chunk, images, config):
-    assert importlib.util.find_spec("robot_control") is None
-    assert importlib.util.find_spec("textual") is None
-    assert importlib.util.find_spec("rclpy") is None
-    assert len(state["qpos"]) == len(state["qvel"]) == len(state["effort"]) == 14
-    assert "timestamps" in state and "raw" in state
-    for index, camera in enumerate(("head", "left_wrist", "right_wrist")):
-        frame = images[camera]
-        assert frame.shape == (48, 64, 3) and not frame.flags.writeable
-        assert frame[0, 0, index] == 220
-    path = Path(config["params"]["proof_path"])
-    if not path.exists():
-        path.write_text(json.dumps({"prefix":sys.prefix, "images":sorted(images)}))
-    return _original_policy(context, state, action_chunk, images, config)
-''')
-    hold_manifest = policies / "hold" / "policy.yaml"
-    hold_config = read_config(hold_manifest)
-    hold_config["params"]["proof_path"] = str(proof)
-    hold_manifest.write_text(json.dumps(hold_config))
-    config = read_config(template_path(ROOT / "configs" / "rc.ros-test.yaml"))
-    robot_config = config["robot"]
-    robot_config["namespace"] = namespace
+    config = read_config(ROOT / "configs/rc.ros-test.yaml.example")
+    config.update(policy_directory="policy", startup_policy="example", outputs_directory="outputs",
+                  reset_qpos=[.3] * 14, timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
+    device = read_config(ROOT / "connector/acone/devices/ros-test.yaml.example")
+    monkeypatch.setenv("ROS_DOMAIN_ID", str(device["ros_domain_id"]))
+    old = device["namespace"] + "/"
+    device["namespace"] = namespace
     for key in ("feedback_left_topic", "feedback_right_topic", "command_left_topic", "command_right_topic"):
-        robot_config[key] = robot_config[key].replace("/robot_control_test", namespace, 1)
-    robot_config["camera_topics"] = {
-        camera: topic.replace("/robot_control_test", namespace, 1)
-        for camera, topic in robot_config["camera_topics"].items()
-    }
-    config.update(conda_executable=CONDA, policy_directory=str(policies),
-                  outputs_directory=str(tmp_path / "outputs"), reset_qpos=np.linspace(-0.15, 0.15, 14).tolist())
-    config["timeouts"] = {"initialize_s": 15, "inference_s": 5, "release_s": 3}
+        device[key] = namespace + "/" + device[key].removeprefix(old)
+    device["camera_topics"] = {name: namespace + "/" + topic.removeprefix(old)
+                              for name, topic in device["camera_topics"].items()}
+    device_path = tmp_path / "device.yaml"
+    device_path.write_text(json.dumps(device))
+    config["connectors"]["body"]["config"] = str(device_path)
     path = tmp_path / "rc.yaml"
     path.write_text(json.dumps(config))
-
-    context = Context()
-    rclpy.init(args=[], context=context)
-    observer = Node("rc_command_observer", namespace=namespace, context=context)
-    command_times = []
-    for topic in (robot_config["command_left_topic"], robot_config["command_right_topic"]):
-        observer.create_subscription(messages.ArmCommand, topic, lambda _: command_times.append(time.monotonic()), 10)
-    executor = SingleThreadedExecutor(context=context)
-    executor.add_node(observer)
-    observing = threading.Event()
-    observing.set()
-
-    def spin():
-        while observing.is_set():
-            executor.spin_once(timeout_sec=0.05)
-
-    thread = threading.Thread(target=spin, name="test-ros-observer")
-    thread.start()
-    log = (tmp_path / "simulator.log").open("w")
-    process = subprocess.Popen(
-        [sys.executable, "-m", "robot_control_test_sim.simulator", "--namespace", namespace],
-        stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-    )
-    rig = None
-    try:
-        controller = RobotController(path)
-        rig = RosRig(controller, command_times)
-        controller.start()
-        until(lambda: controller.status()["state"] == "paused" and controller.status()["policy"] == "hold", controller)
-        rig.remember_worker()
-        rig.proof = proof
-        yield rig
-    finally:
+    rc = None
+    with (tmp_path / "simulator.log").open("w") as log:
+        simulator = subprocess.Popen([sys.executable, "-m", "robot_control_test_sim.simulator",
+                                      "--namespace", namespace], stdout=log, stderr=subprocess.STDOUT,
+                                     start_new_session=True)
         try:
-            if rig is not None:
-                rig.stop()
+            rc = RobotController(path, process_factory=LocalPolicyProcess)
+            rc.start()
+            until(lambda: rc.status()["policy"] == "example" and rc.status()["state"] == "paused", rc)
+            yield rc, mode
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=2)
-            log.close()
-            observing.clear()
-            executor.wake()
-            thread.join(2)
-            assert not thread.is_alive()
-            executor.shutdown(timeout_sec=2)
-            observer.destroy_node()
-            rclpy.try_shutdown(context=context)
+            if rc is not None:
+                rc.submit("exit")
+                assert rc.done.wait(15) and rc.exit_code == 0, rc.read_events()
+                assert rc.robot.process.poll() == 0 and rc._pool._bytes == 0
+            _stop_simulator(simulator)
 
 
-@pytest.mark.parametrize("mode", ["sync", "async"])
-def test_actual_ros_rc_policy_images_pose_switch_and_exit(ros_rc, tmp_path, mode):
-    controller = ros_rc.controller
-    controller.submit("resume")
-    until(lambda: controller.status()["consumed"] >= 4 and ros_rc.proof.exists(), controller)
-    proof = read_config(ros_rc.proof)
-    assert Path(proof["prefix"]).name == "rc-policy-demo"
-    assert Path(proof["prefix"]).resolve() != Path(sys.prefix).resolve()
-    assert proof["images"] == ["head", "left_wrist", "right_wrist"]
-    assert ros_rc.image_directory.parent == Path("/dev/shm")
-
-    controller.submit("pose save home")
-    saved_path = controller.outputs / "state_saves" / "home.json"
-    until(lambda: saved_path.exists() and controller.status()["hold_name"] == "home", controller)
-    saved = read_config(saved_path)["qpos"]
-    pose_consumed = controller.status()["consumed"]
-    controller.submit("reset")
-    until(lambda: controller.status()["state"] == "paused" and controller.status()["hold_name"] == "reset", controller)
-    until(lambda: np.allclose(controller.robot.read_state()["qpos"], controller.config["reset_qpos"], atol=0.005), controller)
-    controller.submit("pose restore home")
-    until(lambda: controller.status()["state"] == "paused" and controller.status()["hold_name"] == "home", controller)
-    until(lambda: np.allclose(controller.robot.read_state()["qpos"], saved, atol=0.005), controller)
-    assert controller.status()["consumed"] == pose_consumed
-
-    old = ros_rc.workers[-1]
-    controller.submit("policy switch delayed_hold")
-    until(lambda: controller.status()["policy"] == "delayed_hold" and controller.status()["state"] == "paused", controller)
-    ros_rc.remember_worker()
-    with pytest.raises(ProcessLookupError):
-        os.killpg(old.pid, 0)
-    controller.submit(f'policy delayed_hold config set execution.mode "{mode}"')
-    until(lambda: controller.status()["config_version"] == 2, controller)
-    before = controller.status()["consumed"]
-    controller.submit("resume")
-    until(lambda: controller.status()["consumed"] >= before + 2 and controller.status()["in_flight"], controller)
-    time.sleep(0.1)
-    count = len(ros_rc.command_times)
-    consumed = controller.status()["consumed"]
-    time.sleep(0.15)
-    assert controller.status()["in_flight"]
+@pytest.mark.parametrize("ros_rc", ["sync", "async"], indirect=True)
+def test_actual_ros_slow_policy_retains_sync_and_async_behavior(ros_rc):
+    rc, mode = ros_rc
+    assert rc.wait_operation(rc.submit("resume"), 5)["status"] == "succeeded"
+    until(lambda: rc.buffer.consumed >= 2 and rc.status()["in_flight"], rc)
+    frames = rc.robot.read_images()
+    assert all(frame.shape == (48, 64, 3) and not frame.flags.writeable for frame, _ in frames.values())
+    time.sleep(.08)  # Allow receipts for earlier submissions to arrive.
+    count, consumed = len(rc.robot.commands), rc.buffer.consumed
+    time.sleep(.15)
+    assert rc.status()["in_flight"]
     if mode == "sync":
-        assert len(ros_rc.command_times) == count
-        assert controller.status()["consumed"] == consumed
+        assert len(rc.robot.commands) == count and rc.buffer.consumed == consumed
     else:
-        assert len(ros_rc.command_times) > count
-        assert controller.status()["consumed"] > consumed
-    ros_rc.stop()
+        assert len(rc.robot.commands) > count and rc.buffer.consumed > consumed
+    connector_pid = rc.robot.process.pid
+    assert rc.wait_operation(rc.submit("pause"), 5)["status"] == "succeeded"
+    assert rc.wait_operation(rc.submit("policy switch example"), 10)["status"] == "succeeded"
+    assert rc.robot.process.pid == connector_pid and rc.robot.process.poll() is None
 
 
 @pytest.mark.parametrize("motion", ["reset", "load"])
 def test_actual_ros_exit_during_pose_movement(ros_rc, tmp_path, motion):
-    controller = ros_rc.controller
+    rc, _ = ros_rc
+    command = motion
     if motion == "load":
-        path = tmp_path / "legacy-pose.json"
-        path.write_text(json.dumps({"qpos": [0.3] * 14}))
-        command = "pose restore " + json.dumps(str(path))
-    else:
-        command = "reset"
-    controller.submit(command)
-    until(lambda: controller.status()["state"] == "moving", controller)
-    ros_rc.stop()
+        path = tmp_path / "pose.json"
+        path.write_text(json.dumps({"qpos": [.3] * 14}))
+        command = f'pose restore "{path}"'
+    rc.submit(command)
+    until(lambda: rc.status()["state"] == "moving", rc)
+    rc.submit("exit")
+    assert rc.done.wait(15) and rc.exit_code == 0
+    assert rc.robot.process.poll() == 0
+
+
+def test_actual_ros_pose_save_reset_and_restore(ros_rc):
+    rc, _ = ros_rc
+    connector_pid = rc.robot.process.pid
+    assert rc.wait_operation(rc.submit("pose save home"), 5)["status"] == "succeeded"
+    saved_path = rc.outputs / "state_saves" / "home.json"
+    saved = read_config(saved_path)["qpos"]
+    consumed = rc.status()["consumed"]
+    assert rc.wait_operation(rc.submit("reset"), 10)["status"] == "succeeded"
+    until(lambda: np.allclose(rc.robot.read_state()["qpos"], rc.config["reset_qpos"], atol=.005), rc)
+    assert rc.wait_operation(rc.submit("pose restore home"), 10)["status"] == "succeeded"
+    until(lambda: np.allclose(rc.robot.read_state()["qpos"], saved, atol=.005), rc)
+    assert rc.status()["consumed"] == consumed
+    assert rc.robot.process.pid == connector_pid and rc.status()["state"] == "paused"

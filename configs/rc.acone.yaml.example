@@ -10,22 +10,7 @@ robot_profiles_directory: robots
 policy_directory: ../policy
 startup_policy: hold
 robot:
-  backend: acone
-  feedback_left_topic: /arm_l_status
-  feedback_right_topic: /arm_r_status
-  command_left_topic: /arm_l_cmd
-  command_right_topic: /arm_r_cmd
-  camera_topics:
-    head: /camera/camera_h/color/image_rect_raw/compressed
-    left_wrist: /camera/camera_l/color/image_rect_raw/compressed
-    right_wrist: /camera/camera_r/color/image_rect_raw/compressed
-  feedback_timeout_s: 2
-  camera_timeout_s: 2
-  connect_timeout_s: 10
-  close_timeout_s: 2
-  namespace: /
-  feedback_message_type: arx5_arm_msg/msg/RobotStatus
-  command_message_type: arx5_arm_msg/msg/RobotCmd
+  connector: body
 safety:
   enabled: true
   reference_frequency_hz: 50
@@ -111,3 +96,8 @@ tui:
       - 0.05
       - 0.05
       - 0.12
+connector_directory: ../connector
+connectors:
+  body:
+    source: acone
+    config: devices/robot-main.yaml

@@ -26,6 +26,8 @@ class DeploymentSpec:
     anchor_id: str
     socket: str
     anchor_epoch: str = ""
+    kind: str = 'policy'
+    connector_journal: str = ''
 
 
 @dataclass
@@ -45,10 +47,16 @@ class DeploymentHandle:
     uncertain: bool = False
     cleanup_forced: bool = False
     resources: list = field(default_factory=list)
+    kind: str = 'policy'
+    connector_journal: str = ''
 
     def labels(self):
-        return {LABEL + key: str(value) for key, value in dict(deployment=self.deployment_id,
+        labels = {LABEL + key: str(value) for key, value in dict(deployment=self.deployment_id,
             policy=self.policy_id, run=self.run_id, generation=self.generation, project=self.project).items()}
+        if self.kind == 'connector':
+            labels[LABEL + 'connector'] = labels.pop(LABEL + 'policy')
+            labels[LABEL + 'kind'] = 'connector'
+        return labels
 
 
 @dataclass(frozen=True)

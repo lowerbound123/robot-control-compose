@@ -1,6 +1,6 @@
 # 策略作者规范
 
-SDK 0.14 增加公共热字段 `execution.on_backend_switch`，默认 `reinitialize_policy`，可选 `reset`。所有策略从初始化时建立可重绑定的context身份，不再需要声明重初始化命令才能参与backend切换。reset必须结束旧后台请求、清空旧机器人状态；release/initialize沿用旧绑定释放、新绑定初始化的语义。详见 [backend 热切换](backend-switching.md)。
+SDK 0.16 保留公共配置字段 `execution.on_backend_switch`，默认 `reinitialize_policy`，可选 `reset`。所有策略从初始化时建立可重绑定的context身份，不再需要声明重初始化命令才能参与backend切换。reset必须结束旧后台请求、清空旧机器人状态；release/initialize沿用旧绑定释放、新绑定初始化的语义。详见 [backend 热切换](backend-switching.md)。
 
 SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享内存，RC 统一提交写入，退出全量保存到 global.env。完整接口、并发与持久化约定见 [全局共享状态](global-state.md)。
 
@@ -120,7 +120,7 @@ tui_commands:
 
 MCP 执行必须先 `take`，再调用 `policy_command(instance_id=..., command=..., args=[...])`；参数保留 JSON 原生 str/int/float/bool 类型，布尔值不能作为整数，字符串不自动转为数字。`command("policy <实例> <命令> ...")` 受支持，沿用本地字符串参数解析。工具 `timeout_s` 仅限制回执等待，handler 执行时限仍来自 manifest。等待超时或断连不取消已受理命令。普通命令不自动恢复推理，三种生命周期 effect 完成后继续由 MCP 持有控制权，显式 `return` 或 `return_and_wait` 才恢复 policy。
 
-`effect: update_config` 提交热配置补丁。handler 只验证并返回已有 `params.*` 白名单叶字段的非空补丁，不直接修改 context 或配置。RC 使用现有 SDK `update_config` 事务，在双端确认后更新目标配置及逻辑链版本；配置对象、context、模型、进程和容器保持不变。TUI 调用保留原运行/暂停状态，MCP 调用仍需先 take，完成后保持 MCP 控制权和 policy 暂停。链中必须解析为明确实例，其他成员的配置与版本不变；`policy example-1 set-message "新消息"` 展示该用法。命令回包与 ACK 提交都复核 worker、配置版本、控制权及动作代次；未确认或失效的提交沿用热更新故障清理，不自动重试。该 effect 通过 `tui_command_effects_v2` 双端协商，需同步更新 RC/SDK。
+`effect: update_config` 提交热配置补丁。handler 只验证并返回manifest 白名单内 `params.*` 或 `execution.on_backend_switch` 叶字段的非空补丁，不直接修改 context 或配置。RC 使用现有 SDK `update_config` 事务，在双端确认后更新目标配置及逻辑链版本；配置对象、context、模型、进程和容器保持不变。TUI 调用保留原运行/暂停状态，MCP 调用仍需先 take，完成后保持 MCP 控制权和 policy 暂停。链中必须解析为明确实例，其他成员的配置与版本不变；`policy example-1 set-message "新消息"` 展示该用法。命令回包与 ACK 提交都复核 worker、配置版本、控制权及动作代次；未确认或失效的提交沿用热更新故障清理，不自动重试。该 effect 通过 `tui_command_effects_v2` 双端协商，需同步更新 RC/SDK。
 
 `effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停，`resume` 仍重置上下文。Docker 生命周期由 RC 管理。
 
