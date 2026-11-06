@@ -5,11 +5,27 @@
 
 ## 0.16 集成：TUI、热切换与独立 connector（2026-11-07）
 
-命名 backend profile 现在保存 connector 实例、来源和设备配置路径；RC 不加载 ROS，热切换确认旧 connector 退出后创建新 connector，保留正常 policy 容器。TUI 0.15 命令树、configure、路径补全、WebUI 深浅主题及位姿曲线一并保留。
+本次整合全部九个工作树的历史与四组未提交工作：TUI 命令／policy 配置／输入辅助、backend 热切换、独立 connector、Compose 快捷脚本。RC 与 policy SDK 为 0.16.0，connector SDK 为 0.1.0，manifest 保持 schema 3。
 
-迁移专项覆盖真实本地 example worker 和独立 mock connector 的默认重初始化、混合 reset/reinitialize、逐实例冷重试、关闭失败手动恢复、录制分会话、旧请求隔离、MCP 代次和 TUI 补全退出：**30 项通过、6 项 ROS 环境缺失跳过**。首次专项中的接管测试使用了已移除的内部 origin 参数，修正后该项单独通过；日志 `/tmp/rc-integrate-backend-tests.log`、`/tmp/rc-integrate-backend-mcp-recheck.log`。较早的未设置绝对 PYTHONPATH 运行在子进程导入处失败，不计通过。
+命名 backend profile 保存 `{connector, source, config}`。RC 不加载 ROS；切换前冻结配置、停止新增动作、收齐旧回执和读者释放证明，确认旧 connector 退出后创建新实例。正常 policy 容器与 PID 保留，按各实例 `execution.on_backend_switch` 执行 reset 或原进程重初始化。普通 policy 生命周期不重建 connector；失败需要明确手动恢复，强制清理仍保留非零退出事实。
 
-`tests/example_docker_smoke.py` 保留九组检查，热切换证据同时记录旧／新 connector 容器 ID 以及各 policy 的容器、host、runtime、PID 和 context，包含 configure 与容器内路径补全。`tests/test_backend_ros.py` 使用独立 ACOne connector 进程，在两个 ROS 域间切换，核对旧进程退出；宿主跳过不能作为 ROS 运行通过证据。最终 Docker、ROS 和完整接口回归须分别记录，历史分支的通过数不能替代集成后的验收。
+最终生产代码基线为 `a9f11d6`。验证分别执行，未把跳过或旧分支的结果计入通过：
+
+| 范围 | 最终结果 | 证据 |
+| --- | --- | --- |
+| `python3 scripts/test_scope.py --interface` | **1863 passed、78 skipped**，679.34 秒；13 条 Pillow 弃用警告、1 条 resource_tracker 重启告警 | `/tmp/rc-all-worktrees-interface-complete.log` |
+| 真实 Docker example／自链／MCP | **9/9 组通过**，harness 退出 0；RC Python 3.10.12 无 ROS、example 独立 Python 3.14 | `/tmp/rc-all-worktrees-docker-final/` |
+| Linux/Humble 真实 ROS 与 connector | **61 passed、0 skipped**，36.85 秒；源码只读、容器断网、使用独立 ROS simulator | `/tmp/rc-all-worktrees-linux-ros.log` |
+| WebUI 单元测试、类型检查及构建 | **175 passed**，类型检查与生产构建通过 | `/tmp/rc-all-worktrees-webui-unit.log`、`/tmp/rc-all-worktrees-webui-build.log` |
+| 完整 Chromium 浏览器验收 | **43 passed**，5.6 分钟；保持原断言和超时 | `/tmp/rc-all-worktrees-webui-e2e-final.log` |
+
+Docker 验收包含 209 个普通操作检查点，均保持 connector CID/runtime 不变；显式 backend 切换才替换两者，同时核对各 policy 的容器、host、runtime、PID、context、配置及录制分段。模拟 create-result 丢失的强制清理非零状态仍按预期记录。专属部署 `rc-b820aa1b3404` 的容器、卷和网络均已清空，见 `cleanup.json`。ROS 的 61 项包含全部八项真实 ROS 流程，覆盖跨域切换、慢推理、运动中退出、位姿保存恢复、相机与反馈过期，容器已自动移除。
+
+独立 Astra 审查复核了集成及两项新增修复：connector 启动握手、状态、图像、释放和分段收发共用绝对期限；无状态 JSON MCP 不再建立无用 GET SSE。后者在 Bearer、Host、Origin 校验后返回 405，保留 POST 与相机／状态流；新增 HTTP 专项及既有流式回归 34 项通过，独立复核 18 项通过。真实 Chromium 连接预算探针确认五条长连接导致短请求串行，移除无用 MCP 长连接后恢复两个短请求位置；未增加测试超时或引入 manifest 缓存。
+
+中间失败记录保留：中断轮未完成；接口首轮四个 fixture 错误来自历史策略仍导入旧 MockRobot，迁移共享 connector helper 后专项四项通过，再运行最终完整套件。浏览器首次因默认缓存缺二进制而未执行产品断言；随后并行轮 37/43、隔离轮 40/43，依据 trace 和连接预算探针修复 MCP 资源问题后完整 43/43。日志保留在 `/tmp/rc-all-worktrees-interface-final.log`、`/tmp/rc-all-worktrees-webui-e2e{-verified,-isolated}.log`，不作为通过结果。
+
+未运行真实模型、GPU 或厂商硬件。ROS simulator、mock、跳过项及本机性能均不能替代真机验收。所有源码、测试和文档提交均排除 `.codex`、私有配置与运行产物。
 
 ## Compose 快捷入口（2026-11-07）
 
