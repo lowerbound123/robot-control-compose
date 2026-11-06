@@ -4,6 +4,7 @@ execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   message: example
   reset_token: 0     # config set 修改此标记后清空统计和待发结果，保留 context
@@ -15,6 +16,7 @@ hot_reloadable:
 - params.message
 - params.log_every_n_calls
 - params.inference_delay_s
+- execution.on_backend_switch
 tui_commands:
   set-message:
     handler: set_message

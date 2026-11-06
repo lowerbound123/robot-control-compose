@@ -20,7 +20,7 @@ class PolicyCommandSupport(PolicyCapabilities):
 
     def _local_specs(self):
         worker = self._worker
-        if (self._retry_candidate is not None or worker is None or not getattr(worker, "runnable", worker.alive) or worker in self._command_faults
+        if (self._backend_failures or self._retry_candidate is not None or worker is None or not getattr(worker, "runnable", worker.alive) or worker in self._command_faults
                 or self._operation is not None or self._stop.is_set()):
             return {}
         return getattr(worker, "command_specs", {})

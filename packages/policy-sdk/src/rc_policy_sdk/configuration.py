@@ -57,6 +57,8 @@ def validate_candidate(config, candidate, action):
     execution = candidate["execution"]
     if execution.get("control_mode", "qpos") not in ("qpos", "epos", "mixed"):
         raise ValueError("invalid execution.control_mode")
+    if execution.get("on_backend_switch", "reinitialize_policy") not in ("reinitialize_policy", "reset"):
+        raise ValueError("invalid execution.on_backend_switch")
     if "mode" in execution and execution["mode"] not in ("sync", "async"):
         raise ValueError("invalid execution.mode")
     if "call_every_actions" in execution and (type(execution["call_every_actions"]) is not int or execution["call_every_actions"] <= 0):

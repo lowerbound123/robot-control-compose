@@ -26,6 +26,8 @@ def execution_line(command):
     kind, target, args = command.kind, command.target, command.args
     if kind in ('help', 'status', 'pause', 'resume', 'reset', 'exit'):
         return kind
+    if kind == 'backend':
+        return shlex.join(['backend', *args])
     if kind == 'policy_list':
         return 'policies'
     if kind == 'policy_switch':

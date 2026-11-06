@@ -1,5 +1,7 @@
 # Schema 3 部署准备
 
+连接配置与升级见 [backend 热切换](backend-switching.md)。`./setup.sh --config-only` 增补公共policy切换配置和缺失连接模板，保留旧RC内联机器人配置及既有profile文件。
+
 ## 配置和镜像
 
 ```bash

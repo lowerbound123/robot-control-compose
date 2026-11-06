@@ -89,3 +89,11 @@ it('treats policy_config show as read-only and preserves raw values for guarded 
   expect(prepared.args).toMatchObject({ value_text: raw, wait: false })
   expect(prepareToolCall(decision('policy_config', { instance_id: 'example-1', action: 'save' }).tool_call, snapshot).readOnly).toBe(false)
 })
+
+it('allows only explicitly failed instances from a backend recovery set', async () => {
+  const snapshot = await discoverCapabilities(fixtureGateway())
+  snapshot.status.retry_reload_instance = 'example-0'
+  snapshot.status.retry_reload_instances = ['example-0', 'example-1']
+  expect(() => validateDecision(decision('retry_reload', { instance_id: 'example-1' }), snapshot)).not.toThrow()
+  expect(() => validateDecision(decision('retry_reload', { instance_id: 'example-2' }), snapshot)).toThrow()
+})

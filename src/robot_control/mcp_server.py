@@ -113,6 +113,8 @@ def create_server(controller):
         "policy_config reads an exact instance without take; set/save require take and preserve MCP ownership. "
         "Use structured take/return tools; command text uses policy list, config rc show, global show, "
         "policy <instance> config show|set|save, policy <instance> retry, and record start|stop. "
+        "backend_profiles lists named connections; switch_backend/retry_backend require take and remain paused. "
+        "Backend changes apply execution.on_backend_switch for each instance; failed instances are listed in retry_reload_instances. "
         "Only confirmed operation success means completion; wait timeout does not cancel motion."
     ))
     read = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -130,6 +132,15 @@ def create_server(controller):
     def attach_images(payload, include_images, cameras, image_quality):
         if not include_images:
             return payload, []
+        epoch = getattr(controller.robot, 'generation', None)
+        expected_epoch = payload.get('state', {}).get('backend_generation',
+            payload.get('controller', {}).get('backend', {}).get('generation'))
+        def stale():
+            return {**payload, 'images': [], 'image_errors': {
+                name: 'backend changed during image capture; request a fresh snapshot'
+                for name in (cameras or camera_names)}}, []
+        if expected_epoch is not None and epoch != expected_epoch:
+            return stale()
         try:
             frames, errors = controller.robot.image_snapshot()
         except RuntimeError as exc:
@@ -147,9 +158,12 @@ def create_server(controller):
                 image.save(stream, format="JPEG", quality=image_quality or 85)
                 content.append(ImageContent(type="image", mime_type="image/jpeg", data=base64.b64encode(stream.getvalue()).decode()))
                 metadata.append({"camera": camera, "timestamp": timestamp, "width": image.width, "height": image.height,
+                                 **({'backend_generation': epoch} if epoch is not None else {}),
                                  "content_index": len(content)})
             except Exception as exc:
                 errors[camera] = str(exc)
+        if epoch is not None and epoch != getattr(controller.robot, 'generation', epoch):
+            return stale()
         return {**payload, "images": metadata, "image_errors": {key: value for key, value in errors.items() if key in selected}}, content
 
     async def finish_operation(identity, wait, timeout_s, include_images=False, cameras=None, image_quality=None):
@@ -218,7 +232,9 @@ def create_server(controller):
     @server.tool(annotations=read)
     async def props() -> CallToolResult:
         """Read robot configuration, control units, gripper defaults and directions."""
-        return result({"robot": config.get("robot", {}), "frequency_hz": config.get("frequency_hz"),
+        connection = (controller.backend_properties() if hasattr(controller, 'backend_properties')
+                      else {'robot': config.get('robot', {})})
+        return result({**connection, "frequency_hz": config.get("frequency_hz"),
                        "direct_control": direct, "safety": config.get("safety", {}),
                        "policy_modes": ["qpos", "epos", "mixed"], "control_owner": controller.status()["control_owner"],
                        "units": {"epos": "absolute xyz (meters), XYZ RPY (radians), raw gripper", "qpos": "six radians plus raw gripper per arm"},
@@ -243,6 +259,9 @@ def create_server(controller):
                 seq = sum(observation["sequences"].values())
             payload = {"state": observation, "seq": seq, "controller": controller.status(), "waited_for_new": wait_for_new and seq > baseline}
             payload, images = await asyncio.to_thread(attach_images, payload, include_images, cameras, image_quality)
+            epoch = observation.get('backend_generation')
+            if epoch is not None and epoch != getattr(controller.robot, 'generation', epoch):
+                raise RuntimeError('backend changed while reading state/images; request a fresh snapshot')
             return result(payload, images)
         except (ValueError, RuntimeError) as exc:
             return result({"error": str(exc), "controller": controller.status()}, error=True)
@@ -335,6 +354,28 @@ def create_server(controller):
             return rejected(tool, exc)
 
     @server.tool(annotations=write)
+    async def switch_backend(profile: StrictStr, wait: bool = False, timeout_s: Timeout = 30,
+                             expected_control: ControlGuard | None = None) -> CallToolResult:
+        """After take, reconnect a named profile and adapt each policy; keep ownership and remain paused. Never automatically retry."""
+        import shlex
+        return await manage('switch_backend', controller.submit, shlex.join(['backend', 'switch', profile]),
+            origin='mcp', mcp_tool='switch_backend', wait=wait, timeout_s=timeout_s,
+            expected_control=expected_control.model_dump() if expected_control is not None else None)
+
+    @server.tool(annotations=write)
+    async def retry_backend(wait: bool = False, timeout_s: Timeout = 30,
+                            expected_control: ControlGuard | None = None) -> CallToolResult:
+        """After take and an explicit retry request, finish pending cleanup and retry the failed backend connection."""
+        return await manage('retry_backend', controller.submit, 'backend retry',
+            origin='mcp', mcp_tool='retry_backend', wait=wait, timeout_s=timeout_s,
+            expected_control=expected_control.model_dump() if expected_control is not None else None)
+
+    @server.tool(annotations=read)
+    async def backend_profiles() -> CallToolResult:
+        """List named robot connection profiles without connecting, importing policies or taking control."""
+        return await query('backend list')
+
+    @server.tool(annotations=write)
     async def policy_chain(policies: list[StrictStr], action: Literal['apply', 'save'] = 'apply',
                            wait: bool = False, timeout_s: Timeout = 30,
                            expected_control: ControlGuard | None = None) -> CallToolResult:
@@ -393,7 +434,7 @@ def create_server(controller):
     @server.tool(annotations=write)
     async def retry_reload(instance_id: str, wait: bool = False, timeout_s: Timeout = 30,
                            expected_control: ControlGuard | None = None) -> CallToolResult:
-        """After take, cold-retry the exact failed instance reported by status.retry_reload_instance; keep MCP ownership."""
+        """After take, cold-retry one exact failed instance from status.retry_reload_instances (or legacy retry_reload_instance); preserve healthy instances and MCP ownership."""
         import shlex
         return await manage('retry_reload', controller.submit, shlex.join(['policy', instance_id, 'retry']),
                             origin='mcp', mcp_tool='retry_reload', wait=wait, timeout_s=timeout_s,
@@ -499,7 +540,8 @@ def create_server(controller):
 def create_app(controller, settings, *, server=None, preview=None, state_feed=None):
     server = server if server is not None else create_server(controller)
     preview = preview if preview is not None else WebPreview(
-        lambda: controller.robot.camera_preview_snapshot(), stopping=controller.done.is_set)
+        lambda: controller.robot.camera_preview_snapshot(), stopping=controller.done.is_set,
+        source_generation=lambda: getattr(getattr(controller, 'robot', None), 'generation', 0))
     state_feed = state_feed if state_feed is not None else WebState(
         controller.robot.read_state, run_id=controller.run_id, stopping=controller.done.is_set)
     mcp_app = server.streamable_http_app(stateless_http=True, json_response=True,
@@ -560,7 +602,8 @@ class MCPService:
         self.listener = self.server = self.thread = None
         self.closing = threading.Event()
         self.preview = WebPreview(lambda: controller.robot.camera_preview_snapshot(),
-                                  stopping=lambda: self.closing.is_set() or controller.done.is_set())
+                                  stopping=lambda: self.closing.is_set() or controller.done.is_set(),
+                                  source_generation=lambda: getattr(getattr(controller, 'robot', None), 'generation', 0))
         self.state_feed = WebState(controller.robot.read_state, run_id=controller.run_id,
                                    stopping=lambda: self.closing.is_set() or controller.done.is_set(),
                                    on_failure=self._state_failure)

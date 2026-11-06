@@ -6,6 +6,7 @@ import shlex
 # Each entry is (literal path, argument usage). One source for help/reservation/completion.
 COMMAND_TREE = (
     ('help', '[命令路径]'), ('status', ''), ('pause', ''), ('resume', ''), ('reset', ''), ('exit', ''),
+    ('backend list', ''), ('backend status', ''), ('backend switch', '<名称>'), ('backend retry', ''),
     ('config rc show', ''), ('config rc set', '<字段> <JSON>'), ('config rc save', ''),
     ('global show', '[key]'), ('global set', '<key> <JSON>'), ('global remove', '<key>'),
     ('pose save', '<名称>'), ('pose restore', '<名称或路径>'), ('snapshot', ''),
@@ -35,7 +36,8 @@ class Command:
 
     @property
     def readonly(self):
-        return self.kind in READ_KINDS or self.kind == 'record' and self.args == ('status',)
+        return (self.kind in READ_KINDS or self.kind == 'record' and self.args == ('status',)
+                or self.kind == 'backend' and self.args in (('list',), ('status',)))
 
     @property
     def local_only(self):
@@ -93,6 +95,9 @@ def parse_command(line: str) -> Command:
     head, args = words[0], words[1:]
     if head in ('status', 'pause', 'resume', 'reset', 'exit', 'snapshot') and not args:
         return Command(head)
+    if head == 'backend' and (args in (['list'], ['status'], ['retry']) or
+                              len(args) == 2 and args[0] == 'switch'):
+        return Command('backend', args=tuple(args))
     if head == 'help':
         if args and args[0] in ('mcp', 'policy'):
             raise ValueError(f'请使用 {args[0]} help')

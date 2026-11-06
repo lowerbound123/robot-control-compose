@@ -120,6 +120,21 @@ class ImagePool:
             self._latest[camera] = slot
             return True
 
+    def clear_latest(self):
+        """Start a new sensor epoch only after every old reader has acknowledged."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('image pool is closed')
+            if any(slot['leases'] for slots in self._slots.values() for slot in slots):
+                raise RuntimeError('image readers remain at backend boundary')
+            self._latest.clear()
+            for slots in self._slots.values():
+                for slot in slots:
+                    if slot['descriptor'] is not None:
+                        self._serial += 1
+                        slot['mapping'][:_HEADER.size] = _HEADER.pack(slot['size'], self._serial)
+                        slot['descriptor'] = None
+
     def acquire(self):
         with self._lock:
             if self._closed:

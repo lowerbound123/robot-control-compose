@@ -37,6 +37,8 @@ ros_ws/log/
 /rc*.yml
 /configs/rc*.yaml
 /configs/rc*.yml
+/configs/robots/*.yaml
+/configs/robots/*.yml
 /policy/*/policy.yaml
 /policy/*/policy.yml
 

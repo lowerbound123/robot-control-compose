@@ -118,7 +118,11 @@ export function validateDecision(value: unknown, snapshot: CapabilitySnapshot): 
         || (branch === 'switch' && (words.length === 3 || (words.length === 4 && words[3] === '--reset')))))
     if (!allowed) throw Error('请使用当前 RC 命令树；旧命令别名和未知路径不可执行。')
   }
-  if (call.name === 'retry_reload' && call.arguments.instance_id !== snapshot.status.retry_reload_instance) throw Error('请选择状态中明确列出的可重试实例。')
+  if (call.name === 'retry_reload') {
+    const retries = Array.isArray(snapshot.status.retry_reload_instances)
+      ? snapshot.status.retry_reload_instances : [snapshot.status.retry_reload_instance]
+    if (!retries.includes(call.arguments.instance_id)) throw Error('请选择状态中明确列出的可重试实例。')
+  }
   return decision
 }
 

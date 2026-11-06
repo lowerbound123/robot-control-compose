@@ -179,6 +179,26 @@ def mcp_management_checks(controller, report):
         all_reloaded = identities()
         assert all(all_reloaded[i]['container'] != retried[i]['container'] for i in retried)
         assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+        profiles = controller.root / 'robots'
+        profiles.mkdir(exist_ok=True)
+        (profiles / 'alternate.yaml').write_text(json.dumps({'backend': 'mock', 'initial_qpos': [.25]*14}))
+        call('policy_config', instance_id='example-0', action='set', key='execution.on_backend_switch', value_text='reset', wait=True)
+        backend_before = identities()
+        context_before = {i: context(i) for i in backend_before}
+        recorded_before = call('record', action='on', wait=True)['result']['session_id']
+        with patch.object(controller.runtime, 'runner', side_effect=AssertionError('backend switch replaced a policy container')):
+            call('switch_backend', profile='alternate', wait=True)
+        backend_after = identities()
+        context_after = {i: context(i) for i in backend_before}
+        assert backend_after['example-0'] == backend_before['example-0']
+        assert backend_after['example-1'] == {**backend_before['example-1'], 'version':backend_before['example-1']['version']+1}
+        assert context_after['example-0']['context_id'] == context_before['example-0']['context_id']
+        assert context_after['example-1']['context_id'] != context_before['example-1']['context_id']
+        assert all(abs(value-.25) < 1e-6 for value in controller.robot.read_state()['qpos'])
+        assert controller.status()['recording']['session_id'] != recorded_before
+        call('record', action='off', wait=True)
+        report['backend_switch'] = dict(before=backend_before, after=backend_after, status=controller.status()['backend'])
+        report['checks'].append('backend switch keeps per-instance containers/PIDs, mixes reset/reinitialize and splits recording')
         episode = call('return_and_wait', timeout_s=0)['operation_id']
         wait(lambda: controller.status()['state'] == 'running')
         epoch = controller._control_epoch

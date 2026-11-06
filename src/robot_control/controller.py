@@ -36,6 +36,7 @@ from .chain_management import ChainManagement
 from .policy_results import PolicyResultSupport
 from .global_state_control import GlobalStateControl
 from .recording_control import RecordingControl, RECORD_HELP
+from .backend_control import BackendControl
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from rc_policy_sdk.command_syntax import command_help
 from .human_commands import HumanCommandSupport
@@ -61,13 +62,13 @@ class ActionRequestSnapshot:
     cached: int
 
 
-class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberReloadSupport, PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl, RecordingControl):
+class RobotController(HumanCommandSupport, PolicyConfigurationSupport, BackendControl, MemberReloadSupport, PolicyCommandSupport, ChainManagement, PolicyResultSupport, GlobalStateControl, RecordingControl):
     def __init__(self, config_path, *, robot=None, process_factory=PolicyProcess, runtime_manager=None):
         self.config_path = Path(config_path).resolve()
         self.config = load_rc(self.config_path)
         self.root = self.config_path.parent
         self.registry = PolicyRegistry(self.root / self.config["policy_directory"])
-        self.robot = robot or make_robot(self.config)
+        self._init_backend(robot)
         self.process_factory = process_factory
         self.events = queue.Queue(maxsize=10000)
         self.done = threading.Event()
@@ -230,16 +231,20 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             words = shlex.split(line)
         except ValueError:
             return False
-        return (RobotController._is_global_read(words) or words in (["status"], ["policies"], ["record", "status"], ["show", "rc"], ["show", "policy"])
+        return (RobotController._is_global_read(words) or words in (["status"], ["policies"], ["backend", "list"], ["backend", "status"], ["record", "status"], ["show", "rc"], ["show", "policy"])
                 or bool(words and words[0] == 'help' and len(words) in (1, 2)))
 
     def _query(self, line):
+        if line.strip() == 'backend list':
+            return self.backend_profiles.list()
         with self._lock:
             words = shlex.split(line)
             if self._is_global_read(words):
                 return self._query_global(words)
             if words == ["status"]:
                 return self.status()
+            if words == ['backend', 'status']:
+                return self.backend_status()
             if words == ["policies"]:
                 return self.registry.list()
             if words and words[0] == 'help' and len(words) in (1, 2):
@@ -327,6 +332,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             if origin == "mcp" and not readonly and not recording and command not in ("take", "return"):
                 self._require_mcp()
             if origin == "mcp" and self._operation is not None and not readonly and not recording and command not in ("pause", "exit", "quit"):
+                if command != 'return' or self._operation['kind'] not in ('backend_switch', 'backend_member_retry'):
+                    raise RuntimeError(f"busy: {self._operation['kind']}")
+            if (self._operation is not None and self._operation['kind'] in ('backend_switch', 'backend_member_retry')
+                    and not readonly and not recording and command not in ('pause', 'return', 'take', 'exit', 'quit')):
                 raise RuntimeError(f"busy: {self._operation['kind']}")
             observer = None
             if origin == 'mcp' and not readonly:
@@ -340,6 +349,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
                 self._submit_recording(identity, words)
                 return identity
             if readonly:
+                if words == ['backend', 'list']:
+                    self._commands.put(ControlRequest(identity, command, origin, self._control_epoch))
+                    self._wake.set()
+                    return identity
                 try:
                     result = self._query_parsed(parsed) if parsed is not None else self.local_help(words[1] if len(words) == 2 else None) if local_help else self._query(command)
                     self.operations.update(identity, "succeeded", result=result)
@@ -387,6 +400,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             if words and words[0] in ('switch', 'take', 'exit', 'quit'):
                 self._invalidate_policy_editor()
             if command == "return":
+                if self._operation is not None and self._operation['kind'] in ('backend_switch', 'backend_member_retry'):
+                    self._operation['cancel'].set()
                 self._return_requested = True
                 self._return_operation = identity
             request = ControlRequest(identity, command, origin, self._control_epoch,
@@ -401,7 +416,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
         with self._lock:
             self._check_expected_control(expected_control)
             self._require_mcp()
-            if not self._connected or self._operation is not None or self._motion is not None or self._stop.is_set():
+            if self._backend_failures or not self._connected or self._operation is not None or self._motion is not None or self._stop.is_set():
                 raise RuntimeError("busy: robot connection or lifecycle operation")
             if self._publish_fault:
                 raise RuntimeError("command publication fault; repair the connection and reset or return before moving")
@@ -447,7 +462,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             if policy_wait and (
                     self._policy_wait is None or self._policy_wait['handoff_operation_id'] != identity):
                 return  # An earlier urgent intervention cancelled the reservation.
-            if request.origin == "mcp" and (request.policy_name is not None or request.line not in ("take", "return", "return_and_wait")):
+            if request.origin == "mcp" and not self.is_read_command(request.line) and (request.policy_name is not None or request.line not in ("take", "return", "return_and_wait")):
                 if (request.epoch != self._control_epoch
                         or request.generation is not None and request.generation != self.buffer.generation):
                     self.operations.update(identity, "cancelled", error="control ownership or generation changed")
@@ -461,6 +476,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             self._dispatch_id = identity
             self._dispatch_origin = request.origin
             if self._dispatch_human(request):
+                return
+            if request.backend_retry is not None:
+                self._dispatch_backend_member_retry(request)
                 return
             if request.config_edit is not None:
                 self._dispatch_configure(request)
@@ -513,9 +531,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
         with self._lock:
             record = self.registry.get(self._identity) if self._identity is not None else None
             retry = self._retry_candidate.member.instance_id if self._retry_candidate and self._operation is None else None
+            retries = list(self._backend_failures)
+            retry = retry or (retries[0] if retries and self._operation is None else None)
             last_request = self._last_action_request
             return {
                 "run_id": self.run_id,
+                "backend": self.backend_status(), "retry_reload_instances": retries or ([retry] if retry else []),
                 "state": self._state, "policy": self._identity,
                 "runtime": self.runtime.snapshot() if self.runtime else None,
                 "queue_remaining": len(self.buffer.remaining()),
@@ -592,7 +613,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
     def _operation_start(self, kind, *, wait_inflight=False, **payload):
         if self._operation is not None:
             raise RuntimeError("生命周期操作正在执行")
-        if kind in ("switch", "reload_member", "reset_context", "hot_patch", "configure", "unload", "shutdown"):
+        if kind in ("switch", "reload_member", "reset_context", "hot_patch", "configure", "unload", "shutdown", "backend_switch", "backend_member_retry"):
             self._gate_policy_commands(payload.get("worker", payload.get("old_worker", self._worker)))
         self._job_serial += 1
         self.policy_monitors.invalidate(payload['member'].instance_id if kind == 'reload_member' else None)
@@ -729,6 +750,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
         kind, cancel = job["kind"], job["cancel"]
         if kind == 'configure':
             return self._run_configure(job)
+        if kind == 'backend_list':
+            return {'profiles': self.backend_profiles.list()}
+        if kind == 'backend_switch':
+            return self._run_backend_switch(job)
+        if kind == 'backend_member_retry':
+            return self._run_backend_member_retry(job)
         if kind in ('chain_open', 'chain_save'):
             return self._run_chain_editor_job(job)
         if kind == 'save_member':
@@ -761,7 +788,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
                 except Exception as exc:
                     raise BlockedCleanup(f'startup recovery unconfirmed: {exc}') from exc
             self._start_globals(cancel)
-            self.robot.connect(cancel_event=cancel)
+            self._connect_initial_backend(job)
             return {"connected": True}
         if kind == "shutdown":
             deadline = self._cleanup_deadline()
@@ -794,7 +821,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             self._close_worker(job["worker"])
             return {}
         if kind == "close_robot":
-            self.robot.close()
+            self._close_backends()
             return {}
         if kind == "reset_context":
             job["worker"].reset_context(cancel_event=cancel)
@@ -950,7 +977,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             if job is None or result["id"] != job["id"]:
                 continue
             emit = self._emit_command if job.get('public_id') else self._emit
+            if result['type'] == 'backend_step':
+                self._handle_backend_step(result, job)
+                continue
             if result['type'] == 'switch_empty':
+                self._backend_failures.clear()
+                self._backend_members.clear()
                 if not job.get('committed'):
                     self._worker = self._identity = None
                 self._clear_finished_lease()
@@ -996,6 +1028,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
                 continue
             self._operation = None
             self._clear_finished_lease()
+            if job['kind'] in ('backend_switch', 'backend_list', 'backend_member_retry'):
+                self._finish_backend_job(job, result)
+                continue
             if job['kind'] in ('chain_open', 'chain_save', 'save_member'):
                 if result.get('error') or job['cancel'].is_set():
                     error = result.get('error', 'editor operation cancelled')
@@ -1192,7 +1227,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
                 if self._operation is None:
                     self._operation_start("unload", worker=request["worker"], preserve_state=True)
                 return
-            if self._operation is not None and self._operation["kind"] in ("switch", "reload_member") and self._operation.get("old_worker") is request["worker"]:
+            if self._operation is not None and self._operation["kind"] in ("switch", "reload_member", "backend_switch") and self._operation.get("old_worker") is request["worker"]:
                 if not self._operation.get('prepared'):
                     self._pause("switching")
                 self._emit(f"切换中的旧 policy 请求失败：{response.get('error', response)}", "warning")
@@ -1425,12 +1460,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             self._send_direct(self.limiter.commands(), self.robot.read_state())
 
     def _take(self):
-        if not self._connected or self._operation is not None or self._stop.is_set():
+        if self._operation is not None or self._stop.is_set():
             raise RuntimeError("busy: robot connection or lifecycle operation")
         if self.control_owner == "mcp":
             return self.status()
-        state = self.robot.read_state()
-        if self._publish_fault:
+        state = self.robot.read_state() if self._connected else None
+        if self._publish_fault and state is not None:
             self.limiter.reset(state["qpos"])
             self._publish_fault = False
         self._pause()
@@ -1439,7 +1474,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
         # A return accepted after this take was queued already revoked writes.
         # Processing an older take must not undo that revocation.
         self._return_requested = self._return_operation is not None
-        self.direct.targets = self.limiter.commands()
+        self.direct.targets = self.limiter.commands() if state is not None else {}
         self._emit_command("MCP 已接管；暂停新推理，保留模型")
         return self.status()
 
@@ -1461,7 +1496,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
         self.control_owner = "policy"
         self._control_epoch += 1
         self._pause("resuming", cancel_wait=False)
-        if self._retry_candidate is not None or self._worker is None or not getattr(self._worker, "runnable", self._worker.alive):
+        if self._backend_failures or not self._connected or self._retry_candidate is not None or self._worker is None or not getattr(self._worker, "runnable", self._worker.alive):
             self._return_requested = False
             self._state = "paused"
             raise ValueError("control returned, but no runnable policy; switch a policy first")
@@ -1524,6 +1559,11 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
             self._emit_command("退出清理期间只接受 exit", "warning")
             return
         words = shlex.split(line)
+        if words and words[0] == 'backend':
+            return self._backend_command(words[1:])
+        if self._backend_failures and words and words[0] in ('resume', 'reset', 'r', 'load', 'save'):
+            raise RuntimeError('请先冷重试失败的 policy 实例：' + ', '.join(self._backend_failures))
+        words = shlex.split(line)
         command, args = words[0], words[1:]
         if command == "help" and not args:
             self._emit_command(HELP)
@@ -1544,7 +1584,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, MemberRel
         elif command == "resume" and not args:
             if self.control_owner == "mcp":
                 raise PermissionError("MCP 持有控制权；请先使用 mcp return")
-            if self._retry_candidate is not None or self._worker is None or not getattr(self._worker, "runnable", self._worker.alive):
+            if not self._connected or self._retry_candidate is not None or self._worker is None or not getattr(self._worker, "runnable", self._worker.alive):
                 if self._retry_candidate:
                     raise ValueError(f"请先执行 policy {self._retry_candidate.member.instance_id} retry")
                 raise ValueError("没有可运行的 policy，请 switch")

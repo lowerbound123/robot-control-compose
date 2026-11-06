@@ -4,11 +4,13 @@ execution:
   mode: async
   call_every_actions: 1
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   model_config_path: model.json
 hot_reloadable:
 - execution.mode
 - execution.call_every_actions
+- execution.on_backend_switch
 tui_commands:
   switch-model:
     handler: switch_model

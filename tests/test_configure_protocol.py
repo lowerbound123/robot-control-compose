@@ -53,7 +53,7 @@ def configure(context, config, key, value, callback):
 
 
 @contextmanager
-def worker(tmp_path, source=POLICY):
+def worker(tmp_path, source=POLICY, *, backend_switch=False):
     (tmp_path / 'main.py').write_text(source)
     left, right = socket.socketpair()
     left.settimeout(3)
@@ -63,7 +63,7 @@ def worker(tmp_path, source=POLICY):
     def send(kind, **extras):
         send_message(left, dict(type=kind, operation_id=kind, config_version=1, context_id='old', **extras))
     try:
-        send('initialize', config=config, configure=True)
+        send('initialize', config=config, configure=True, backend_switch_v1=backend_switch)
         ready = receive_message(left)
         assert ready['type'] == 'ready'
         receive_message(left)
@@ -388,3 +388,49 @@ def test_candidate_must_roundtrip_without_changing_python_value_types(tmp_path):
     with worker(tmp_path, source) as (send, recv, ready, config):
         send('configure_prepare', key='amount', value='7')
         assert recv().get('error_type') == 'candidate_rejected'
+
+
+@pytest.mark.parametrize("source", [POLICY, POLICY.split("def configure(")[0]])
+def test_backend_capability_enables_context_handoff_without_manifest_effect(tmp_path, source):
+    with worker(tmp_path, source, backend_switch=True) as (send, recv, ready, config):
+        assert ready["backend_switch_v1"] is True
+        assert ready["configure"] is (source == POLICY)
+        send("reinit_validate", config=config, new_config_version=2)
+        assert recv()["type"] == "ack"
+        send("reinit_release")
+        assert recv()["type"] == "ack"
+
+
+def test_configure_capability_does_not_claim_unnegotiated_backend_switch(tmp_path):
+    with worker(tmp_path) as (_, _, ready, _):
+        assert ready["configure"] is True
+        assert ready["backend_switch_v1"] is False
+
+
+@pytest.mark.parametrize("value", ["unsupported", None, 1, True])
+def test_configure_rejects_invalid_backend_adaptation_before_apply(tmp_path, value):
+    source = POLICY.replace('config["execution"]["control_mode"] = value',
+                            'config["execution"]["on_backend_switch"] = ' + repr(value))
+    with worker(tmp_path, source, backend_switch=True) as (send, recv, _, _):
+        send("configure_prepare", key="mode", value="ignored")
+        error = recv()
+        assert error.get("error_type") == "candidate_rejected"
+        assert "on_backend_switch" in error["error"]
+        send("configure_abort")
+        assert recv()["type"] == "ack"
+
+
+def test_process_backend_and_configure_capabilities_share_context_failure_gate(tmp_path):
+    with process(tmp_path) as proc:
+        assert proc.supports_configure and proc.supports_backend_switch
+        assert proc.runnable
+        proc.revoke_context()
+        assert not proc.runnable
+        request = dict(request_id=1, generation=1, config_version=proc.config_version,
+                       state={}, action_chunk=[], images={})
+        with pytest.raises(RuntimeError, match="not ready"):
+            proc.submit(request)
+        assert proc.observe(request) is False
+        assert proc.submit_monitor(1) is False
+        with pytest.raises(RuntimeError, match="not ready"):
+            proc.reset_context()

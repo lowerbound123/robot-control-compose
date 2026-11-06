@@ -4,9 +4,11 @@ execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   model_config_path: model.json
-hot_reloadable: []
+hot_reloadable:
+- execution.on_backend_switch
 tui_commands:
   switch-model:
     handler: switch_model
@@ -18,6 +20,7 @@ tui_commands:
       kind: file
       suffixes:
       - .json
+    - str
     help: 验证本地 LeRobot checkpoint 配置并完整重载；成功后等待 resume
     timeout_s: 30
     effect: reload_policy

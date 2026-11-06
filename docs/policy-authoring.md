@@ -1,5 +1,7 @@
 # 策略作者规范
 
+SDK 0.14 增加公共热字段 `execution.on_backend_switch`，默认 `reinitialize_policy`，可选 `reset`。所有策略从初始化时建立可重绑定的context身份，不再需要声明重初始化命令才能参与backend切换。reset必须结束旧后台请求、清空旧机器人状态；release/initialize沿用旧绑定释放、新绑定初始化的语义。详见 [backend 热切换](backend-switching.md)。
+
 SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享内存，RC 统一提交写入，退出全量保存到 global.env。完整接口、并发与持久化约定见 [全局共享状态](global-state.md)。
 
 可直接运行的参考实现见 [example 策略](../policy/example/README.md)：Python 3.14、三种控制模式、动作透传、共享图片、观测/监控、热配置、实例冷重载、共享状态、pause/finish 及可选外部 reader。新增或修改公共能力时应一起更新 example 和真实 worker 的验收路径。

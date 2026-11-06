@@ -153,7 +153,8 @@ class ACOneRobot:
                 self._bindings = binding
                 self._context = binding.Context()
                 self._check_connect_cancel(cancel_event)
-                binding.rclpy.init(args=[], context=self._context, signal_handler_options=binding.signal_options)
+                binding.rclpy.init(args=[], context=self._context, signal_handler_options=binding.signal_options,
+                                   **({'domain_id': self.config['domain_id']} if 'domain_id' in self.config else {}))
                 self._check_connect_cancel(cancel_event)
                 self._node = binding.rclpy.create_node(
                     "robot_control_" + uuid.uuid4().hex[:8], context=self._context,

@@ -97,6 +97,7 @@ class PolicyProcess(MonitorClient):
         self.command_specs = command_specs(config)
         self._reinitialize_enabled = any(spec.get("effect") == "reinitialize_policy" for spec in self.command_specs.values())
         self.context_id = uuid.uuid4().hex
+        self.supports_backend_switch = False
         self._context_enabled = True
         self._reinitializing = False
         self.release_dispatched = False
@@ -123,7 +124,7 @@ class PolicyProcess(MonitorClient):
     def has_readers(self): return self._submitted_load and not self.cleanup_confirmed
 
     @property
-    def runnable(self): return self._state == 'running' and not self._failure and not self._configure_failed and not self.cleanup_confirmed
+    def runnable(self): return self._state == 'running' and self._context_enabled and not self._failure and not self._configure_failed and not self.cleanup_confirmed
 
     @property
     def alive(self): return self.has_readers
@@ -179,6 +180,7 @@ class PolicyProcess(MonitorClient):
                     raise RuntimeError('host restarted after readiness; stale endpoint')
                 if self._reinitialize_enabled and not getattr(self.host, "reinitialize_policy", False):
                     raise RuntimeError("policy host lacks reinitialize_policy capability; upgrade rc-policy-sdk")
+                self._reinitialize_enabled = self._reinitialize_enabled or getattr(self.host, 'backend_switch_v1', False)
                 self.host.register(self)
                 self.host.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
                 self._submitted_load = True
@@ -189,7 +191,8 @@ class PolicyProcess(MonitorClient):
                     event=dict(type='initialize',config=self.config,config_version=self.config_version,
                                tui_command_effects_v2=list(COMMAND_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
                                global_state=global_descriptor, context_id=self.context_id,
-                               configure=getattr(self.host, 'configure', False)))
+                               configure=getattr(self.host, 'configure', False),
+                               backend_switch_v1=getattr(self.host, 'backend_switch_v1', False)))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
             with self._condition:
@@ -228,6 +231,7 @@ class PolicyProcess(MonitorClient):
             self.runtime_id = packet['runtime_id']
             message = packet['event']; kind = message['type']
             if kind == 'ready':
+                self.supports_backend_switch = message.get('backend_switch_v1') is True and getattr(self.host, 'backend_switch_v1', False)
                 if message.get('global_state_version') not in (None, 1):
                     self._record_failure('incompatible global state protocol'); return
                 self.supports_monitor = message.get('monitor') is True
@@ -376,7 +380,7 @@ class PolicyProcess(MonitorClient):
         chunk = normalize_actions(request["action_chunk"], mode, allow_empty=True)
         request = {**request, "action_chunk": chunk.payload(mode)}
         with self._condition:
-            if self._state != "running" or self._failure:
+            if not self.runnable:
                 raise RuntimeError(self._failure or "policy process is not ready")
             if self._inflight is not None or self._pending_operation or self._reinitializing or self._configure_fenced:
                 raise RuntimeError("policy already has an operation in flight")
@@ -393,7 +397,7 @@ class PolicyProcess(MonitorClient):
 
     def observe(self, request):
         with self._condition:
-            if self._state != 'running' or self._failure or self._pending_operation or self._reinitializing or self._configure_fenced or self._observation is not None:
+            if not self.runnable or self._pending_operation or self._reinitializing or self._configure_fenced or self._observation is not None:
                 return False
             self._enqueue({**request, 'type':'observe'})
             self._observation = {k:request[k] for k in ('request_id', 'generation', 'config_version')}
@@ -423,7 +427,7 @@ class PolicyProcess(MonitorClient):
 
     def submit_monitor(self, epoch):
         with self._condition:
-            if self._configure_fenced:
+            if self._configure_fenced or not self.runnable:
                 return False
             return super().submit_monitor(epoch)
 
@@ -587,7 +591,7 @@ class PolicyProcess(MonitorClient):
             with self._condition:
                 if self._configure_fenced:
                     raise RuntimeError('configure transaction blocks legacy lifecycle operations')
-                if self._state != "running" or self._failure:
+                if not self.runnable:
                     raise RuntimeError(self._failure or "policy process is not ready")
                 if self._inflight is not None:
                     raise RuntimeError("cannot update/reset while inference is in flight")
@@ -745,7 +749,7 @@ class PolicyProcess(MonitorClient):
 
     def submit_command(self, identity, name, args):
         with self._condition:
-            if (self._state != "running" or self._failure or self._pending_operation
+            if (not self.runnable or self._pending_operation
                     or self._commands_blocked or self._command_fatal):
                 raise RuntimeError("busy: policy is not accepting commands")
             if not self.supports_commands or name not in self.command_specs:

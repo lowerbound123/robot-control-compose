@@ -323,7 +323,8 @@ class RobotControlApp(App):
         self.settings = tui_settings(getattr(controller, "config", {}).get("tui"))
         self.graphics = graphics if graphics is not None else GraphicsSupport(
             self.settings["camera"]["protocol"], error="终端图像能力尚未初始化，请通过 robot-control 启动")
-        self.preview = LivePreview(self._camera_source, self._monitor_source, prepare_frame, self.graphics.protocol)
+        self.preview = LivePreview(self._camera_source, self._monitor_source, prepare_frame, self.graphics.protocol,
+                                   source_generation=lambda: getattr(getattr(controller, 'robot', None), 'generation', 0))
         self.router.panel_handler = self._set_panel
         self.router.policy_manager_handler = self._manage_panel
         self._editor_pending = None

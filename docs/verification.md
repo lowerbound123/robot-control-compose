@@ -30,6 +30,19 @@
 
 证据：`/tmp/rc-pose-example.log`、`/tmp/rc-pose-backend-final.log`、`/tmp/rc-pose-vitest-final.log`、`/tmp/rc-pose-e2e-final.log`、`/tmp/rc-pose-history-benchmark.json`，截图与频率数据位于 `/tmp/rc-pose-e2e-final/`。单智能体实施与自审；未启动 Docker 部署、ROS、真实模型或硬件。
 
+## Backend 热切换（2026-11-06）
+
+RC/SDK 0.14，manifest 保持 schema 3。覆盖命名连接、默认原进程重初始化、可热改 reset、重复实例混合处理、多失败实例定向冷重试、MCP控制权与取消、图像代次隔离及录制分会话。操作说明见 [backend 热切换](backend-switching.md)。
+
+- 公共接口完整回归：隔离 Linux / Python 3.10 / ROS Humble 环境运行 `python3 scripts/test_scope.py --interface`，**1387 passed、83 skipped**（525.59s）；日志 `/tmp/rc-backend-linux-final.log`。13条警告均来自既有 Pillow/Sixel 弃用提示。Python 3.10 的 Future 超时异常与 builtin TimeoutError 不同，修正了对应调度测试的捕获类型，没有修改模型调度实现。
+- 宿主阶段完整回归：Python 3.11，**1583 passed、66 skipped**（601.52s），日志 `/tmp/rc-backend-interface-final.log`；最终图像/MCP补强专项 **34 passed**，日志 `/tmp/rc-backend-final-review-green.log`。
+- 真实 ROS 传输专项：**2 passed**（8.34s），日志 `/tmp/rc-backend-ros.log`。隔离容器内运行两个不同 ROS 域的测试模拟器，反复切换 Mock→ROS→Mock及不同命名ROS配置；核对 policy 进程保留、reset context保留、重初始化context更新和旧ROS线程退出。未接入硬件。
+- 真实 Docker 验收：`tests/example_docker_smoke.py` **8项检查通过**，RC Python 3.10.12，两个独立 example 容器 Python 3.14.9。混合reset/reinitialize保持CID、host身份和PID，版本/context按实例变化，录制自动分会话。证据 `/tmp/rc-backend-docker-final/result.json`；`cleanup.json`确认本次容器和卷已移除。既有丢失create回执故障注入触发的强制清理退出码1按预期保留，验收脚本退出0。
+- WebUI：**158项单测通过、生产构建通过、Chromium 35项验收通过**（2.1m）。日志 `/tmp/rc-backend-web-unit.log`、`/tmp/rc-backend-web-build.log`、`/tmp/rc-backend-web-e2e.log`。使用专用mock服务、测试凭证和已有浏览器缓存。
+- 最后对录制内部缓存补充修正，确保自动新会话独立保存globals基线，不改变policy可见接口。修正后按RC范围运行 `python3 scripts/test_scope.py`：**78 passed、1 skipped**（66.50s）；全部backend与录制相关用例：**97 passed、1 skipped**（42.52s）。日志 `/tmp/rc-backend-final-rc-scope.log`、`/tmp/rc-backend-final-recording.log`。
+
+没有启动真实模型或厂商硬件驱动；GPU权重保留、实际模型切换表现和硬件命令中断后的保持/看门狗行为仍需现场验收。所有跳过项不计通过。旧测试镜像缺YAML依赖、浏览器初次缺运行路径/缓存及验收HTTP默认等待不足的失败尝试均不计通过；最终验证使用完整依赖环境，HTTP测试客户端等待长于服务端生命周期等待。
+
 ## Qwen3.5 视觉历史策略（2026-11-06）
 
 新增独立 `qwen35_history`，使用现有每动作回调、消费计数和生命周期，不修改RC/SDK接口或旧Qwen。实现及部署边界见 [策略说明](qwen35-history-policy.md)。

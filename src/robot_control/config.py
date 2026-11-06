@@ -77,8 +77,10 @@ def _validate_rc(config):
     hz = config.get("frequency_hz", 30)
     if isinstance(hz, bool) or not isinstance(hz, (int, float)) or not math.isfinite(hz) or hz <= 0:
         raise ValueError("frequency_hz 必须为有限正数")
-    if config.get("robot", {}).get("backend") not in {"mock", "acone"}:
-        raise ValueError("robot.backend 必须为 mock 或 acone")
+    from .backend_profiles import validate_robot
+    validate_robot(config.get('robot'), selector=True)
+    if 'robot_profiles_directory' in config and (not isinstance(config['robot_profiles_directory'], str) or not config['robot_profiles_directory']):
+        raise ValueError('robot_profiles_directory must be a nonempty path')
     from .safety import finite_qpos, ModeLimiter
     from .direct import control_settings
     from .mcp_config import mcp_settings

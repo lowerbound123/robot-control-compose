@@ -4,6 +4,7 @@ execution:
   mode: sync
   call_every_actions: 2
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   chunk_size: 50
 hot_reloadable:
@@ -33,3 +34,4 @@ config_hints:
     execution.tui_command_workers:
       type: int
       help: 命令执行线程数；修改后重新初始化并暂停
+- execution.on_backend_switch

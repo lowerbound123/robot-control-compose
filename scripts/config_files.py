@@ -59,6 +59,10 @@ def configuration_updates(root):
     from robot_control.yaml_config import load_yaml_config, render_yaml_config, strict_equal
     root = Path(root).resolve()
     mains = main_config_targets(root)  # Reject legacy main files before preparing any changes.
+    profile_dir = root / 'configs/robots'
+    for template in sorted(profile_dir.glob('*.yaml.example')):
+        target = template.with_suffix('')
+        mains.append((target, template if not target.exists() else None))
     files = [*(root / 'configs').rglob('*.json*'), *(root / 'policy').rglob('*.json*')]
     business = sorted({p.with_suffix('') if p.name.endswith('.json.example') else p
                        for p in files if p.name.endswith(('.json', '.json.example'))
@@ -72,7 +76,20 @@ def configuration_updates(root):
         current = read(target) if target.exists() else None
         template = template if template is not None and template.is_file() else None
         default = read(template) if template is not None else None
+        if (isinstance(current, dict) and isinstance(default, dict) and
+                isinstance(current.get('robot'), dict) and isinstance(default.get('robot'), dict) and
+                ('profile' in current['robot']) != ('profile' in default['robot'])):
+            default = copy.deepcopy(default)
+            default['robot'] = copy.deepcopy(current['robot'])
         value = merge_json(default, current, str(target.relative_to(root))) if current is not None and default is not None else (current if current is not None else default)
+        if (target.name == 'policy.yaml' and isinstance(value, dict) and
+                isinstance(value.get('execution'), dict) and value.get('kind') != 'chain'):
+            value = copy.deepcopy(value)
+            value['execution'].setdefault('on_backend_switch', 'reinitialize_policy')
+            if isinstance(value.get('hot_reloadable', []), list):
+                paths = value.setdefault('hot_reloadable', [])
+                if 'execution.on_backend_switch' not in paths:
+                    paths.append('execution.on_backend_switch')
         documents[target.relative_to(root).as_posix()] = value
         if not strict_equal(current, value):
             content = (render_yaml_config(target, value, template=template) if yaml else
