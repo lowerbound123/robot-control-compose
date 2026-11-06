@@ -97,7 +97,7 @@ class ConnectorRobot:
                 raise ValueError('connector image_size requires two positive integers')
         if not (self.directory / 'main.py').is_file():
             raise ValueError('connector source main.py is missing')
-        deadline = deadline or time.monotonic() + float(config.get('connect_timeout_s', 10)) + 5
+        deadline = deadline if deadline is not None else time.monotonic() + float(config.get('connect_timeout_s', 10)) + 5
         if cancel_event.is_set() or time.monotonic() >= deadline:
             raise TimeoutError('connector preparation cancelled or timed out')
         if self.runtime is not None:
@@ -111,7 +111,8 @@ class ConnectorRobot:
         if self.closed or self._stop.is_set(): raise RuntimeError('robot is closed')
         if not self._prepared:
             self.prepare(cancel_event, deadline=deadline)
-        deadline = min(deadline or float('inf'), time.monotonic() + float(self.config.get('connect_timeout_s', 10)) + 5)
+        deadline = min(deadline if deadline is not None else float('inf'), time.monotonic() + float(self.config.get('connect_timeout_s', 10)) + 5)
+        self._check_startup(deadline, cancel_event)
         if self.runtime is not None:
             try:
                 self.handle = self.runtime.start_connector(self.instance_id, self.directory, self.config, cancel_event, deadline, prepared=self._prepared_spec)
@@ -135,51 +136,64 @@ class ConnectorRobot:
                 if self.process is not None and self.process.poll() is not None:
                     raise RuntimeError('connector process exited before connecting')
                 time.sleep(.01)
-            self.client = ConnectorClient(endpoint, wake=lambda: self.wake())
+            self.client = ConnectorClient(endpoint, wake=lambda: self.wake(), deadline=deadline, cancel_event=cancel_event)
             if self.client.info['instance_id'] != self.instance_id:
                 raise RuntimeError('connector instance mismatch')
             if self.runtime is not None:
                 self.runtime.connector_ready(self.handle, self.client.info)
-            self._sample()
+            self._sample(deadline=deadline, cancel_event=cancel_event)
             self.read_state()
+            self._check_startup(deadline, cancel_event)
             self._sampler = threading.Thread(target=self._collect, name='rc-connector-cache', daemon=True)
             self._sampler.start()
         except BaseException:
             self.close(deadline=deadline)
             raise
 
-    def _sample(self):
+    @staticmethod
+    def _check_startup(deadline, cancel_event):
+        if ((deadline is not None and time.monotonic() >= deadline)
+                or (cancel_event is not None and cancel_event.is_set())):
+            raise TimeoutError('connector startup cancelled or deadline exceeded')
+
+    def _sample(self, *, deadline=None, cancel_event=None):
         with self._lock:
             since = {arm: rows[-1]['seq'] if rows else 0 for arm, rows in self._history.items()}
             images = self._image_requested
             self._image_requested = False
-        result = self.client.get_state(since)
-        now = time.monotonic()
-        with self._lock:
-            self._state, self._state_error, self._state_received = result['state'], result['state_error'], now
-            self._feedback_errors = result.get('feedback_errors', {})
-            for arm, rows in result.get('history', {}).items():
-                if result.get('gaps', {}).get(arm): self._history[arm].clear()
-                self._history[arm].extend(rows)
-        if not images: return
+        state = self.client.get_state(since, deadline=deadline, cancel_event=cancel_event)
+        received = time.monotonic()
+        self._check_startup(deadline, cancel_event)
         cameras = tuple(self.config.get('camera_topics', {'head': '', 'left_wrist': '', 'right_wrist': ''}))
-        if not cameras: return
-        result = self.client.get_images(cameras)
-        lease = result['lease_id']
-        try:
-            copied = {}
-            if result['images']:
-                with map_images(result['images']) as frames:
-                    for name in frames:
-                        pixels = frames[name].copy()
-                        pixels.flags.writeable = False
-                        copied[name] = {**result['metadata'][name], 'image': pixels}
-            with self._lock:
+        copied = None
+        if images and cameras:
+            result = self.client.get_images(cameras, deadline=deadline, cancel_event=cancel_event)
+            lease = result['lease_id']
+            try:
+                copied = {}
+                if result['images']:
+                    with map_images(result['images']) as frames:
+                        for name in frames:
+                            self._check_startup(deadline, cancel_event)
+                            pixels = frames[name].copy()
+                            pixels.flags.writeable = False
+                            copied[name] = {**result['metadata'][name], 'image': pixels}
+            finally:
+                # Cancellation still permits releasing a known lease, within
+                # the original deadline. No acknowledgement means no proof.
+                if lease is not None: self.client.release_images([lease], deadline=deadline)
+        self._check_startup(deadline, cancel_event)
+        with self._lock:
+            self._check_startup(deadline, cancel_event)
+            self._state, self._state_error, self._state_received = state['state'], state['state_error'], received
+            self._feedback_errors = state.get('feedback_errors', {})
+            for arm, rows in state.get('history', {}).items():
+                if state.get('gaps', {}).get(arm): self._history[arm].clear()
+                self._history[arm].extend(rows)
+            if copied is not None:
                 self._frames.update(copied)
                 self._images_checked_at = time.monotonic()
                 self._images_generation += 1
-        finally:
-            if lease is not None: self.client.release_images([lease])
 
     def _collect(self):
         while not self._stop.wait(min(.01, 1 / self.rc_config.get('frequency_hz', 30))):
@@ -303,7 +317,7 @@ class ConnectorRobot:
 
     def close(self, *, deadline=None):
         if self.closed: return
-        deadline = deadline or time.monotonic() + 5
+        deadline = deadline if deadline is not None else time.monotonic() + 5
         soft_deadline = deadline - min(.25, max(0, deadline - time.monotonic()) / 4)
         self._stop.set()
         failures = []

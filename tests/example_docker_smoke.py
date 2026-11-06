@@ -31,7 +31,7 @@ def wait(predicate, timeout=45):
     raise AssertionError("example acceptance condition timed out")
 
 
-def mcp_management_checks(controller, report):
+def mcp_management_checks(controller, report, connector_checkpoint):
     import httpx2
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
@@ -49,8 +49,11 @@ def mcp_management_checks(controller, report):
                     await session.initialize()
                     return await session.call_tool(name, arguments)
     def call(name, *, fail=False, **arguments):
+        connector_checkpoint('before MCP ' + name)
         reply = asyncio.run(request(name, arguments))
         assert reply.is_error == fail, reply
+        if name != 'switch_backend':
+            connector_checkpoint('after MCP ' + name)
         return reply.structured_content
     def identities():
         return {name: dict(container=w.endpoint.container_id, host=w.host.instance_id,
@@ -193,6 +196,7 @@ def mcp_management_checks(controller, report):
         call('switch_backend', profile='alternate', wait=True)
         new_connector_cid = controller.robot.raw.handle.container_id
         assert old_connector.closed and new_connector_cid != old_connector_cid
+        connector_checkpoint('explicit backend switch', replaced=True)
         backend_after = identities()
         context_after = {i: context(i) for i in backend_before}
         assert backend_after['example-0'] == backend_before['example-0']
@@ -295,10 +299,12 @@ def in_container():
         name.removeprefix("monitor-"), desired)
 
     def command(line, expected='succeeded'):
+        connector_checkpoint('before ' + line)
         identity = controller.submit_control(line) if line in ("take", "return") else router.submit(line)
         result = wait(lambda: (value if value["status"] in ("succeeded", "failed", "cancelled") else None)
                       if (value := controller.get_operation(identity)) else None)
         assert result["status"] == expected, result
+        connector_checkpoint("after " + line)
         return result.get("result")
 
     def containers():
@@ -312,6 +318,20 @@ def in_container():
 
     connector_identity = None
     same_connector = False
+    report['connector_lifecycle'] = {'ordinary_checkpoints': 0, 'transitions': []}
+
+    def connector_checkpoint(label, *, replaced=False):
+        nonlocal connector_identity
+        actual = (controller.robot.raw.handle.container_id, controller.robot.raw.client.info['runtime_id'])
+        if replaced:
+            assert connector_identity is not None and all(a != b for a, b in zip(actual, connector_identity)), (label, connector_identity, actual)
+            report['connector_lifecycle']['transitions'].append(dict(
+                operation=label, before=connector_identity, after=actual))
+            connector_identity = actual
+        else:
+            assert actual == connector_identity, (label, connector_identity, actual)
+            report['connector_lifecycle']['ordinary_checkpoints'] += 1
+
     controller.start()
     try:
         wait(lambda: controller._connected and controller._operation is None)
@@ -500,13 +520,15 @@ def in_container():
         status = controller.status()
         assert status["state"] == "paused" and status["control_owner"] == "mcp" and status["queue_remaining"] == 0
         report["checks"].append("instance globals, member and group reload identities, source save, cell 2 finish and MCP handback")
-        mcp_management_checks(controller, report)
+        mcp_management_checks(controller, report, connector_checkpoint)
     except BaseException:
         print(json.dumps(controller.read_events(), ensure_ascii=False, default=str), flush=True)
         raise
     finally:
         if connector_identity is not None:
-            same_connector = (controller.robot.handle.container_id, controller.robot.client.info['runtime_id']) == connector_identity
+            final_connector = (controller.robot.raw.handle.container_id, controller.robot.raw.client.info['runtime_id'])
+            same_connector = final_connector == connector_identity
+            report['connector_lifecycle'].update(final_expected=connector_identity, final_actual=final_connector)
         router.close()
         controller.submit("exit")
         assert controller.done.wait(30), controller.status()
