@@ -1,5 +1,17 @@
 # Schema 3 动态策略容器验收
 
+## Qwen3.5 视觉历史策略（2026-11-06）
+
+新增独立 `qwen35_history`，使用现有每动作回调、消费计数和生命周期，不修改RC/SDK接口或旧Qwen。实现及部署边界见 [策略说明](qwen35-history-policy.md)。
+
+- 完整所选范围 `python3 scripts/test_scope.py --policy qwen35_history`：**120 passed、13 skipped**，55.88秒。包含example基线、同步/异步X步调度、历史、正式入口、真实本地host/worker与POSIX图像租约、任务热改和实例冷重载。宿主没有Torch/Transformers，11个CPU后端用例和1个图测试模块在这里跳过；另1项需要ROS。
+- 独立Python3.11 / Torch2.10 / torchvision0.25 / Transformers5.2 CPU环境：后端、图回退、调度、配置和部署静态套件 **53 passed、1 skipped**，2.43秒。覆盖实际张量处理、三路输入、历史量化、32↔14维映射、delta/abs与quantile归一化、FP32专家投影、Euler更新、非有限图差异回退及源补丁delta-rule数值。唯一跳过项为真实NVIDIA CUDA捕获回放。
+- 两个自审回归先失败再修复：checkpoint loader隐式依赖`packaging.version`导入顺序；prefix graph接受NaN参考差值。新补丁的三处CPU零张量分配改为在输入设备分配，meta设备测试先失败后通过，手算递推数值保持一致。
+- 实际`dagger_clean_win`的config/train_config在本地成功反序列化，远端统计字段核对为左右各6+1维。只读取元数据，没有加载真实权重。
+- 新增Python文件语法检查、来源SHA-256校验及`git diff --check`通过；RC、SDK、旧Qwen包/vendor/manifest/依赖锁的diff为空。本轮单智能体实施与自审，未构建或运行Docker、GPU模型、ROS或机器人硬件；跳过不计通过。
+
+证据：`/tmp/qwen35-history-scope-final.log`、`/tmp/qwen35-history-cpu-final.log`、`/tmp/qwen35-history-review-red.log`、`/tmp/qwen35-history-review-green.log`、`/tmp/qwen35-history-graphs-red.log`、`/tmp/qwen35-history-graphs-green.log`。
+
 ## 按改动选择测试
 
 在已安装 RC 与测试依赖的 Python 环境中，从仓库根目录运行。入口会为测试及其子进程设置当前仓库的源码路径；不安装依赖、不构建模型镜像。范围由改动的实际语义决定，不用文件名推断接口是否改变。
@@ -7,7 +19,7 @@
 | 改动 | 命令 | 验证范围 |
 | --- | --- | --- |
 | RC 内部、TUI、录制等改动，策略看到的契约不变；或只改 example | `python3 scripts/test_scope.py` | 运行完整 example 基线；具体模块改动另补对应 RC 单测。链只启动两个 example，其他业务策略不参与。 |
-| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage、internvla_maas；可同时列多个来源。 |
+| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage、qwen35_history、internvla_maas；可同时列多个来源。 |
 | 两个策略共用的实现或依赖变化 | 例如 `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage` | 单选 Qwen 测该入口、部署和 worker；两个都选时再加共享配置、调度、后端和 CUDA 用例。变更 llm-provider-config 时选 llm_direction 和 llm_failure。 |
 | RC↔policy/SDK 公共契约改变 | `python3 scripts/test_scope.py --interface` | 整个 pytest 套件，含 RC、SDK、example、业务策略和跨策略对照；按所需环境追加 Docker/模型兼容性验证。 |
 

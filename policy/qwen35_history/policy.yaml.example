@@ -1,0 +1,24 @@
+schema_version: 3
+id: qwen35_history
+execution:
+  mode: sync # RC回调边界；模型流水线由model.json execution.pipelined选择
+  call_every_actions: 1
+  control_mode: qpos
+params:
+  model_config_path: model.json
+  task: null
+hot_reloadable:
+  - params.task
+tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [str]
+    help: 热更新任务并清空历史和旧动作，保留已加载模型
+    effect: update_config
+    timeout_s: 5
+  switch-model:
+    handler: switch_model
+    args: [str]
+    help: 验证配置后冷重载当前实例；完成后等待resume
+    effect: reload_policy
+    timeout_s: 30
