@@ -53,6 +53,34 @@ def release(context):
         thread.join(2)
 
 
+def test_backend_switch_can_reinitialize_without_declared_commands(tmp_path):
+    (tmp_path / 'main.py').write_text('''
+def initialize(config): return object()
+def policy(context, state, action_chunk, images, config): return [[0]*14]
+def reset_context(context): pass
+def release(context): pass
+''')
+    left, right = socket.socketpair()
+    left.settimeout(2)
+    thread = threading.Thread(target=run_session, args=(right, tmp_path, 'backend_reinit'))
+    thread.start()
+    try:
+        send_message(left, dict(type='initialize', config={}, config_version=1,
+                               context_id='old', backend_switch_v1=True))
+        ready = receive_message(left)
+        assert ready.get('backend_switch_v1') is True
+        receive_message(left)
+        send_message(left, dict(type='reinit_release', operation_id='r', config_version=1, context_id='old'))
+        assert receive_message(left)['type'] == 'ack'
+        send_message(left, dict(type='reinit_initialize', operation_id='i', config_version=2,
+                               context_id='new', config={}))
+        assert receive_message(left)['type'] == 'ack'
+    finally:
+        send_message(left, {'type': 'shutdown'})
+        left.close()
+        thread.join(2)
+
+
 def test_runtime_old_context_cannot_access_new_resources():
     import pytest
     from rc_policy_sdk.runtime import PolicyRuntime

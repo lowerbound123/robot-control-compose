@@ -1,0 +1,17 @@
+backend: acone
+namespace: /robot_control_test
+feedback_left_topic: /robot_control_test/feedback/left
+feedback_right_topic: /robot_control_test/feedback/right
+command_left_topic: /robot_control_test/command/left
+command_right_topic: /robot_control_test/command/right
+camera_topics:
+  head: /robot_control_test/camera/head/compressed
+  left_wrist: /robot_control_test/camera/left_wrist/compressed
+  right_wrist: /robot_control_test/camera/right_wrist/compressed
+feedback_timeout_s: 2
+camera_timeout_s: 2
+connect_timeout_s: 10
+close_timeout_s: 2
+feedback_message_type: robot_control_test_msgs/msg/ArmState
+command_message_type: robot_control_test_msgs/msg/ArmCommand
+domain_id: 83

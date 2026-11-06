@@ -33,6 +33,31 @@ class CameraSource:
 
 
 @pytest.mark.asyncio
+async def test_backend_generation_rejects_old_encoding_and_cached_frame():
+    from robot_control.web_preview import WebPreview
+    source, epoch = CameraSource(), [1]
+    entered, go = threading.Event(), threading.Event()
+    def encode(pixels):
+        value = int(pixels[0, 0, 0])
+        if value == 90:
+            entered.set()
+            assert go.wait(3)
+        return bytes([value])
+    preview = WebPreview(source, encoder=encode, source_generation=lambda: epoch[0])
+    reader = preview.subscribe('head')
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        epoch[0] = 2
+        source.image = np.full((8, 8, 3), 100, dtype=np.uint8)
+        source.advance()
+        go.set()
+        frame = await asyncio.wait_for(reader.next_frame(), 2)
+        assert frame.jpeg == bytes([100])
+    finally:
+        go.set(); reader.close(); preview.close(time.monotonic() + 1)
+
+
+@pytest.mark.asyncio
 async def test_preview_shares_one_encoding_and_does_no_work_without_subscribers():
     from robot_control.web_preview import WebPreview
     source = CameraSource()

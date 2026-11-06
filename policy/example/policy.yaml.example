@@ -4,6 +4,7 @@ execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   message: example
   log_every_n_calls: 100
@@ -11,9 +12,10 @@ params:
   inference_delay_s: 0.0  # 显式模拟慢推理，便于观察 sync / async 的缓存消费
   reader_url: ''      # 选填：能与 RC 共享 POSIX IPC 的演示 reader，默认不联网
 hot_reloadable:
-  - params.message
-  - params.log_every_n_calls
-  - params.inference_delay_s
+- params.message
+- params.log_every_n_calls
+- params.inference_delay_s
+- execution.on_backend_switch
 tui_commands:
   set-message:
     handler: set_message

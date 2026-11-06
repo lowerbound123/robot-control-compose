@@ -4,13 +4,15 @@ execution:
   mode: async
   call_every_actions: 1
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   check_every_steps: 60
   history_size: 5
   image_max_side: 1024
   jpeg_quality: 85
   provider_config_path: provider.yaml
-hot_reloadable: []
+hot_reloadable:
+- execution.on_backend_switch
 tui_commands:
   switch-provider:
     handler: switch_provider

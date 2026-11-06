@@ -106,7 +106,11 @@ export function validateDecision(value: unknown, snapshot: CapabilitySnapshot): 
     if (['mcp', 'camera', 'monitor', 'manage-policy', 'snapshot'].includes(word) || word.startsWith('monitor-')) throw Error('本地面板和递归 MCP 命令不可由 AI 执行。')
     if (line.length > 4000 || /[\r\n]/.test(line)) throw Error('一次只能提交一条 RC 命令。')
   }
-  if (call.name === 'retry_reload' && call.arguments.instance_id !== snapshot.status.retry_reload_instance) throw Error('请选择状态中明确列出的可重试实例。')
+  if (call.name === 'retry_reload') {
+    const retries = Array.isArray(snapshot.status.retry_reload_instances)
+      ? snapshot.status.retry_reload_instances : [snapshot.status.retry_reload_instance]
+    if (!retries.includes(call.arguments.instance_id)) throw Error('请选择状态中明确列出的可重试实例。')
+  }
   return decision
 }
 

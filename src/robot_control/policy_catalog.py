@@ -27,6 +27,7 @@ def read_descriptor(directory):
     config = copy.deepcopy(config)
     config['id'] = identity
     if config.get('kind') != 'chain':
+        config['execution'].setdefault('on_backend_switch', 'reinitialize_policy')
         for name in ('main.py', 'compose.yaml'):
             if not (directory / name).is_file():
                 raise ValueError(f'{identity}: missing {name}')

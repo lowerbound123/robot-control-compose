@@ -10,6 +10,7 @@ RECORD_HELP = 'record：切换录制；record on/off：开始/停止；record st
 class RecordingControl:
     def _init_recording(self):
         self._record_global_version = None
+        self._record_requested = False
         self._recorder = RecordingService(self.outputs/'logs', self.run_id, self._record_snapshot,
             on_error=self._record_error, stop_timeout=self.config.get('timeouts', {}).get('release_s', 30))
         if hasattr(self.robot, 'set_command_observer'):
@@ -42,6 +43,7 @@ class RecordingControl:
             record = self.registry.get(self._identity) if self._identity else None
             members = record.members if record and record.is_chain else (record,) if record else ()
             data = {'run_id':self.run_id, 'timestamp_ns':time.time_ns(),
+                    'backend': self.backend_status(),
                     'rc':self.config, 'policy':self._identity,
                     'generation':self.buffer.generation, 'control_epoch':self._control_epoch,
                     'control_owner':self.control_owner,
@@ -65,6 +67,14 @@ class RecordingControl:
             if len(words) > 2:
                 raise ValueError(RECORD_HELP)
             action = words[1] if len(words) == 2 else 'toggle'
+            if action in ('toggle', 'on', 'off'):
+                self._record_requested = not self._record_requested if action == 'toggle' else action == 'on'
+            if (self._backend_record_transition or (self._backend_retry_available and not self._connected)) and action in ('toggle', 'on', 'off'):
+                self._backend_record_wanted = self._record_requested
+                if self._backend_record_wanted:
+                    self.operations.update(identity, 'succeeded', result={**self._recorder.status(), 'requested': 'on', 'deferred_until_backend_ready': True})
+                    return
+                action = 'off'
             if action in ('toggle', 'on') and not self._recorder.active:
                 self._record_global_version = None
             metadata = self._record_metadata() if action in ('toggle', 'on') else {}

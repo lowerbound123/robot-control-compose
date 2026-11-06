@@ -4,11 +4,13 @@ execution:
   mode: sync # RC回调边界；模型流水线由model.json execution.pipelined选择
   call_every_actions: 1
   control_mode: qpos
+  on_backend_switch: reinitialize_policy
 params:
   model_config_path: model.json
-  task: null
+  task:
 hot_reloadable:
-  - params.task
+- params.task
+- execution.on_backend_switch
 tui_commands:
   switch-task:
     handler: switch_task

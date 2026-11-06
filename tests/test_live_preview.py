@@ -44,6 +44,37 @@ def test_preview_deduplicates_frames_and_updates_connection_without_encoding():
         preview.close()
 
 
+def test_backend_generation_discards_completed_old_encoder():
+    from robot_control.preview import LivePreview
+    epoch = [1]
+    entered, go = threading.Event(), threading.Event()
+    samples = {'head': frame()}
+    samples['head']['image'] = np.ones((12, 16, 3), dtype=np.uint8)
+    def prepare(image, size, protocol):
+        value = int(image[0, 0, 0])
+        if value == 1:
+            entered.set()
+            assert go.wait(3)
+        return value
+    preview = LivePreview(lambda: samples.copy(), lambda: {}, prepare, 'kitty', source_generation=lambda: epoch[0])
+    try:
+        preview.set_enabled('camera', True)
+        until(lambda: (preview.poll({'head': (8, 8)}), entered.is_set())[1])
+        epoch[0] = 2
+        samples['head'] = {**frame(), 'image': np.full((12, 16, 3), 2, dtype=np.uint8)}
+        preview.poll({'head': (8, 8)})
+        go.set()
+        seen = []
+        def fresh():
+            result = preview.poll({'head': (8, 8)})['frames']
+            seen.extend(result.values())
+            return 2 in seen
+        until(fresh)
+        assert 1 not in seen
+    finally:
+        go.set(); preview.close()
+
+
 def test_slow_encoding_is_bounded_and_late_results_cannot_reopen_panel():
     from robot_control.preview import LivePreview
     gate, entered, completed = threading.Event(), threading.Event(), threading.Event()

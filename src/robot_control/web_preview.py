@@ -59,6 +59,7 @@ class PreviewSubscription:
                 self.close()
                 return None
             with self.owner.condition:
+                self.owner._refresh_source()
                 self.event.clear()
                 self.notified = False
                 if self.owner.closed:
@@ -94,9 +95,11 @@ class PreviewSubscription:
 
 
 class WebPreview:
-    def __init__(self, source, *, stopping=lambda: False, stale_after=2., encoder=encode_jpeg):
+    def __init__(self, source, *, stopping=lambda: False, stale_after=2., encoder=encode_jpeg, source_generation=lambda: 0):
         self.source, self.stopping, self.encoder = source, stopping, encoder
         self.stale_after = stale_after
+        self.source_generation = source_generation
+        self._source_epoch = source_generation()
         self.condition = threading.Condition(threading.RLock())
         self.closed = False
         self.threads = []
@@ -105,6 +108,16 @@ class WebPreview:
             output_total=0, last_output=0, encode_ms=None,
             source_samples=deque(maxlen=128), encode_times=deque(maxlen=128),
             output_times=deque(maxlen=128)) for camera in CAMERAS}
+
+    def _refresh_source(self):
+        epoch = self.source_generation()
+        if epoch != self._source_epoch:
+            self._source_epoch = epoch
+            for channel in self.channels.values():
+                channel['generation'] += 1
+                channel.update(frame=None, sequence=None, received=None, source_size=None, error=None)
+                channel['source_samples'].clear()
+            self.condition.notify_all()
 
     def subscribe(self, camera):
         if camera not in self.channels:
@@ -140,6 +153,7 @@ class WebPreview:
         next_due = 0.
         while True:
             with self.condition:
+                self._refresh_source()
                 while not channel['readers'] and not self.closed:
                     last_key, next_due = None, 0.
                     self.condition.wait()
@@ -174,6 +188,7 @@ class WebPreview:
                 jpeg = self.encoder(sample['image'])
                 finished = time.monotonic()
                 with self.condition:
+                    self._refresh_source()
                     if self.closed or channel['generation'] != generation or not channel['readers']:
                         continue
                     channel['encoded_total'] += 1
@@ -196,6 +211,7 @@ class WebPreview:
         now = time.monotonic()
         cameras = {}
         with self.condition:
+            self._refresh_source()
             for camera, channel in self.channels.items():
                 age = None if channel['received'] is None else max(0., now - channel['received'])
                 subscribed = bool(channel['readers'])

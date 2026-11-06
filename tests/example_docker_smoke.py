@@ -39,7 +39,9 @@ def mcp_management_checks(controller, report):
     service = MCPService(controller, {'host': '127.0.0.1', 'port': 0}, allow_ephemeral=True)
     service.start()
     async def request(name, arguments):
-        async with httpx2.AsyncClient(trust_env=False) as http:
+        # Server-side lifecycle waits can legitimately take up to 30 seconds.
+        # The transport must not time out first at HTTPX's five-second default.
+        async with httpx2.AsyncClient(trust_env=False, timeout=45.) as http:
             async with streamable_http_client(service.url, http_client=http) as streams:
                 async with ClientSession(streams[0], streams[1]) as session:
                     await session.initialize()
@@ -99,6 +101,26 @@ def mcp_management_checks(controller, report):
         all_reloaded = identities()
         assert all(all_reloaded[i]['container'] != retried[i]['container'] for i in retried)
         assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+        profiles = controller.root / 'robots'
+        profiles.mkdir(exist_ok=True)
+        (profiles / 'alternate.yaml').write_text(json.dumps({'backend': 'mock', 'initial_qpos': [.25]*14}))
+        call('command', line='set example-0.execution.on_backend_switch "reset"', wait=True)
+        backend_before = identities()
+        context_before = {i: context(i) for i in backend_before}
+        recorded_before = call('record', action='on', wait=True)['result']['session_id']
+        with patch.object(controller.runtime, 'runner', side_effect=AssertionError('backend switch replaced a policy container')):
+            call('switch_backend', profile='alternate', wait=True)
+        backend_after = identities()
+        context_after = {i: context(i) for i in backend_before}
+        assert backend_after['example-0'] == backend_before['example-0']
+        assert backend_after['example-1'] == {**backend_before['example-1'], 'version':backend_before['example-1']['version']+1}
+        assert context_after['example-0']['context_id'] == context_before['example-0']['context_id']
+        assert context_after['example-1']['context_id'] != context_before['example-1']['context_id']
+        assert all(abs(value-.25) < 1e-6 for value in controller.robot.read_state()['qpos'])
+        assert controller.status()['recording']['session_id'] != recorded_before
+        call('record', action='off', wait=True)
+        report['backend_switch'] = dict(before=backend_before, after=backend_after, status=controller.status()['backend'])
+        report['checks'].append('backend switch keeps per-instance containers/PIDs, mixes reset/reinitialize and splits recording')
         episode = call('return_and_wait', timeout_s=0)['operation_id']
         wait(lambda: controller.status()['state'] == 'running')
         epoch = controller._control_epoch
@@ -407,7 +429,7 @@ def on_host(evidence):
             shutil.copyfile(output, evidence / "result.json")
         assert code == "0", logs[-6000:]
         report = read_config(output)
-        assert len(report["checks"]) == 7, report
+        assert len(report["checks"]) == 8, report
         print(json.dumps(report, ensure_ascii=False, indent=2))
     finally:
         # Fallback only touches this task's exact deployment label, never global prune.

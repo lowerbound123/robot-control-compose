@@ -43,6 +43,7 @@ class HostClient:
             info = self._hello(self.connection)
             self.instance_id = info['host_instance_id']
             self.reinitialize_policy = info.get('reinitialize_policy') is True
+            self.backend_switch_v1 = info.get('backend_switch_v1') is True
             self.connection.settimeout(None)
         except BaseException:
             self.connection.close(); raise

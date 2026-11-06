@@ -7,7 +7,7 @@ import shlex
 BUILTIN_COMMANDS = (
     "set", "unset", "show", "save-config", "reset", "r", "save", "load", "pause",
     "resume", "policies", "switch", "status", "help", "exit", "quit", "take", "return", "mcp",
-    "camera", "monitor", "manage-policy", "snapshot", "policy", "record", "retry-reload",
+    "camera", "monitor", "manage-policy", "snapshot", "policy", "record", "retry-reload", "backend",
 )
 RELOAD_EFFECTS = ("reload_policy", "reload_all_policy", "reinitialize_policy")
 COMMAND_EFFECTS = (*RELOAD_EFFECTS, "update_config")

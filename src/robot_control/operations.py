@@ -48,6 +48,7 @@ class ControlRequest:
     generation: int | None = None
     expected_control: dict | None = None
     config_edit: PolicyConfigEdit | None = None
+    backend_retry: str | None = None
 
 
 class Operations:

@@ -91,7 +91,8 @@ def run_session(connection, policy_dir, namespace):
         release_due = True
         specs = command_specs(config)
         check_command_effects(specs, message)
-        reinitialize_enabled = any(spec.get("effect") == "reinitialize_policy" for spec in specs.values())
+        reinitialize_enabled = (message.get('backend_switch_v1') is True or
+                                any(spec.get("effect") == "reinitialize_policy" for spec in specs.values()))
         channel.reinitialize_enabled = reinitialize_enabled
         if reinitialize_enabled and (type(channel.context_id) is not str or not channel.context_id):
             raise ValueError("reinitialize_policy requires a nonempty initial context_id")
@@ -126,7 +127,7 @@ def run_session(connection, policy_dir, namespace):
         supported=callable(getattr(module,'observe',None))
         if callable(getattr(module,'wants_observations',None)):
             supported=supported and module.wants_observations(context)
-        channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
+        channel.send({"type": "ready", "config_version": version, "backend_switch_v1": reinitialize_enabled, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
                       "tui_command_effects_v2": list(COMMAND_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
                       "global_state_version": 1 if channel.global_memory is not None else None})
         channel.send({'type':'capabilities','observe':supported})

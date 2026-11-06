@@ -58,6 +58,8 @@ def validate_policy(config, identity=None):
     execution = config.get('execution')
     if not isinstance(execution, dict) or execution.get('mode') not in ('sync', 'async'):
         raise ValueError('invalid execution.mode')
+    if execution.get('on_backend_switch', 'reinitialize_policy') not in ('reinitialize_policy', 'reset'):
+        raise ValueError('invalid execution.on_backend_switch')
     if type(execution.get('call_every_actions')) is not int or execution['call_every_actions'] <= 0:
         raise ValueError('call_every_actions must be a positive integer')
     if execution.get('control_mode') not in ('qpos', 'epos', 'mixed'):

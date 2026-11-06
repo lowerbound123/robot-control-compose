@@ -61,6 +61,8 @@ class ChainProcess:
         self._failure = None
         self._commands_blocked = False
         self.reloading_member = None
+        self._backend_transition = False
+        self._backend_blocked = set()
         self._command_members = {}
         self._cancelled_commands = deque()
 
@@ -83,12 +85,42 @@ class ChainProcess:
     @property
     def runnable(self):
         with self._condition:
-            return (self._ready and self.reloading_member is None and not self._failure
+            return (self._ready and self.reloading_member is None and not self._failure and not self._backend_transition and not self._backend_blocked
                     and all(getattr(w, 'runnable', w.alive) for w in self._workers.values()))
 
     def member_workers(self):
         with self._condition:
             return dict(self._workers)
+
+    def begin_backend_switch(self):
+        with self._condition:
+            self._check_ready()
+            self._backend_transition = True
+            self._condition.notify_all()
+
+    def end_backend_switch(self, failed):
+        with self._condition:
+            self._backend_blocked = set(failed)
+            self._backend_transition = False
+            self._condition.notify_all()
+
+    def begin_backend_retry(self):
+        with self._condition:
+            if self._failure or self._stop.is_set() or self._request or self._observation:
+                raise RuntimeError(self._failure or 'chain is not ready for backend recovery')
+            self._backend_transition = True
+            self._condition.notify_all()
+
+    def commit_backend_record(self, record, replacement=None):
+        with self._condition:
+            if replacement is not None:
+                identity, worker = replacement
+                self._workers[identity] = worker
+                self._workers = {member.instance_id: self._workers[member.instance_id]
+                                 for member in record.members if member.instance_id in self._workers}
+                self._backend_blocked.discard(identity)
+            self.record, self.config_version = record, record.version
+            self._condition.notify_all()
 
     @property
     def reload_recoverable(self):
@@ -301,7 +333,7 @@ class ChainProcess:
             return
         index = request['index']
         identity = self.record.members[index].instance_id
-        if self.reloading_member is not None:
+        if self.reloading_member is not None or self._backend_transition:
             child = request['child']
             if child is None:
                 self._finish('cancelled')
@@ -368,7 +400,8 @@ class ChainProcess:
             while not self._stop.is_set():
                 try:
                     for identity, worker in self._workers.items():
-                        if identity != self.reloading_member and not getattr(worker, 'runnable', worker.alive):
+                        if (not self._backend_transition and identity not in self._backend_blocked
+                                and identity != self.reloading_member and not getattr(worker, 'runnable', worker.alive)):
                             self._failure = self._failure or f'chain {identity}: worker exited'
                     self._drive_inference()
                     self._drive_observation()

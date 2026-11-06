@@ -224,7 +224,7 @@ def validate_manifest(config):
     if (execution.get('mode') != 'sync' or execution.get('call_every_actions') != 1
             or execution.get('control_mode') != 'qpos'):
         raise ValueError('Pi05 requires sync callbacks every complete qpos action')
-    if config.get('hot_reloadable'):
+    if any(path != 'execution.on_backend_switch' for path in config.get('hot_reloadable', [])):
         raise ValueError('Pi05 configuration is cold; use switch-model')
     path = config.get('params', {}).get('model_config_path')
     if not isinstance(path, str) or not path.strip():

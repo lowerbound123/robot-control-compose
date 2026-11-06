@@ -57,11 +57,13 @@ class _PreviewPool:
 
 
 class LivePreview:
-    def __init__(self, camera_source, monitor_source, prepare, protocol):
+    def __init__(self, camera_source, monitor_source, prepare, protocol, *, source_generation=lambda: 0):
         self.camera_source = camera_source
         self.monitor_source = monitor_source
         self.prepare = prepare
         self.protocol = protocol
+        self.source_generation = source_generation
+        self._source_epoch = source_generation()
         # One sampler per panel and one encoder per camera, with no job backlog.
         self._pool = _PreviewPool()
         self.enabled = {"camera": False, "monitor": False}
@@ -101,6 +103,14 @@ class LivePreview:
         result = {"frames": {}, "monitor": None, "render_error": None}
         if self.closed:
             return result
+        epoch = self.source_generation()
+        if epoch != self._source_epoch:
+            self._source_epoch = epoch
+            for panel in self._generation:
+                self._generation[panel] += 1
+            self.samples.clear()
+            self._last_keys.clear()
+            self.camera_error = 'backend changed; waiting for fresh images'
         if self._camera_job and self._camera_job[0].done():
             future, generation = self._camera_job
             self._camera_job = None

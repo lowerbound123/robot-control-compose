@@ -58,3 +58,11 @@ it('refuses unguarded legacy writes and supplies host-owned wait and image setti
   const legacy = await discoverCapabilities(g)
   expect(() => prepareToolCall(decision('take').tool_call, legacy)).toThrow(/升级|保护/)
 })
+
+it('allows only explicitly failed instances from a backend recovery set', async () => {
+  const snapshot = await discoverCapabilities(fixtureGateway())
+  snapshot.status.retry_reload_instance = 'example-0'
+  snapshot.status.retry_reload_instances = ['example-0', 'example-1']
+  expect(() => validateDecision(decision('retry_reload', { instance_id: 'example-1' }), snapshot)).not.toThrow()
+  expect(() => validateDecision(decision('retry_reload', { instance_id: 'example-2' }), snapshot)).toThrow()
+})
