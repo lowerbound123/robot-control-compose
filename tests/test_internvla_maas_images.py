@@ -1,5 +1,6 @@
 """Fixed-size RGB observations preserve aspect ratio, content and input frames."""
 import importlib
+import io
 
 import numpy as np
 import pytest
@@ -61,3 +62,29 @@ def test_already_224_square_keeps_every_pixel():
     before = frame.copy()
     np.testing.assert_array_equal(resize(frame), before)
     np.testing.assert_array_equal(frame, before)
+
+
+def test_jpeg_bytes_decode_as_rgb_and_leave_readonly_input_unchanged():
+    from PIL import Image
+    from rc_internvla_maas.images import encode_jpeg
+    source = np.empty((224, 224, 3), np.uint8)
+    source[:] = (210, 30, 60)
+    frame = source[:, ::-1]
+    frame.flags.writeable = False
+    payload = encode_jpeg(frame, 85)
+    assert isinstance(payload, bytes) and payload[:2] == b'\xff\xd8'
+    with Image.open(io.BytesIO(payload)) as decoded:
+        assert decoded.format == 'JPEG' and decoded.mode == 'RGB'
+        assert decoded.size == (224, 224)
+        np.testing.assert_allclose(np.asarray(decoded)[112, 112], (210, 30, 60), atol=3)
+    assert np.all(source == (210, 30, 60)) and not frame.flags.writeable
+
+
+def test_jpeg_quality_changes_real_bitstream_and_quantization():
+    from PIL import Image
+    from rc_internvla_maas.images import encode_jpeg
+    frame = np.random.default_rng(17).integers(0, 256, (224, 224, 3), dtype=np.uint8)
+    low, high = (encode_jpeg(frame, quality) for quality in (85, 95))
+    assert len(low) < len(high) < frame.nbytes
+    with Image.open(io.BytesIO(low)) as lower, Image.open(io.BytesIO(high)) as higher:
+        assert sum(higher.quantization[0]) < sum(lower.quantization[0])

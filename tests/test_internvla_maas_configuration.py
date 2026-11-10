@@ -25,6 +25,85 @@ def test_complete_cold_config_resolves_without_weights_or_network(tmp_path):
     assert json.loads(path.read_text()) == original
 
 
+@pytest.mark.parametrize('suffix', ['.yaml', '.yml'])
+def test_yaml_model_accepts_comments_multiline_instruction_and_jpeg_settings(tmp_path, suffix):
+    path = tmp_path / ('model' + suffix)
+    path.write_text('''# Private model configuration
+service:
+  address: wss://model.example/base/
+  robot_id: test-robot
+  api_key: private-canary
+  embodiment: test-dual-arm
+runtime:
+  instruction: |-
+    Pick up the object.
+    Place it in the tray.
+observations:
+  jpeg: true
+  jpeg_quality: 92
+  state_offsets: {"0": 0.25}
+''')
+    actual = loader()(path.name, project_root=tmp_path)
+    assert actual['runtime']['instruction'] == 'Pick up the object.\nPlace it in the tray.'
+    assert actual['observations'] == {'jpeg': True, 'jpeg_quality': 92, 'state_offsets': {'0': .25}}
+    assert actual['service']['api_key'] == 'private-canary'
+
+
+def test_legacy_json_defaults_to_raw_with_a_valid_jpeg_quality(tmp_path):
+    path = tmp_path / 'old.json'
+    path.write_text(json.dumps(settings()))
+    observations = loader()(path, project_root=tmp_path)['observations']
+    assert observations['jpeg'] is False
+    assert observations['jpeg_quality'] == 85
+
+
+@pytest.mark.parametrize('quality', [85, 95, 100])
+def test_jpeg_quality_boundaries_are_accepted(tmp_path, quality):
+    raw = settings()
+    raw['observations'] = {'jpeg': True, 'jpeg_quality': quality}
+    path = tmp_path / 'model.yaml'
+    # JSON is also valid YAML 1.2; block YAML is covered separately above.
+    path.write_text(json.dumps(raw))
+    assert loader()(path, project_root=tmp_path)['observations']['jpeg_quality'] == quality
+
+
+@pytest.mark.parametrize('key,value', [
+    ('jpeg', 'true'), ('jpeg', 1), ('jpeg', None),
+    ('jpeg_quality', 84), ('jpeg_quality', 101), ('jpeg_quality', True),
+    ('jpeg_quality', 85.0), ('jpeg_quality', '85'), ('jpeg_quality', None),
+])
+def test_jpeg_configuration_requires_strict_types_and_protocol_quality(tmp_path, key, value):
+    raw = settings()
+    raw['observations'] = {'jpeg': False, 'jpeg_quality': 85, key: value}
+    path = tmp_path / 'model.yaml'
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match=key):
+        loader()(path, project_root=tmp_path)
+
+
+@pytest.mark.parametrize('content', [
+    'service: {api_key: private-canary, api_key: other}\n',
+    'service: {api_key: private-canary\n',
+    'service: !!python/object/apply:os.system [private-canary]\n',
+    'service: !!bool private-canary\n',
+    'service: &secret {api_key: private-canary}\nruntime: &secret {}\n',
+    '%YAML 1.1\n---\nservice: {api_key: private-canary}\n',
+    'service: &secret {api_key: private-canary, cycle: *secret}\n',
+    'service: {api_key: private-canary, timeout: .inf}\n',
+    'service: {api_key: private-canary, day: 2026-11-10}\n',
+    'service: {api_key: private-canary, 1: value}\n',
+    'service: {}\n---\nservice: {api_key: private-canary}\n',
+])
+def test_yaml_errors_and_warnings_do_not_expose_private_values(tmp_path, content, recwarn, capsys):
+    path = tmp_path / 'bad.yaml'
+    path.write_text(content)
+    with pytest.raises(ValueError) as error:
+        loader()(path, project_root=tmp_path)
+    assert 'private-canary' not in str(error.value)
+    assert not recwarn
+    assert 'private-canary' not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('section,key,value', [
     ('service', 'address', 'https://example.org'),
     ('service', 'address', 'ws://user:password@example.org'),

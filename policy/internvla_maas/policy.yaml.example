@@ -5,7 +5,7 @@ execution:
   call_every_actions: 1
   control_mode: qpos
 params:
-  model_config_path: model.json
+  model_config_path: model.yaml
 hot_reloadable:
   - execution.mode
   - execution.call_every_actions

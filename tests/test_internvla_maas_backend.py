@@ -1,4 +1,5 @@
 import importlib
+import io
 import threading
 import time
 import sys
@@ -80,6 +81,105 @@ def test_three_camera_frames_are_resized_before_ndarray_transmission(tmp_path):
             assert snapshot['resize_samples'] == 1 and snapshot['last_resize_ms'] >= 0
         finally:
             model.close()
+
+
+@pytest.mark.parametrize('quality', [85, 95, 100])
+def test_jpeg_wire_envelopes_decode_three_rgb_cameras_and_report_payload_sizes(tmp_path, quality):
+    from PIL import Image
+    with model_server() as server:
+        raw = settings(server.address)
+        raw['observations'] = {'jpeg': True, 'jpeg_quality': quality}
+        model = backend(configured(tmp_path, raw))
+        colors = {'head': (210, 30, 60), 'left_wrist': (30, 210, 60), 'right_wrist': (30, 60, 210)}
+        frames = {name: np.full((480, 640, 3), color, np.uint8) for name, color in colors.items()}
+        for frame in frames.values():
+            frame.flags.writeable = False
+        try:
+            model.load()
+            assert server.hellos[0]['message']['image_encodings'] == ['raw', 'jpeg']
+            state = np.arange(14, dtype=np.float32)
+            actual = model.predict(state, frames, 'JPEG test')
+            np.testing.assert_array_equal(actual[0], state)
+            request = server.requests[0]
+            size = 0
+            for name, role in (('head', 'front'), ('left_wrist', 'wrist_left'), ('right_wrist', 'wrist_right')):
+                envelope = request['images'][role]
+                assert set(envelope) == {'enc', 'data'} and envelope['enc'] == 'jpeg'
+                assert isinstance(envelope['data'], bytes)
+                size += len(envelope['data'])
+                with Image.open(io.BytesIO(envelope['data'])) as decoded:
+                    assert decoded.format == 'JPEG' and decoded.mode == 'RGB' and decoded.size == (224, 224)
+                    pixels = np.asarray(decoded)
+                    np.testing.assert_allclose(pixels[112, 112], colors[name], atol=3)
+                    assert pixels[:20].max() <= 3 and pixels[204:].max() <= 3
+                assert np.all(frames[name] == colors[name]) and not frames[name].flags.writeable
+            snapshot = model.monitor()
+            assert snapshot['last_source_image_bytes'] == 2764800
+            assert snapshot['last_image_bytes'] == size < 451584
+            assert size < snapshot['last_request_bytes'] < size + 1500
+            assert snapshot['encode_samples'] == 1 and snapshot['last_encode_ms'] >= 0
+        finally:
+            model.close()
+
+
+def test_raw_mode_does_not_invoke_jpeg_encoder(tmp_path, monkeypatch):
+    from rc_internvla_maas import backend as module
+    def forbidden(*_):
+        raise AssertionError('raw mode must not encode JPEG')
+    monkeypatch.setattr(module, 'encode_jpeg', forbidden)
+    with model_server() as server:
+        model = backend(configured(tmp_path, settings(server.address)))
+        try:
+            model.load()
+            model.predict(np.zeros(14, np.float32), images(), 'raw test')
+            assert isinstance(server.requests[0]['images']['front'], np.ndarray)
+            assert model.monitor()['encode_samples'] == 0
+            assert model.monitor()['last_image_bytes'] == 451584
+        finally:
+            model.close()
+
+
+def test_jpeg_encoding_failure_faults_without_sending_or_falling_back(tmp_path, monkeypatch):
+    from rc_internvla_maas import backend as module
+    def broken(*_):
+        raise OSError('fixture-key should never be logged')
+    monkeypatch.setattr(module, 'encode_jpeg', broken)
+    with model_server() as server:
+        raw = settings(server.address)
+        raw['observations'] = {'jpeg': True}
+        model = backend(configured(tmp_path, raw))
+        try:
+            model.load()
+            with pytest.raises(RuntimeError) as error:
+                model.predict(np.zeros(14, np.float32), images(), 'encode failure')
+            assert 'fixture-key' not in str(error.value)
+            with pytest.raises(RuntimeError):
+                model.predict(np.zeros(14, np.float32), images(), 'no retry')
+            assert not server.requests
+        finally:
+            model.close()
+
+
+def test_model_quality_setting_changes_jpeg_received_by_peer(tmp_path):
+    from PIL import Image
+    frames = {name: np.random.default_rng(index).integers(0, 256, (224, 224, 3), dtype=np.uint8)
+              for index, name in enumerate(('head', 'left_wrist', 'right_wrist'))}
+    results = []
+    with model_server() as server:
+        for quality in (85, 95):
+            raw = settings(server.address)
+            raw['observations'] = {'jpeg': True, 'jpeg_quality': quality}
+            model = backend(configured(tmp_path, raw))
+            try:
+                model.load()
+                model.predict(np.zeros(14, np.float32), frames, 'quality test')
+                data = server.requests[-1]['images']['front']['data']
+                with Image.open(io.BytesIO(data)) as decoded:
+                    results.append((len(data), sum(decoded.quantization[0])))
+            finally:
+                model.close()
+        assert results[0][0] < results[1][0]
+        assert results[0][1] > results[1][1]
 
 
 @pytest.mark.parametrize('patch', [

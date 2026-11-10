@@ -63,6 +63,9 @@ def configuration_updates(root):
     business = sorted({p.with_suffix('') if p.name.endswith('.json.example') else p
                        for p in files if p.name.endswith(('.json', '.json.example'))
                        and '.runtime' not in p.parts and not is_main_json(root, p)})
+    # Model YAML templates are business configuration, separate from policy.yaml.
+    business += sorted(p.with_suffix('') for pattern in ('*/model.yaml.example', '*/model.yml.example')
+                       for p in (root / 'policy').glob(pattern))
     changes, documents = [], {}
     for target, template in mains + [(p, p.with_name(p.name + '.example')) for p in business]:
         if target.is_symlink() or any(p.is_symlink() for p in target.parents if p != root.parent):

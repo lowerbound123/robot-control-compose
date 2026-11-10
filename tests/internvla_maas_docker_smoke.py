@@ -4,6 +4,7 @@ RC_TEST_RC_IMAGE must include RC's test dependencies plus websockets,
 msgpack for the independent __ndarray__ test peer. No real service or hardware.
 """
 import argparse
+import io
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import tempfile
 import time
 
 from config_helpers import read_config
-from internvla_maas_helpers import ROOT, images, model_server, settings, wait
+from internvla_maas_helpers import ROOT, images, model_server, settings, wait, write_model_config
 
 
 def container():
@@ -31,10 +32,11 @@ def container():
     with model_server(host='0.0.0.0') as server:
         directory = root / 'policy/internvla_maas'
         raw = settings(f'ws://robot-control:{server.port}')
-        (directory / 'model.json').write_text(json.dumps(raw))
+        write_model_config(directory / 'model.yaml', raw)
         raw['runtime']['instruction'] = 'Docker second task.'
         raw['actions'] = {'gripper_compensation': False}
-        (directory / 'alternate.json').write_text(json.dumps(raw))
+        raw['observations'] = {'jpeg': True, 'jpeg_quality': 90}
+        write_model_config(directory / 'alternate.yaml', raw)
         controller = RobotController(root / 'configs/rc.mock.yaml', robot=CameraRobot())
 
         def command(line):
@@ -63,7 +65,7 @@ def container():
             assert obs['state']['joint_pos'].shape == (14,)
             report['checks'].append('Python3.10 RC to Python3.11 policy; binary MaaS handshake, 224x224 letterboxed RGB, state and action consumption')
 
-            command('policy internvla_maas switch-model alternate.json')
+            command('policy internvla_maas switch-model alternate.yaml')
             current = controller._worker
             assert current.endpoint.container_id != initial_id
             assert old.cleanup_confirmed and not old.has_readers
@@ -80,6 +82,12 @@ def container():
             assert controller.status()['consumed'] == consumed
             assert len(server.requests) == requests and len(server.hellos) == hellos
             assert server.requests[-1]['instruction'] == 'Docker second task.'
+            from PIL import Image
+            for frame in server.requests[-1]['images'].values():
+                assert frame['enc'] == 'jpeg' and isinstance(frame['data'], bytes)
+                with Image.open(io.BytesIO(frame['data'])) as decoded:
+                    assert decoded.format == 'JPEG' and decoded.mode == 'RGB' and decoded.size == (224, 224)
+            report['checks'].append('YAML cold switch enables JPEG; all three MessagePack image envelopes decode as224x224 RGB')
             assert 'fixture-key' not in json.dumps(controller.status())
             assert 'fixture-key' not in json.dumps(controller.read_events())
             report['checks'].append('stop clears executable queue, redacts credentials, and does not reconnect/replay')
@@ -137,7 +145,10 @@ def host(evidence):
         model['networks'] = {'model': {'external': True, 'name': context['base_project'] + '_default'}}
         (source / 'compose.yaml').write_text(json.dumps(model))
         override = {'services': {'robot-control': {
-            'image': rc_image, 'command': ['python3', '/validation/internvla_maas_docker_smoke.py', '--container'],
+            # This mock-only harness validates source provenance in container();
+            # it does not need the deployment entrypoint's ROS environment.
+            'image': rc_image, 'entrypoint': ['python3'],
+            'command': ['/validation/internvla_maas_docker_smoke.py', '--container'],
             'volumes': [{'type': 'bind', 'source': str(ROOT / 'tests'), 'target': '/validation', 'read_only': True}]}}}
         anchor_override(override['services'])
         (directory / 'override.json').write_text(json.dumps(override))

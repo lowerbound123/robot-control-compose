@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlsplit
 DEFAULTS = {
     'service': {'model': 'internvla_a15', 'connect_timeout_s': 30.0, 'close_timeout_s': 2.0},
     'runtime': {},
-    'observations': {'state_offsets': {}},
+    'observations': {'state_offsets': {}, 'jpeg': False, 'jpeg_quality': 85},
     'execution': {'chunk_size': 50, 'request_when_remaining': 30,
                   'inference_timeout_s': 60.0, 'expected_control_hz': 30.0},
     'actions': {'gripper_compensation': True},
@@ -35,6 +35,43 @@ def _pairs(items):
     return result
 
 
+def _read_model_config(path):
+    from ruamel.yaml import YAML
+    from ruamel.yaml.tokens import AnchorToken, DirectiveToken
+    try:
+        source = path.read_text(encoding='utf-8')
+        if path.suffix.lower() == '.json':
+            raw = json.loads(source, object_pairs_hook=_pairs)
+        else:
+            # Reject warning-producing YAML before construction so private source
+            # text cannot appear in process logs. Parse one immutable snapshot.
+            anchors = set()
+            for token in YAML(typ='safe', pure=True).scan(source):
+                if isinstance(token, DirectiveToken) and token.name == 'YAML' and token.value != (1, 2):
+                    raise ValueError()
+                if isinstance(token, AnchorToken):
+                    if token.value in anchors:
+                        raise ValueError()
+                    anchors.add(token.value)
+            raw = YAML(typ='safe', pure=True).load(source)
+        # Reject cycles, nonfinite numbers and YAML-only values such as dates.
+        json.dumps(raw, allow_nan=False)
+        def string_keys(value):
+            if isinstance(value, dict):
+                if not all(isinstance(key, str) for key in value):
+                    raise ValueError()
+                for child in value.values():
+                    string_keys(child)
+            elif isinstance(value, list):
+                for child in value:
+                    string_keys(child)
+        string_keys(raw)
+        return raw
+    except Exception:
+        # YAML constructors can raise built-in exceptions quoting scalar values.
+        raise ValueError('cannot read valid model configuration YAML/JSON') from None
+
+
 def _positive(value, name):
     if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
         raise ValueError(f'{name} must be positive and finite')
@@ -48,11 +85,7 @@ def _text(value, name, *, multiline=False):
 
 def load_model_config(path, *, project_root):
     path = resolve_config_path(path, project_root)
-    try:
-        raw = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=_pairs)
-        json.dumps(raw, allow_nan=False)
-    except (OSError, UnicodeError, ValueError):
-        raise ValueError('cannot read valid model configuration JSON') from None
+    raw = _read_model_config(path)
     if not isinstance(raw, dict) or set(raw) - set(DEFAULTS):
         raise ValueError('unknown or invalid model configuration sections')
     config = copy.deepcopy(DEFAULTS)
@@ -84,7 +117,13 @@ def load_model_config(path, *, project_root):
             raise ValueError(f'execution.{key} must be {expected}')
     for key in ('inference_timeout_s', 'expected_control_hz'):
         _positive(execution[key], f'execution.{key}')
-    offsets = config['observations']['state_offsets']
+    observations = config['observations']
+    if type(observations['jpeg']) is not bool:
+        raise ValueError('observations.jpeg must be boolean')
+    quality = observations['jpeg_quality']
+    if type(quality) is not int or not 85 <= quality <= 100:
+        raise ValueError('observations.jpeg_quality must be an integer from 85 to 100')
+    offsets = observations['state_offsets']
     if not isinstance(offsets, dict):
         raise ValueError('observations.state_offsets must be an object')
     for key, value in offsets.items():

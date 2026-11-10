@@ -16,7 +16,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from .codec import MAX_MESSAGE_BYTES, pack, unpack
-from .images import resize_rgb
+from .images import encode_jpeg, resize_rgb
 from .metrics import RequestMetrics, StageTimings
 
 CAMERAS = {'head': 'front', 'left_wrist': 'wrist_left', 'right_wrist': 'wrist_right'}
@@ -41,7 +41,7 @@ class MaasBackend:
         self._episode = None
         self._metrics = RequestMetrics()
         self._timings = StageTimings(
-            ('dispatch', 'prepare', 'resize', 'pack', 'send', 'response_wait', 'decode', 'validate', 'server'),
+            ('dispatch', 'prepare', 'resize', 'encode', 'pack', 'send', 'response_wait', 'decode', 'validate', 'server'),
             last_source_image_bytes='—', last_image_bytes='—', last_request_bytes='—', last_response_bytes='—')
         # websockets DEBUG includes Authorization headers and payloads. Never
         # propagate its transport logger into the worker's captured root logger.
@@ -212,9 +212,10 @@ class MaasBackend:
                 or type(hz) not in (int, float) or not math.isfinite(hz)
                 or not math.isclose(hz, self.config['execution']['expected_control_hz'], rel_tol=1e-6)):
             raise MaasError('incompatible MaaS action space, horizon or control_hz')
+        encodings = ['raw', 'jpeg'] if self.config['observations']['jpeg'] else ['raw']
         await self._ws.send(pack(dict(type='robot_hello', robot_id=self.service['robot_id'],
             embodiment=self.service['embodiment'], dof=14, images=list(CAMERAS.values()),
-            state=['joint_pos'], action_spaces=['joint_pos'], image_encodings=['raw'])))
+            state=['joint_pos'], action_spaces=['joint_pos'], image_encodings=encodings)))
         ready = await self._receive()
         if ready['type'] != 'ready' or not isinstance(ready.get('session_id'), str) or not ready['session_id']:
             raise MaasError('MaaS handshake did not return ready with a session_id')
@@ -243,8 +244,16 @@ class MaasBackend:
                 source_bytes = sum(frame.nbytes for frame in frames.values())
                 with self._timings.measure('resize'):
                     frames = {role: resize_rgb(frame) for role, frame in frames.items()}
+                observations = self.config['observations']
+                if observations['jpeg']:
+                    with self._timings.measure('encode'):
+                        frames = {role: {'enc': 'jpeg', 'data': encode_jpeg(frame, observations['jpeg_quality'])}
+                                  for role, frame in frames.items()}
+                    image_bytes = sum(len(frame['data']) for frame in frames.values())
+                else:
+                    image_bytes = sum(frame.nbytes for frame in frames.values())
                 self._timings.set_values(last_source_image_bytes=source_bytes,
-                                        last_image_bytes=sum(frame.nbytes for frame in frames.values()))
+                                        last_image_bytes=image_bytes)
                 message = dict(type='obs', seq=self._seq, t=time.time(), episode_id=self._episode,
                                instruction=instruction, images=frames, state={'joint_pos': state})
                 self._seq += 1

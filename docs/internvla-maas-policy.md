@@ -6,13 +6,13 @@
 
 ```bash
 ./setup.sh --config-only
-# 编辑 policy/internvla_maas/model.json
+# 编辑 policy/internvla_maas/model.yaml
 ./setup.sh --policies internvla_maas
 ```
 
-setup 从示例生成私有 JSON 和 schema 3 的 `policy.yaml`，以 0600 写入；私有配置已被 Git 忽略。服务必须事先部署并为当前机器人注册身份。模板不包含可用凭据，空的必填字段会在策略初始化时被拒绝。
+setup 从示例生成私有 `model.yaml` 和 schema 3 的 `policy.yaml`，以 0600 写入；私有配置已被 Git 忽略。服务必须事先部署并为当前机器人注册身份。模板不包含可用凭据，空的必填字段会在策略初始化时被拒绝。
 
-`params.model_config_path` 默认引用本策略目录中的 `model.json`。地址、凭据和任务文本都由策略进程读取，manifest 只保留配置路径。
+`params.model_config_path` 默认引用本策略目录中的 `model.yaml`，支持 `.yaml`、`.yml`，也兼容旧 JSON 文件。地址、凭据和任务文本都由策略进程读取，manifest 只保留配置路径。迁移已有部署时，将旧模型配置的字段和值复制到 YAML 文件，并更新私有 `policy.yaml` 中的路径；setup 保留已有路径和值，不会自动覆盖为新模板。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -23,6 +23,8 @@ setup 从示例生成私有 JSON 和 schema 3 的 `policy.yaml`，以 0600 写�
 | `service.close_timeout_s` | 默认 2 秒，关闭 WebSocket 的期限。 |
 | `runtime.instruction` | 必填任务文本，随每个观测请求发送。 |
 | `observations.state_offsets` | 默认 `{}`，按字符串下标 `"0"` 至 `"13"` 给发送的 state 加偏移，不修改 RC 的原始 state。 |
+| `observations.jpeg` | 默认 `false`，发送 raw RGB ndarray；设为 `true` 时发送 JPEG 二进制图像。必须是 YAML 布尔值。 |
+| `observations.jpeg_quality` | 默认 85，整数 85～100；下限遵循 MaaS 协议。JPEG 关闭时仍校验此字段。95 以上通常会明显增大文件，建议先测量带宽与推理效果。 |
 | `execution.chunk_size` / `request_when_remaining` | 固定 50 / 30；少于 30 个剩余动作才预取。 |
 | `execution.inference_timeout_s` | 默认 60 秒，覆盖请求发送和响应接收；SDK 同时按提交时间检查结果期限。 |
 | `execution.expected_control_hz` | 默认 30，握手时必须与服务声明一致。 |
@@ -52,11 +54,22 @@ monitor-internvla_maas on
 switch internvla_maas
 resume
 pause
-policy internvla_maas switch-model model_alt.json
+policy internvla_maas switch-model model_alt.yaml
 resume
 ```
 
-`model.json` 中的服务、推理和动作配置仍为冷配置，`params.model_config_path` 不能热改。`switch-model` 先做文件/字段校验，返回通用冷补丁；服务握手在旧实例退出证明齐备后的新实例初始化中执行。目标路径相对本策略目录，或为容器可访问的绝对路径。命令成功后保持暂停。链内使用明确实例名，例如 `policy internvla_maas-0 switch-model model_alt.json`。
+`model.yaml` 中的服务、图像、推理和动作配置均为冷配置，`params.model_config_path` 不能热改。`switch-model` 先做文件/字段校验，返回通用冷补丁；服务握手在旧实例退出证明齐备后的新实例初始化中执行。目标路径相对本策略目录，或为容器可访问的绝对路径。命令成功后保持暂停。链内使用明确实例名，例如 `policy internvla_maas-0 switch-model model_alt.yaml`。
+
+启用 JPEG 时，在模型配置中编辑：
+
+```yaml
+observations:
+  state_offsets: {}
+  jpeg: true
+  jpeg_quality: 85
+```
+
+保存后使用 `policy <实例> switch-model model.yaml` 冷重载，再显式 `resume`。切回 `jpeg: false` 同样需要冷重载。首次升级需通过 `./setup.sh --policies internvla_maas` 重建策略镜像，以安装新增的 YAML 运行依赖。
 
 每个实例独占容器、执行进程、后台网络线程和 WebSocket。客户端不会为重复实例自动生成或修改 robot_id；配置相同身份的并发实例会被网关以 4409 拒绝，不能把来源共用理解为连接共用。
 
@@ -83,8 +96,9 @@ resume
 | --- | --- |
 | `snapshot_submit` | SDK 创建自有观测快照的整个调用，包含状态/图像校验、三路图像复制和提交后台任务；不是单独的内存复制时间。 |
 | `dispatch` | 后端向网络事件循环提交协程，到该协程开始运行的派发等待。 |
-| `prepare` | 网络请求中的状态转换、偏移、图像校验、缩放和消息字段准备；包含 `resize`。 |
+| `prepare` | 网络请求中的状态转换、偏移、图像校验、缩放、可选 JPEG 编码和消息字段准备；包含 `resize` 和 `encode`。 |
 | `resize` | 三路图像合计的等比缩放和居中补黑边耗时，输出固定为 224×224。 |
+| `encode` | 三路图像的 JPEG 编码耗时；raw 模式不执行、不增加样本。 |
 | `pack` | 完整观测的 MessagePack 编码，包含 ndarray 转字节。 |
 | `send` | `WebSocket.send()` 调用耗时，含客户端写入/背压等待，不代表服务端已经收完数据。 |
 | `response_wait` | 发送调用结束后，等待完整响应帧返回的时间；包含网络与服务端处理，不能当作纯网络延迟。 |
@@ -97,7 +111,7 @@ resume
 | `postprocess` | MaaS 输出副本及夹爪补偿；属于 `collect` 的一部分。 |
 | `callback` | 每次策略 `step()` 回调总耗时，包括仅返回缓存的回调。 |
 
-还提供 `last_source_image_bytes`（缩放前的三路 RGB 图像字节总数）、`last_image_bytes`（缩放后实际发送的图像字节总数，固定 451,584 字节）、`last_request_bytes`（最近编码的完整观测消息字节数）、`last_response_bytes`（最近收到的二进制响应帧字节数）。这些是应用层大小，不含 WebSocket/TCP/TLS 开销。
+还提供 `last_source_image_bytes`（缩放前的三路 RGB 图像字节总数）、`last_image_bytes`（三路实际图像载荷总数：raw 固定 451,584 字节，JPEG 为三个压缩数据的长度之和）、`last_request_bytes`（最近编码的完整观测消息字节数）、`last_response_bytes`（最近收到的二进制响应帧字节数）。这些是应用层大小，不含 WebSocket/TCP/TLS 开销。
 
 分段统计记录实际到达的阶段，失败或主动取消时也保留该阶段已经花费的时间；未到达的阶段不增加样本。它们与原有“排除主动取消”的请求总延迟口径不同，且 `predict`、`collect`、`callback` 等存在包含或并行关系，不能把所有平均值直接相加。每项最近值属于最近一次执行该阶段的调用，也可能不是同一请求；可结合样本数判断。
 
@@ -109,13 +123,13 @@ resume
 
 数组元数据固定为字节键。接收端在校验 dtype、shape 和字节长度后，用 `frombuffer(...).reshape(...).copy()` 还原独立持有数据的 ndarray。只支持普通数值和布尔类型，拒绝对象、结构化、复数及畸形数据，不使用 pickle。输入消息上限为 4 MiB，WebSocket 与解码器一致；输出原始图像不受此入站上限限制。
 
-不接受旧的 `msgpack-numpy`（`nd/type/kind/shape/data`）编码，也不自动回退。运行依赖为 NumPy、msgpack、websockets、Pillow 及 SDK 所需依赖，已移除 `msgpack-numpy`。224×224 缩放新增了锁定的 Pillow 12.3.0；更新后运行 `./setup.sh --policies internvla_maas` 重建本策略镜像，再冷重载使用它的实例。
+不接受旧的 `msgpack-numpy`（`nd/type/kind/shape/data`）编码，也不自动回退。运行依赖为 NumPy、msgpack、websockets、Pillow 12.3.0、ruamel.yaml 0.19.1 及 SDK 所需依赖，已移除 `msgpack-numpy`。YAML 使用安全加载器，重复键、非有限数值、非普通数据和会泄露原文的警告构造均被拒绝；配置错误不输出私有值。
 
-握手顺序是 `server_hello → robot_hello → ready`。校验模型、协议、相机角色、`joint_pos` 状态和动作字段、50 行 horizon 及执行频率。机器人声明 14 自由度、raw 图像和绝对关节动作空间。
+握手顺序是 `server_hello → robot_hello → ready`。校验模型、协议、相机角色、`joint_pos` 状态和动作字段、50 行 horizon 及执行频率。机器人声明 14 自由度和绝对关节动作空间；raw 模式声明 `image_encodings: ["raw"]`，JPEG 模式按 MaaS 交接文档声明 `["raw", "jpeg"]`。
 
-相机映射为 `head → front`、`left_wrist → wrist_left`、`right_wrist → wrist_right`。发送前按比例将长边缩放至 224，短边四舍五入且至少保留 1 像素，使用双线性插值，再居中补黑边到 224×224；奇数余量多出的 1 像素留在下侧或右侧。已经是 224×224 的图像保留全部像素。不会拉伸、裁剪、交换 RGB 通道或修改输入图像；每路仍发送 RGB `uint8[224,224,3]` 的 ndarray，不做 JPEG 编码。
+相机映射为 `head → front`、`left_wrist → wrist_left`、`right_wrist → wrist_right`。发送前按比例将长边缩放至 224，短边四舍五入且至少保留 1 像素，使用双线性插值，再居中补黑边到 224×224；奇数余量多出的 1 像素留在下侧或右侧。已经是 224×224 的图像不再缩放。不会拉伸、裁剪、交换 RGB 通道或修改输入图像。raw 模式发送 RGB `uint8[224,224,3]` ndarray；JPEG 模式在缩放后编码，`images[role]` 为 `{"enc": "jpeg", "data": <JPEG bytes>}`，字段名为字符串、数据为二进制，不使用 Base64。JPEG 是有损压缩，服务端解码后仍得到 224×224 RGB 图像。
 
-每张像素数据为 150,528 字节，三张合计 451,584 字节（441 KiB，约 0.43 MiB），完整请求另含状态、任务文本和少量 MessagePack 元数据。RC 与 SDK 的原始图像和共享内存契约保持不变，缩放仅发生在 MaaS 网络后端。状态顺序保持左臂 6 关节、左夹爪、右臂 6 关节、右夹爪，不换算单位。观测含递增 seq、秒级时间戳、新会话 episode_id 和任务文本。
+raw 模式每张像素数据为 150,528 字节，三张合计 451,584 字节（441 KiB，约 0.43 MiB）；JPEG 大小随画面内容与质量变化，完整请求另含状态、任务文本和少量 MessagePack 元数据。RC 与 SDK 的原始图像和共享内存契约保持不变，缩放和 JPEG 编码仅发生在 MaaS 网络后端。状态顺序保持左臂 6 关节、左夹爪、右臂 6 关节、右夹爪，不换算单位。观测含递增 seq、秒级时间戳、新会话 episode_id 和任务文本。
 
 只接受有限的浮点 `[50,14]`、`space=joint_pos`、`mode=absolute` 动作。客户端不做反归一化或 delta 累加。重叠区手臂采用原 Qwen 指数平滑，夹爪保留旧计划；补偿只加在输出副本上，不累计到 canonical 缓存。仅 RC 控制线程发送和消费动作。
 

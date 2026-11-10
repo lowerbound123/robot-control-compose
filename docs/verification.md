@@ -1,5 +1,21 @@
 # Schema 3 动态策略容器验收
 
+## MaaS JPEG 与 YAML 模型配置（2026-11-10）
+
+基于 `fd98f27`，分支 `codex/maas-jpeg-yaml`。MaaS 模型配置默认改为 YAML，
+`observations.jpeg` 控制 raw/JPEG，`observations.jpeg_quality` 为 85～100 的整数。
+JPEG 按交接协议使用 `enc/data` 包装，保留 224×224 补边和独立实例生命周期。
+
+- 配置新增用例先观察 **17 failed**，实现后配置/部署/setup 专项 **70 passed**。
+- JPEG 新增用例先观察 **7 failed**，实现后图像/协议/计时/真实 worker 专项 **60 passed**。
+- 最终 `python3 scripts/test_scope.py --policy internvla_maas`：**281 passed、1 skipped**（宿主缺少 rclpy），包含 example 和自链；跳过不计通过。
+- setup/主配置 YAML 相关补充回归：**22 passed**。
+- 新建 MaaS Python 3.11 镜像内测试：**194 passed**；runtime/test 镜像构建和 `pip check` 通过。
+- 实际隔离 Docker 验收 **5 项通过**：Python 3.10 RC→Python 3.11 MaaS、raw 观测、YAML 冷切换后的三路 JPEG 解码、旧实例读者及容器退出证明、故障停止和手动冷恢复。退出码 0，清理证据确认容器/卷/网络全部为空。
+- 首次 Docker 验收因旧提交入口要求 ROS、复用的无 ROS RC 测试镜像缺少该环境而失败；改用 mock 专用 Python 入口，并保留源码来源校验后重跑通过。首次失败未计通过，正式 RC 启动脚本未修改。
+
+证据日志：`/private/tmp/rc-maas-jpeg-{config-red,config-green,wire-red,wire-green,scope,setup,linux,docker-build,docker-final}.log`；跨容器结果和清理证明位于 `/private/tmp/rc-maas-jpeg-docker-final/`。单智能体实施与自审；未连接真实 MaaS、真实模型或机器人硬件。私有配置保持 Git 忽略，旧 JSON 保留备份。
+
 ## WebUI 深浅主题切换（2026-11-06）
 
 顶部太阳／月亮按钮切换深浅主题，默认沿用浅色并记住浏览器偏好；全页面及 Canvas 配色适配，主题切换保持录像、位姿历史和 AI 请求连续。

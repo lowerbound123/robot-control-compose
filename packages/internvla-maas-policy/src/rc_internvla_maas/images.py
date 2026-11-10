@@ -1,4 +1,6 @@
 """MaaS wire images: aspect-preserving RGB resize with centered black padding."""
+import io
+
 import numpy as np
 from PIL import Image
 
@@ -21,3 +23,10 @@ def resize_rgb(frame):
     left = (IMAGE_SIZE - resized_width) // 2
     result[top:top + resized_height, left:left + resized_width] = np.asarray(resized)
     return result
+
+
+def encode_jpeg(frame, quality):
+    """Encode an owned RGB snapshot; the caller supplies validated quality."""
+    with io.BytesIO() as stream:
+        Image.fromarray(frame).save(stream, format='JPEG', quality=quality)
+        return stream.getvalue()

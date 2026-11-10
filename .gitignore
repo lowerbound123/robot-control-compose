@@ -48,6 +48,11 @@ ros_ws/log/
 !/policy/llm_direction/compose.yaml
 !/policy/llm_failure/compose.yaml
 
+# MaaS model credentials, including custom profiles. Ship *.yaml.example.
+/policy/internvla_maas/**/*.yaml
+/policy/internvla_maas/**/*.yml
+!/policy/internvla_maas/compose.yaml
+
 # WebUI local credentials and build/test outputs
 /webui/config.json
 **/node_modules/

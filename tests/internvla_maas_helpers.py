@@ -1,6 +1,5 @@
 """Fixtures at the remote service boundary; no model or hardware dependencies."""
 import copy
-import json
 from pathlib import Path
 import sys
 import queue
@@ -23,9 +22,15 @@ def settings(address='ws://127.0.0.1:9000'):
 
 def configured(tmp_path, value=None):
     from rc_internvla_maas.configuration import load_model_config
-    path = tmp_path / 'model.json'
-    path.write_text(json.dumps(settings() if value is None else copy.deepcopy(value)))
+    path = tmp_path / 'model.yaml'
+    write_model_config(path, settings() if value is None else copy.deepcopy(value))
     return load_model_config(path, project_root=tmp_path)
+
+
+def write_model_config(path, value):
+    from ruamel.yaml import YAML
+    with path.open('w', encoding='utf-8') as stream:
+        YAML(typ='safe', pure=True).dump(value, stream)
 
 
 @contextmanager

@@ -1,4 +1,5 @@
 """Production entry, real SDK host/worker and RC; only the remote model is fake."""
+import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 
 from config_helpers import read_config
 from host_helpers import LocalPolicyProcess
-from internvla_maas_helpers import ROOT, images, model_server, settings, wait
+from internvla_maas_helpers import ROOT, images, model_server, settings, wait, write_model_config
 from project_templates import copy_templates
 from rc_policy_sdk.images import ImagePool
 
@@ -20,19 +21,22 @@ pytest.importorskip('msgpack')
 pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason='local MaaS worker requires Python 3.11')
 
 
-def prepare(tmp_path, server, monkeypatch):
+def prepare(tmp_path, server, monkeypatch, *, jpeg=False):
     root = tmp_path / 'policy'
     directory = root / 'internvla_maas'
     copy_templates(ROOT / 'policy/internvla_maas', directory)
-    (directory / 'model.json').write_text(json.dumps(settings(server.address)))
+    raw = settings(server.address)
+    raw['observations'] = {'jpeg': jpeg, 'jpeg_quality': 90}
+    write_model_config(directory / 'model.yaml', raw)
     sources = [ROOT / 'src', ROOT / 'packages/policy-sdk/src', ROOT / 'packages/internvla-maas-policy/src']
     monkeypatch.setenv('PYTHONPATH', os.pathsep.join(map(str, sources)))
     return directory, read_config(directory / 'policy.yaml')
 
 
-def test_real_worker_releases_shared_images_and_reopens_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize('jpeg', [False, True])
+def test_real_worker_releases_shared_images_and_reopens_context(tmp_path, monkeypatch, jpeg):
     with model_server() as server:
-        directory, manifest = prepare(tmp_path, server, monkeypatch)
+        directory, manifest = prepare(tmp_path, server, monkeypatch, jpeg=jpeg)
         worker = LocalPolicyProcess(directory, manifest, init_timeout_s=5, inference_timeout_s=3, release_timeout_s=3)
         pool = ImagePool(tmp_path / 'frames', cameras=('head', 'left_wrist', 'right_wrist'))
         for name, frame in images().items():
@@ -51,7 +55,15 @@ def test_real_worker_releases_shared_images_and_reopens_context(tmp_path, monkey
             actions = np.asarray(response['actions'])
             assert actions.shape == (50, 14)
             np.testing.assert_allclose(actions[:, [6, 13]], -.85)
-            assert server.requests[0]['images']['front'][112, 112, 0] == 1
+            front = server.requests[0]['images']['front']
+            if jpeg:
+                from PIL import Image
+                assert front['enc'] == 'jpeg'
+                with Image.open(io.BytesIO(front['data'])) as decoded:
+                    assert decoded.size == (224, 224)
+                    assert abs(int(np.asarray(decoded)[112, 112, 0]) - 1) <= 2
+            else:
+                assert front[112, 112, 0] == 1
             worker.reset_context()
             worker.submit({**request, 'request_id': 2, 'generation': 2,
                            'runtime': {'observation_id': 'maas-two', 'control_epoch': 2, 'consumed_actions': 7}})
@@ -132,7 +144,8 @@ def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeyp
         raw['actions'] = {'gripper_compensation': False}
         # LocalPolicyProcess copies the source directory when it starts; place
         # this candidate before that copy, as a real bind mount would expose it.
-        (directory / 'alternate.json').write_text(json.dumps(raw))
+        raw['observations'] = {'jpeg': True, 'jpeg_quality': 90}
+        write_model_config(directory / 'alternate.yaml', raw)
         rc = read_config(ROOT / 'configs/rc.mock.yaml.example')
         rc.update(policy_directory=str(directory.parent), startup_policy='internvla_maas',
                   outputs_directory=str(tmp_path / 'outputs'), frequency_hz=30,
@@ -161,7 +174,7 @@ def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeyp
                 assert controller.status()['state'] == 'running'
                 assert controller._worker is old and len(server.hellos) == sessions
             command('pause')
-            command('policy internvla_maas switch-model alternate.json')
+            command('policy internvla_maas switch-model alternate.yaml')
             assert controller.status()['state'] == 'paused'
             assert old.cleanup_confirmed and not old.has_readers
             assert controller._worker.runtime_id != old.runtime_id
@@ -174,6 +187,7 @@ def test_controller_cold_switch_fault_stop_and_manual_recovery(tmp_path, monkeyp
             time.sleep(.15)
             assert len(server.requests) == requests and controller.status()['consumed'] == count
             assert server.requests[-1]['instruction'] == 'New task.'
+            assert server.requests[-1]['images']['front']['enc'] == 'jpeg'
             assert 'fixture-key' not in json.dumps(controller.read_events())
             assert 'fixture-key' not in json.dumps(controller.status())
             command('switch internvla_maas')

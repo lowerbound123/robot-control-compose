@@ -1,0 +1,23 @@
+service:
+  address: ""
+  model: internvla_a15
+  robot_id: ""
+  api_key: ""
+  embodiment: ""
+  connect_timeout_s: 30
+  close_timeout_s: 2
+runtime:
+  instruction: Move the object into the tray.
+observations:
+  state_offsets: {}
+  # true: send JPEG bytes; false: send raw RGB ndarray.
+  jpeg: false
+  # Integer 85..100. The MaaS protocol requires at least 85.
+  jpeg_quality: 85
+execution:
+  chunk_size: 50
+  request_when_remaining: 30
+  inference_timeout_s: 60
+  expected_control_hz: 30
+actions:
+  gripper_compensation: true

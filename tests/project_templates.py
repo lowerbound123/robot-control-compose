@@ -15,9 +15,9 @@ def copy_templates(source, destination, **kwargs):
     def ignored(directory, names):
         result = set(previous(directory, names) if previous else ())
         folder = Path(directory)
-        llm_sources = {'llm_failure', 'llm_direction'}
-        if llm_sources.intersection((source.name, *folder.relative_to(source).parts)):
-            result.update(name for name in names if not (name == 'compose.yaml' and folder.name in llm_sources) and
+        private_sources = {'llm_failure', 'llm_direction', 'internvla_maas'}
+        if private_sources.intersection((source.name, *folder.relative_to(source).parts)):
+            result.update(name for name in names if not (name == 'compose.yaml' and folder.name in private_sources) and
                           name.endswith(('.yaml', '.yml', '.json')))
         # Private env files are never copied; only shipped *.env.example templates are kept.
         result.update(name for name in names if name.endswith('.env') or name == '__pycache__' or
