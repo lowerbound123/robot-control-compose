@@ -37,13 +37,16 @@ class RecordingController:
     def __init__(self):
         self.lines = []
         self.logs = []
+        self.help_documents = []
 
     def submit(self, line):
         self.lines.append(line)
         return "ordinary-operation"
 
-    def _emit_command(self, message, level="info"):
+    def _emit_command(self, message, level="info", **metadata):
         self.logs.append((level, message))
+        if 'help_document' in metadata:
+            self.help_documents.append(metadata['help_document'])
 
 
 class DeferredService:
@@ -134,7 +137,11 @@ def test_router_local_help_is_distinct_from_mcp_help():
     router.submit("mcp help")
     assert service.calls == []
     output = "\n".join(message for _, message in controller.logs)
-    assert "send_command" in output and "commands" in output and "wait" in output
+    assert 'send_command' in output and '控制与运动' in output
+    router.submit('mcp help send_command')
+    output = '\n'.join(message for _, message in controller.logs)
+    assert 'commands' in output and 'wait' in output
+    assert len(controller.help_documents) == 2
     for line in ("mcp", "help mcp"):
         with pytest.raises(ValueError):
             router.submit(line)

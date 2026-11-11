@@ -126,7 +126,7 @@ class ImagePool:
             if self._closed:
                 raise RuntimeError('image pool is closed')
             if any(slot['leases'] for slots in self._slots.values() for slot in slots):
-                raise RuntimeError('image readers remain at backend boundary')
+                raise RuntimeError('image readers remain at connector boundary')
             self._latest.clear()
             for slots in self._slots.values():
                 for slot in slots:

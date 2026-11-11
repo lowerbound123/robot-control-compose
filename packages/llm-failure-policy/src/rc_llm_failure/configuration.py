@@ -18,7 +18,7 @@ DEFAULT_PARAMS = {
 def validate_config(config):
     if config.get('execution', {}).get('control_mode') not in CONTROL_MODES:
         raise ValueError('llm_failure requires control_mode qpos, epos or mixed')
-    if any(path != 'execution.on_backend_switch' for path in config.get('hot_reloadable', [])):
+    if any(path != 'execution.on_connector_switch' for path in config.get('hot_reloadable', [])):
         raise ValueError('llm_failure settings are cold; reload after editing')
     supplied = config.get('params')
     if isinstance(supplied, dict) and {'task', 'prompt'}.intersection(supplied):

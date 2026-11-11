@@ -32,6 +32,7 @@ class LogRecord:
     revision: int = 0
     ready: bool = False
     preserve_view_revision: int = -1
+    help_document: dict | None = None
 
 
 @dataclass(frozen=True, order=True)
@@ -152,7 +153,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         label.append(f'[{level_label(level)}] ', style=level_style)
         label.append(f'[{source}] ', style='bold magenta' if source == 'MCP' else
                      'bold blue' if source.startswith('policy:') else 'bold cyan')
-        return self.write(str(event.get('message', '')), label=label, style=style)
+        return self.write(str(event.get('message', '')), label=label, style=style,
+                          help_document=event.get('help_document'))
 
     def write_events(self, events):
         """One history/layout update for a controller drain, including eviction."""
@@ -169,7 +171,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             self._restore_view(anchor, follow)
             self.refresh()
 
-    def write(self, message, *, label='', style=''):
+    def write(self, message, *, label='', style='', help_document=None):
         if self._closed:
             return self
         if isinstance(message, Text):
@@ -180,7 +182,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         identity = self._next_id
         self._next_id += 1
         record = LogRecord(identity, message, label, style,
-                           preview_record(message, label, style, self._width))
+                           preview_record(message, label, style, self._width),
+                           help_document=help_document)
         self.records[identity] = record
         self._dirty[identity] = None
         removed = False
@@ -309,7 +312,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             identity = next(iter(self._dirty))
             record = self.records[identity]
             options = dict(label=record.label, style=record.style, width=self._width,
-                           expanded=record.expanded, parsed=record.formatted.parsed)
+                           expanded=record.expanded, parsed=record.formatted.parsed,
+                           help_document=record.help_document)
             try:
                 self._formatter.jobs.put_nowait((identity, record.revision, record.message, options))
             except Full:
@@ -340,6 +344,9 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             lower = start.offset if identity == start.record else 0
             upper = end.offset if identity == end.record else len(record.formatted.document)
             text = record.formatted.document
+            if record.formatted.source_complete:
+                chunks.append(text[lower:upper])
+                continue
             parts, previous = [], None
             for row in record.formatted.rows:
                 begin, finish = max(lower, row.start), min(upper, row.end)
@@ -405,8 +412,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
                         # background, hiding text. Keep the resolved background.
                         selection_style = self.screen.get_component_rich_style(
                             'screen--selection', partial=True) + Style(bgcolor=selection_style.bgcolor)
-                    content.stylize(selection_style,
-                                    max(0, lower - row.start), min(row.end, upper) - row.start)
+                    for begin, finish in row.selection_ranges(lower, upper):
+                        content.stylize(selection_style, begin, finish)
         marker = ('▾ ' if record.expanded else '▸ ') if row.header and record.formatted.parsed else '  '
         text = Text(marker, style=self.rich_style)
         room = max(0, width - 2 - (COPY_WIDTH if row.header else 0))
@@ -415,6 +422,9 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         if row.header:
             text.pad_right(max(0, width - COPY_WIDTH - text.cell_len))
             text.append(COPY_LABEL, style='cyan')
+        # Rich's direct render omits the base style when there are no spans;
+        # blank help separators still need a style for Textual's color filters.
+        text.stylize_before(self.rich_style)
         return Strip(text.render(self.app.console)).crop_extend(0, width, self.rich_style)
 
     def _hit(self, offset):
@@ -434,7 +444,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             cells -= size
         else:
             char = len(row.text.plain)
-        position = TextPosition(record.identity, min(row.end, row.start + char))
+        position = TextPosition(record.identity, row.source_at(char))
         action = 'copy' if row.header and offset.x >= self.scrollable_content_region.width - COPY_WIDTH else 'toggle' if row.header else None
         return position, action
 

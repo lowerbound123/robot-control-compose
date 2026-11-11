@@ -28,7 +28,7 @@ def _number(value, name, *, positive=False):
 def validate_config(config):
     if config.get('execution', {}).get('control_mode') != 'epos':
         raise ValueError('llm_direction requires control_mode epos')
-    if any(path != 'execution.on_backend_switch' for path in config.get('hot_reloadable', [])):
+    if any(path != 'execution.on_connector_switch' for path in config.get('hot_reloadable', [])):
         raise ValueError('llm_direction settings are cold; reload after editing')
     supplied = config.get('params')
     if not isinstance(supplied, dict) or set(supplied) - set(DEFAULT_PARAMS):

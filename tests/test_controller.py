@@ -111,7 +111,7 @@ def setup_controller(tmp_path):
         (directory / "main.py").write_text("\n".join(f"def {name}(*args): pass" for name in ["initialize", "policy", "reset_context", "release"]))
         (directory / "main.py").with_name("compose.yaml").write_text("services:\n  policy:\n    image: fixture:local\n")
         (directory / "policy.yaml").write_text(json.dumps({"schema_version": 3, "id": identity,  "execution": {"mode": "sync", "call_every_actions": 2, "control_mode": "qpos"}, "params": {"value": 1}, "hot_reloadable": ["params.value", "execution.mode"]}))
-    config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first", "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [0.1]*14}, "reset_qpos": [0]*14, "outputs_directory": "outputs", "timeouts": {"initialize_s": 2, "inference_s": 2, "release_s": 1}}
+    config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first", "robot": {"connector": "body"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [0.1]*14}, "reset_qpos": [0]*14, "outputs_directory": "outputs", "timeouts": {"initialize_s": 2, "inference_s": 2, "release_s": 1}}
     path = tmp_path / "rc.yaml"
     path.write_text(json.dumps(connector_config(config)))
     robot = MockRobot()

@@ -2,7 +2,7 @@
 import threading
 
 
-class BackendAccess:
+class ConnectorAccess:
     def __init__(self, robot=None):
         self._lock = threading.RLock()
         self.raw = robot
@@ -43,16 +43,16 @@ class BackendAccess:
         with self._lock:
             raw, generation = self.raw, self.generation
             if raw is None or not self.available:
-                raise RuntimeError('backend is disconnected or switching')
+                raise RuntimeError('connector is disconnected or switching')
         result = getattr(raw, method)(*args, **kwargs)
         with self._lock:
             if raw is not self.raw or generation != self.generation or not self.available:
-                raise RuntimeError('stale backend generation')
+                raise RuntimeError('stale connector generation')
         return result, generation
 
     def read_state(self):
         value, epoch = self._call('read_state')
-        return {**value, 'backend_generation': epoch}
+        return {**value, 'connector_generation': epoch}
 
     def read_images(self):
         return self._call('read_images')[0]
@@ -62,15 +62,15 @@ class BackendAccess:
 
     def camera_preview_snapshot(self):
         value, epoch = self._call('camera_preview_snapshot')
-        return {key: {**frame, 'backend_generation': epoch} for key, frame in value.items()}
+        return {key: {**frame, 'connector_generation': epoch} for key, frame in value.items()}
 
     def recording_snapshot(self):
         try:
             value, epoch = self._call('recording_snapshot')
-            return {**value, 'backend_generation': epoch,
-                    'frames': {key: {**frame, 'backend_generation': epoch} for key, frame in value.get('frames', {}).items()}}
+            return {**value, 'connector_generation': epoch,
+                    'frames': {key: {**frame, 'connector_generation': epoch} for key, frame in value.get('frames', {}).items()}}
         except RuntimeError as exc:
-            return {'state': None, 'state_error': str(exc), 'frames': {}, 'backend_generation': self.generation}
+            return {'state': None, 'state_error': str(exc), 'frames': {}, 'connector_generation': self.generation}
 
     def feedback_since(self, arm, seq):
         return self._call('feedback_since', arm, seq)[0]

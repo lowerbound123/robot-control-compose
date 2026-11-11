@@ -164,14 +164,14 @@ def test_example_reset_token_has_a_meaningful_context_reset(entry):
 
 
 @pytest.mark.parametrize('source', SOURCES)
-def test_backend_switch_action_is_policy_owned_and_applies_to_future_switch(entry, source):
+def test_connector_switch_action_is_policy_owned_and_applies_to_future_switch(entry, source):
     module, config = entry(source)
     for value in ('reset', 'reinitialize_policy'):
         effects = []
-        module.configure(object(), config, 'execution.on_backend_switch', value, effects.append)
-        assert config['execution']['on_backend_switch'] == value
+        module.configure(object(), config, 'execution.on_connector_switch', value, effects.append)
+        assert config['execution']['on_connector_switch'] == value
         assert effects == []
     before = copy.deepcopy(config)
     with pytest.raises(ValueError):
-        module.configure(object(), config, 'execution.on_backend_switch', 'unknown', effects.append)
+        module.configure(object(), config, 'execution.on_connector_switch', 'unknown', effects.append)
     assert config == before and effects == []

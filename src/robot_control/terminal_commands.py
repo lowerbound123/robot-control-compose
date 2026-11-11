@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from .secret_config import reject_secret_edit
-from rc_policy_sdk.command_syntax import command_help, parse_command
+from rc_policy_sdk.command_syntax import parse_command
+from .help_document import help_text
+from .mcp_help import mcp_help_document
 
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 import json
@@ -16,7 +18,7 @@ MCP_HELP = "\n".join([
     '示例：mcp send_command {"commands":["left:open","right:close"],"wait":true}',
     "调用在后台执行；wait=true 不阻塞终端，等待超时不取消动作；图像只显示元数据。",
 ])
-PANEL_HELP = "camera show|hide|toggle；monitor [实例]：切换 TUI 监控面板，启动时关闭。"
+PANEL_HELP = "camera [show|hide|toggle]：省略参数切换相机面板；monitor [实例]：切换 TUI 监控面板，启动时关闭。"
 POLICY_MONITOR_HELP = "monitor <实例>：切换已加载 policy 的监控面板；仅支持 TUI。"
 MANAGE_HELP = 'policy manage [apply|save|close]：本地 TUI 链编排；进入时暂停，apply 后暂停，save 只保存草稿。'
 SNAPSHOT_HELP = "snapshot：后台保存三路原始相机 PNG 和完整 state 到当前工作目录 snapshot/<时间戳>/；支持本地 TUI/headless。"
@@ -55,26 +57,14 @@ class TerminalCommandRouter:
         return tuple(tool["name"] for tool in self.service.tools) if self.service else ()
 
     def help(self, tool_name=None):
-        rows = [MCP_HELP]
+        return help_text(self.help_document(tool_name))
+
+    def help_document(self, tool_name=None):
         if self.service is None:
-            return "\n".join([*rows, "MCP 服务未启动"])
-        selected = [tool for tool in self.service.tools if tool_name is None or tool['name'] == tool_name]
-        if tool_name is not None and not selected:
-            raise ValueError(f'未知 MCP 工具：{tool_name}')
-        for tool in selected:
-            schema = tool["input_schema"]
-            required = schema.get("required", [])
-            args = []
-            for name, spec in schema.get("properties", {}).items():
-                if name in required:
-                    args.append(f"<{name}>")
-                elif "default" in spec:
-                    args.append(f"[{name}={json.dumps(spec['default'], ensure_ascii=False)}]")
-                else:
-                    args.append(f"[{name}]")
-            description = (tool.get("description") or "").split("\n", 1)[0]
-            rows.append(f"mcp {tool['name']} [JSON对象] — {description}；JSON 字段：{' '.join(args)}")
-        return "\n".join(rows)
+            value = mcp_help_document(())
+            value['sections'].append({'title': '服务状态', 'body': 'MCP 服务未启动。'})
+            return value
+        return mcp_help_document(self.service.tools, tool_name)
 
     def submit(self, line: str):
         if line.strip() and hasattr(self.controller, 'interrupt_tui_batches'):
@@ -95,14 +85,13 @@ class TerminalCommandRouter:
             name = 'monitor-' + parsed.target if parsed.target else 'monitor'
             return self.panel_handler(name, None)
         if parsed.kind == 'help' and parsed.args and parsed.args[0] in ('camera', 'monitor', 'snapshot'):
-            topic = ' '.join(parsed.args)
-            rows = [row for row in command_help().splitlines() if row.startswith(topic)]
-            if topic == 'snapshot':
-                rows.append(SNAPSHOT_HELP)
-            self.controller._emit_command('\n'.join(rows))
+            from .help_content import builtin_help
+            value = builtin_help(parsed.args)
+            self.controller._emit_command(help_text(value), help_document=value)
             return
         if parsed.kind == 'mcp_help':
-            self.controller._emit_command(self.help(parsed.target))
+            value = self.help_document(parsed.target)
+            self.controller._emit_command(help_text(value), help_document=value)
             return
         if parsed.kind != 'mcp_tool':
             return self.controller.submit(line)
@@ -156,6 +145,16 @@ class TerminalCommandRouter:
         try:
             response = future.result()
             payload = response.structured_content
+            help_document = payload.get('help_document') if name == 'help' and isinstance(payload, dict) else None
+            if help_document is None and name == 'command' and isinstance(payload, dict) and isinstance(payload.get('result'), dict):
+                try:
+                    if parse_command(payload.get('command', '')).kind in ('help', 'policy_help'):
+                        help_document = payload['result'].get('help_document')
+                except ValueError:
+                    pass
+            if help_document is not None and not response.is_error:
+                self.controller._emit_command(help_text(help_document), help_document=help_document, **log_options)
+                return
             if payload is not None:
                 text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
             else:

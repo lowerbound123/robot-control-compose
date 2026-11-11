@@ -4,6 +4,8 @@
 
 ```text
 help
+help config rc set
+help connector switch
 status
 pause
 resume
@@ -14,10 +16,10 @@ config rc show
 config rc set frequency_hz 50
 config rc save
 
-backend list
-backend status
-backend switch mock
-backend retry
+connector list
+connector status
+connector switch mock
+connector retry
 
 global show
 global show task
@@ -33,6 +35,7 @@ record start
 record stop
 record status
 
+camera
 camera show
 camera hide
 camera toggle
@@ -55,6 +58,7 @@ policy example retry
 policy example set-message "新的消息"
 
 mcp help
+mcp help send_command
 mcp take
 mcp return
 mcp state {"include_images":false}
@@ -64,7 +68,9 @@ mcp state {"include_images":false}
 
 `policy <实例> config set <key> <raw_value>` 保留 key 之后完整原文，由策略 `configure(context, candidate, key, value, callback) -> None` 解析。策略可以普通提交、请求 reset，或请求原进程 reinitialize。reset/reinitialize 完成后保持暂停，需显式恢复。显示和保存使用已提交配置，保存目标必须是明确实例。重复来源按出现顺序使用 -0/-1/...，不会把来源名隐式指向某个实例。
 
-`backend switch <名称>` 使用命名 connector profile 热切换连接，正常 policy 容器保留；成功后暂停，失败后仅显式 `backend retry` 或 `policy <实例> retry` 恢复。profile 结构及退出证明要求见 [backend 热切换](backend-switching.md)。
+`connector switch <名称>` 使用命名 connector profile 热切换连接，正常 policy 容器保留；成功后暂停，失败后仅显式 `connector retry` 或 `policy <实例> retry` 恢复。profile 结构及退出证明要求见 [connector 热切换](connector-switching.md)。
+
+`camera` 等同于 `camera toggle`，连续执行两次分别显示和隐藏相机面板。`camera show` 与 `camera hide` 显式设置显示状态。
 
 `resume` 只恢复 policy 拥有控制权时的运行，不隐式归还 MCP 控制权。本地接管/归还使用 `mcp take` / `mcp return`；HTTP 的结构化工具名仍为 take/return。MCP 工具参数只能是 JSON 对象，无参数工具可省略对象。`mcp help` 显示工具目录。
 

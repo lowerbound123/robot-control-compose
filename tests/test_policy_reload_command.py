@@ -62,7 +62,7 @@ def reload_controller(tmp_path, request):
                   "wait-command": {"handler": "wait_command", "args": []}}}
     (root / "policy.yaml").write_text(json.dumps(config))
     rc = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy", "startup_policy": "first",
-          "robot": {"backend": "mock"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
+          "robot": {"connector": "body"}, "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
           "reset_qpos": [0]*14, "outputs_directory": "outputs",
           "timeouts": {"initialize_s": getattr(request, "param", 3), "inference_s": .1, "release_s": .3}}
     path = tmp_path / "rc.yaml"

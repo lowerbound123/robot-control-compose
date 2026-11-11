@@ -1,5 +1,6 @@
 """Static, standard-library-only UI hints; never an execution validator."""
 import math
+from .help_metadata import help_string, normalize_help_details
 
 PRIMITIVES = frozenset(('str', 'int', 'float', 'bool'))
 PARAMETER_TYPES = PRIMITIVES | {'enum', 'path', 'json'}
@@ -7,7 +8,8 @@ _FIELDS = {'name', 'type', 'help', 'choices', 'root', 'kind', 'suffixes'}
 
 
 def _text(value, field, maximum, *, empty=True):
-    if type(value) is not str or len(value) > maximum or '\0' in value or (not empty and not value.strip()):
+    help_string(value, field, maximum)
+    if not empty and not value.strip():
         raise ValueError(f'{field} must be a bounded string')
     return value
 
@@ -55,12 +57,14 @@ def executable_type(parameter):
 def normalize_config_hints(raw=None):
     if raw is None:
         raw = {}
-    if type(raw) is not dict or set(raw) - {'help', 'settings'}:
-        raise ValueError('config_hints must contain help/settings')
+    if type(raw) is not dict or set(raw) - {'help', 'help_details', 'settings'}:
+        raise ValueError('config_hints must contain help/help_details/settings')
     settings = raw.get('settings', {})
     if type(settings) is not dict or len(settings) > 256:
         raise ValueError('config_hints.settings must be a bounded object')
     result = {'help': _text(raw.get('help', ''), 'config_hints.help', 4096), 'settings': {}}
+    if 'help_details' in raw:
+        result['help_details'] = normalize_help_details(raw['help_details'])
     for key, value in settings.items():
         _text(key, 'setting key', 256, empty=False)
         if any(character.isspace() for character in key):

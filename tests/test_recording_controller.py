@@ -103,10 +103,13 @@ def test_recording_mcp_mixed_modes_and_sync_inference_wait(setup_controller):
 
 
 def test_record_help_status_and_invalid_arguments_do_not_change_generation(setup_controller):
+    from robot_control.help_document import help_text
     controller, _, _ = setup_controller
     ready(controller)
     generation = controller.buffer.generation
-    assert 'record' in operation(controller, 'help')
+    help_result = operation(controller, 'help')
+    assert 'record' in help_result['help']
+    assert help_result['help'] == help_text(help_result['help_document'])
     assert operation(controller, 'record status')['state'] == 'idle'
     for line in ('record invalid', 'record start extra', 'record on', 'record off', 'record toggle'):
         with pytest.raises(ValueError):

@@ -110,7 +110,7 @@ class LivePreview:
                 self._generation[panel] += 1
             self.samples.clear()
             self._last_keys.clear()
-            self.camera_error = 'backend changed; waiting for fresh images'
+            self.camera_error = 'connector changed; waiting for fresh images'
         if self._camera_job and self._camera_job[0].done():
             future, generation = self._camera_job
             self._camera_job = None

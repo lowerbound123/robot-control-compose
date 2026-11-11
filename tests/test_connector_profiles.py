@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize('value', ['reload_policy', '', None, True, 1])
-def test_policy_rejects_unknown_backend_switch_action(value):
+def test_policy_rejects_unknown_connector_switch_action(value):
     config = manifest()
-    config['execution']['on_backend_switch'] = value
-    with pytest.raises(ValueError, match='on_backend_switch'):
+    config['execution']['on_connector_switch'] = value
+    with pytest.raises(ValueError, match='on_connector_switch'):
         validate_policy(config)
 
 
@@ -31,12 +31,12 @@ def test_profile_selector_accepts_named_connection_but_rejects_inline_mix():
 
 
 def test_profile_reads_fresh_file_without_accepting_paths_or_symlinks(tmp_path):
-    from robot_control.backend_profiles import BackendProfiles
+    from robot_control.connector_profiles import ConnectorProfiles
     folder = tmp_path / 'robots'
     folder.mkdir()
     path = folder / 'lab.yaml'
     path.write_text(json.dumps({'connector': 'body', 'source': 'mock', 'config': 'devices/first.yaml'}))
-    profiles = BackendProfiles(folder)
+    profiles = ConnectorProfiles(folder)
     first = profiles.read('lab')
     path.write_text(json.dumps({'connector': 'body', 'source': 'mock', 'config': 'devices/second.yaml'}))
     assert profiles.read('lab')['config'] == 'devices/second.yaml'
@@ -55,16 +55,16 @@ def test_setup_upgrades_policy_field_without_overwriting_hot_list_or_choice(tmp_
     folder.mkdir(parents=True)
     config = manifest()
     config['id'] = 'demo'
-    config['execution']['on_backend_switch'] = 'reset'
+    config['execution']['on_connector_switch'] = 'reset'
     (folder / 'policy.yaml').write_text(json.dumps(config))
     template = copy.deepcopy(config)
-    template['execution']['on_backend_switch'] = 'reinitialize_policy'
-    template['hot_reloadable'] = ['execution.on_backend_switch']
+    template['execution']['on_connector_switch'] = 'reinitialize_policy'
+    template['hot_reloadable'] = ['execution.on_connector_switch']
     (folder / 'policy.yaml.example').write_text(json.dumps(template))
     changes, documents = helpers().configuration_updates(tmp_path)
     updated = documents['policy/demo/policy.yaml']
-    assert updated['execution']['on_backend_switch'] == 'reset'
-    assert updated['hot_reloadable'] == ['params.nested.value', 'execution.on_backend_switch']
+    assert updated['execution']['on_connector_switch'] == 'reset'
+    assert updated['hot_reloadable'] == ['params.nested.value', 'execution.on_connector_switch']
 
 
 def test_setup_keeps_direct_connector_and_creates_profiles_only_once(tmp_path):
@@ -90,7 +90,7 @@ def test_setup_keeps_direct_connector_and_creates_profiles_only_once(tmp_path):
 def test_setup_checks_custom_profiles_without_a_template(tmp_path):
     from test_setup_config import helpers
     import importlib.util
-    spec = importlib.util.spec_from_file_location('backend_setup_validation', ROOT / 'scripts/config_validation.py')
+    spec = importlib.util.spec_from_file_location('connector_setup_validation', ROOT / 'scripts/config_validation.py')
     validation = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validation)
     folder = tmp_path / 'configs/robots'

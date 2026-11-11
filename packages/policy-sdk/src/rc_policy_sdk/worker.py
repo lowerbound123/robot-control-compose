@@ -18,6 +18,7 @@ from .control import RUNTIME_TOOLS, runtime_tools
 from .actions import CONTROL_MODES, normalize_actions
 
 from .configuration import ConfigureCallback, apply_candidate, apply_patch, same_config, validate_candidate
+from .catalog import validate_connector_switch_settings
 from .images import map_images
 from .lifecycle import become_subreaper, cleanup_worker_children
 from .runtime import PolicyRuntime, WorkerChannel, invoke
@@ -84,6 +85,7 @@ def run_session(connection, policy_dir, namespace):
             raise ValueError("first message must initialize with a config object")
         peer_capabilities = message
         config = message["config"]
+        validate_connector_switch_settings(config)
         channel.context_id = message.get("context_id")
         if message.get('global_state') is not None:
             if channel.context_id is not None and message['global_state'].get('binding', {}).get('context_id') != channel.context_id:
@@ -97,7 +99,7 @@ def run_session(connection, policy_dir, namespace):
         check_command_effects(specs, message)
         supports_configure = callable(getattr(module, "configure", None))
         configure_enabled = supports_configure and message.get("configure") is True
-        reinitialize_enabled = (configure_enabled or message.get("backend_switch_v1") is True or
+        reinitialize_enabled = (configure_enabled or message.get("connector_switch_v1") is True or
                                 any(spec.get("effect") == "reinitialize_policy" for spec in specs.values()))
         channel.reinitialize_enabled = reinitialize_enabled
         if reinitialize_enabled and (type(channel.context_id) is not str or not channel.context_id):
@@ -138,7 +140,7 @@ def run_session(connection, policy_dir, namespace):
             supported=supported and module.wants_observations(context)
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
                       "configure": configure_enabled, "context_id": channel.context_id,
-                      "backend_switch_v1": message.get("backend_switch_v1") is True,
+                      "connector_switch_v1": message.get("connector_switch_v1") is True,
                       "tui_command_effects_v2": list(COMMAND_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
                       "global_state_version": 1 if channel.global_memory is not None else None})
         channel.send({'type':'capabilities','observe':supported})
@@ -228,11 +230,12 @@ def run_session(connection, policy_dir, namespace):
                     if kind == "reinit_validate":
                         if type(message.get("new_config_version")) is not int or message["new_config_version"] <= version or not isinstance(message.get("config"), dict):
                             raise ValueError("invalid candidate configuration")
-                        if callable(getattr(module, "validate_config", None)):
-                            try:
+                        try:
+                            validate_connector_switch_settings(message["config"])
+                            if callable(getattr(module, "validate_config", None)):
                                 module.validate_config(copy.deepcopy(message["config"]))
-                            except Exception as exc:
-                                raise CandidateRejected(str(exc)) from exc
+                        except Exception as exc:
+                            raise CandidateRejected(str(exc)) from exc
                     elif kind == "reinit_release":
                         monitor.barrier()
                         commands.barrier()
@@ -251,6 +254,7 @@ def run_session(connection, policy_dir, namespace):
                     elif kind == "reinit_initialize":
                         if active or release_due or type(message.get("context_id")) is not str or not message["context_id"] or type(message.get("config_version")) is not int or message["config_version"] <= version or not isinstance(message.get("config"), dict):
                             raise ValueError("invalid new policy context")
+                        validate_connector_switch_settings(message['config'])
                         config = message["config"]
                         version = message["config_version"]
                         channel.context_id = message["context_id"]

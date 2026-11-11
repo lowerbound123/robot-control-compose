@@ -1,10 +1,26 @@
 schema_version: 3
 id: example
+help: 无模型的策略接口演示；观测图像、传递动作并报告结果
+help_details:
+  group: 示例与验证
+  description: >-
+    每个 example 实例拥有独立 context 与执行进程。空动作输入生成保持目标，非空输入逐帧透传。
+    可用于验证配置提交、生命周期回调和共享图像读取，无需加载模型。
+  sections:
+    - title: 开始使用
+      body: 切换后保持暂停；先检查统计和配置，再显式 resume。重复来源会生成 example-0、example-1 等独立实例。
+    - title: 图像租约
+      body: 只读共享图像在本次回调结束前释放；示例输出仅含摘要，不保存共享视图。
+  examples:
+    - title: 查看实例统计
+      command: policy <实例> example
+    - title: 查看配置
+      command: policy <实例> config show
 execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
-  on_backend_switch: reinitialize_policy
+  on_connector_switch: reinitialize_policy
 params:
   message: example
   reset_token: 0     # config set 修改此标记后清空统计和待发结果，保留 context
@@ -16,18 +32,32 @@ hot_reloadable:
 - params.message
 - params.log_every_n_calls
 - params.inference_delay_s
-- execution.on_backend_switch
+- execution.on_connector_switch
 tui_commands:
   set-message:
     handler: set_message
     args: [{name: message, type: str, help: 消息文本}]
     help: 热更新本实例的消息，保留 context 和执行进程
+    help_details:
+      group: 任务设置
+      description: 将消息提交为 params.message 的热配置，后续回调读取新值。
+      sections:
+        - title: 执行影响
+          body: 配置确认后生效，不重置统计、不重新导入模块；已接受命令仍遵守控制代次复核。
+      examples:
+        - title: 设置中文消息
+          command: 'policy <实例> set-message "整理桌面"'
     effect: update_config
     timeout_s: 5
   example:
     handler: example
     args: []
     help: 查看 example 的统计、图像摘要、运行时元数据和当前配置
+    help_details:
+      group: 观测与诊断
+      examples:
+        - title: 读取当前统计
+          command: policy <实例> example
     timeout_s: 5
   next-result:
     handler: next_result
@@ -35,42 +65,94 @@ tui_commands:
             completed, terminated, fault]}, {name: message, type: str, help:
           结果说明}]
     help: 运行中让下一次推理暂停、报告完成/终止或演示故障：pause/completed/terminated/fault 和说明
+    help_details:
+      group: 任务结果
+      sections:
+        - title: 生效时机
+          body: 命令只安排下一次推理的结果；实例必须运行到下一次 inference 才会触发。
+      examples:
+        - title: 报告任务完成
+          command: 'policy <实例> next-result completed "已整理桌面"'
     timeout_s: 5
   shared-read:
     handler: shared_read
     args: []
     help: 读取共享键 example_note 及当前版本
+    help_details:
+      group: 共享状态
+      examples:
+        - title: 先读取版本
+          command: policy <实例> shared-read
     timeout_s: 5
   shared-write:
     handler: shared_write
     args: [{name: value, type: str, help: 共享字段内容}, {name: version, type: int,
           help: 期望的共享状态版本}]
     help: 按给定版本写入 example_note（消息 版本）
+    help_details:
+      group: 共享状态
+      description: 先通过 shared-read 取得版本，再以该版本写入；并发修改时需要重新读取。
+      examples:
+        - title: 以读取到的版本写入（此处版本为示例）
+          command: 'policy <实例> shared-write "整理完成" 0'
     timeout_s: 5
   set-chunk-size:
     handler: set_chunk_size
     args: [{name: size, type: int, help: 动作块长度}]
     help: 只重载本实例，将空输入保持的帧数设为 1 到 256
+    help_details:
+      group: 生命周期
+      examples:
+        - title: 冷重载当前实例
+          command: policy <实例> set-chunk-size 4
     effect: reload_policy
     timeout_s: 5
   set-chunk-size-all:
     handler: set_chunk_size
     args: [{name: size, type: int, help: 动作块长度}]
     help: 修改本实例的保持帧数，并冷重载整个运行组
+    help_details:
+      group: 生命周期
+      examples:
+        - title: 冷重载整个组
+          command: policy <实例> set-chunk-size-all 4
     effect: reload_all_policy
     timeout_s: 5
   reinitialize:
     handler: reinitialize
     args: []
     help: 用当前配置在原进程重新初始化本实例
+    help_details:
+      group: 生命周期
+      examples:
+        - title: 重新初始化当前实例
+          command: policy <实例> reinitialize
     effect: reinitialize_policy
   reinitialize-chunk-size:
     handler: set_chunk_size
     args: [{name: size, type: int, help: 动作块长度}]
     help: 在原进程重新初始化本实例，同时设置空输入保持帧数
+    help_details:
+      group: 生命周期
+      examples:
+        - title: 重新初始化并更新动作块长度
+          command: policy <实例> reinitialize-chunk-size 4
     effect: reinitialize_policy
 config_hints:
   help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  help_details:
+    group: 配置设置
+    description: 设置项与原始文本由 example 的 configure 解析；候选值和类型是帮助信息。
+    sections:
+      - title: 普通提交与生命周期
+        body: message 普通提交保留 context；reset_token 请求 reset；chunk_size 请求原进程 reinitialize。成功后均可显式保存本实例配置。
+    examples:
+      - title: 普通消息配置
+        command: policy <实例> config set params.message 整理桌面
+      - title: 原进程重新初始化
+        command: policy <实例> config set params.chunk_size 4
+      - title: 保存确切实例
+        command: policy <实例> config save
   settings:
     params.message:
       type: str
@@ -109,7 +191,7 @@ config_hints:
     execution.tui_command_workers:
       type: int
       help: 命令执行线程数；修改后重新初始化并暂停
-    execution.on_backend_switch:
+    execution.on_connector_switch:
       type: enum
       choices:
       - reset

@@ -2,14 +2,14 @@ import threading
 
 import pytest
 
-from robot_control.backend_access import BackendAccess
+from robot_control.connector_access import ConnectorAccess
 from connector_helpers import MockRobot
 
 
 def test_late_reader_never_returns_retired_connection_data():
     old, new = MockRobot(), MockRobot()
     old.connect(); new.connect()
-    access = BackendAccess(old)
+    access = ConnectorAccess(old)
     entered, go = threading.Event(), threading.Event()
     read = old.read_state
     def delayed():
@@ -28,8 +28,8 @@ def test_late_reader_never_returns_retired_connection_data():
     assert entered.wait(1)
     access.suspend(); access.bind(new)
     go.set(); thread.join(2)
-    assert results == ['stale backend generation']
-    assert access.read_state()['backend_generation'] == access.generation
+    assert results == ['stale connector generation']
+    assert access.read_state()['connector_generation'] == access.generation
     old.close(); access.close()
 
 

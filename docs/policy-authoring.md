@@ -1,6 +1,6 @@
 # 策略作者规范
 
-SDK 0.16 保留公共配置字段 `execution.on_backend_switch`，默认 `reinitialize_policy`，可选 `reset`。所有策略从初始化时建立可重绑定的context身份，不再需要声明重初始化命令才能参与backend切换。reset必须结束旧后台请求、清空旧机器人状态；release/initialize沿用旧绑定释放、新绑定初始化的语义。详见 [backend 热切换](backend-switching.md)。
+SDK 0.17 保留公共配置字段 `execution.on_connector_switch`，默认 `reinitialize_policy`，可选 `reset`。所有策略从初始化时建立可重绑定的context身份，不再需要声明重初始化命令才能参与connector切换。reset必须结束旧后台请求、清空旧机器人状态；release/initialize沿用旧绑定释放、新绑定初始化的语义。详见 [connector 热切换](connector-switching.md)。
 
 SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享内存，RC 统一提交写入，退出全量保存到 global.env。完整接口、并发与持久化约定见 [全局共享状态](global-state.md)。
 
@@ -120,7 +120,7 @@ tui_commands:
 
 MCP 执行必须先 `take`，再调用 `policy_command(instance_id=..., command=..., args=[...])`；参数保留 JSON 原生 str/int/float/bool 类型，布尔值不能作为整数，字符串不自动转为数字。`command("policy <实例> <命令> ...")` 受支持，沿用本地字符串参数解析。工具 `timeout_s` 仅限制回执等待，handler 执行时限仍来自 manifest。等待超时或断连不取消已受理命令。普通命令不自动恢复推理，三种生命周期 effect 完成后继续由 MCP 持有控制权，显式 `return` 或 `return_and_wait` 才恢复 policy。
 
-`effect: update_config` 提交热配置补丁。handler 只验证并返回manifest 白名单内 `params.*` 或 `execution.on_backend_switch` 叶字段的非空补丁，不直接修改 context 或配置。RC 使用现有 SDK `update_config` 事务，在双端确认后更新目标配置及逻辑链版本；配置对象、context、模型、进程和容器保持不变。TUI 调用保留原运行/暂停状态，MCP 调用仍需先 take，完成后保持 MCP 控制权和 policy 暂停。链中必须解析为明确实例，其他成员的配置与版本不变；`policy example-1 set-message "新消息"` 展示该用法。命令回包与 ACK 提交都复核 worker、配置版本、控制权及动作代次；未确认或失效的提交沿用热更新故障清理，不自动重试。该 effect 通过 `tui_command_effects_v2` 双端协商，需同步更新 RC/SDK。
+`effect: update_config` 提交热配置补丁。handler 只验证并返回manifest 白名单内 `params.*` 或 `execution.on_connector_switch` 叶字段的非空补丁，不直接修改 context 或配置。RC 使用现有 SDK `update_config` 事务，在双端确认后更新目标配置及逻辑链版本；配置对象、context、模型、进程和容器保持不变。TUI 调用保留原运行/暂停状态，MCP 调用仍需先 take，完成后保持 MCP 控制权和 policy 暂停。链中必须解析为明确实例，其他成员的配置与版本不变；`policy example-1 set-message "新消息"` 展示该用法。命令回包与 ACK 提交都复核 worker、配置版本、控制权及动作代次；未确认或失效的提交沿用热更新故障清理，不自动重试。该 effect 通过 `tui_command_effects_v2` 双端协商，需同步更新 RC/SDK。
 
 `effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停，`resume` 仍重置上下文。Docker 生命周期由 RC 管理。
 
@@ -151,6 +151,40 @@ MCP 持有控制权时可用 `retry_reload(instance_id=...)` 或 `command("polic
 默认策略和所有重载成功后保持暂停；显式 resume 才驱动推理。policy switch 默认不复位，--reset 才运动。release 超时由监督层和容器层兜底，完整证明允许后续初始化，但强制事实保留为非零退出。无法证明时进入 BLOCKED_CLEANUP，不启动新组、不回收未知 reader。
 
 创建前保存意图，取消/超时后按本 generation 可信标签核对全部资源。所有清理均受同一绝对期限限制。容器 restart 固定 no；恢复必须通过统一生命周期入口，不自动复用旧 session 或回滚旧模型。
+
+## 静态帮助元数据（0.17）
+
+简短说明继续使用 `help: 字符串`。policy 顶层（包括原生 chain）、每条 `tui_commands` 和 `config_hints` 都可声明可选的 `help_details`，用于分组、长说明、执行影响和示例：
+
+```yaml
+help: 设置任务消息
+help_details:
+  group: 任务设置
+  description: 修改当前实例的任务消息，保留执行进程。
+  sections:
+    - title: 执行影响
+      body: 配置提交成功后生效，不重置统计。
+  examples:
+    - title: 设置中文消息
+      command: 'policy <实例> set-message "整理桌面"'
+```
+
+所有字段均可省略，但出现时必须符合下表；`sections`/`examples` 每项的两个字段必须完整。未知字段、错误类型、控制字符和超限内容在加载 manifest 时拒绝。文字中的方括号、引号与 JSON 原样显示，不作为 Rich 标记、表达式、回调或模板执行。
+
+| 字段 | 类型与限制 |
+| --- | --- |
+| `group` | 普通文本，最多 128 字符 |
+| `description` | 普通文本，最多 16384 字符 |
+| `sections` | 最多 32 项；每项 `title` 最多 256 字符、`body` 最多 16384 字符 |
+| `examples` | 最多 64 项；每项 `title` 最多 256 字符、`command` 最多 4096 字符 |
+
+单份 `help_details` 的 JSON 文本总长度最多 131072 字符。仅允许换行与制表符作为文本控制符，不接受 ANSI 转义。`<实例>` 是唯一会替换的占位符：RC 只在已加载的确切实例帮助中替换它。未加载来源保留 `<实例>` 并显示说明；重复来源按 example-0、example-1 等实例分别呈现。其他 `${...}`、花括号与尖括号文本不插值。帮助不会插入实时配置值、环境变量或密钥。
+
+参数说明从现有 `args` 和 `config_hints.settings` 生成；`help_details` 只丰富展示，不能成为业务校验，也不会改变 `configure(context, config, key, value, callback)` 接收原始文本的语义。这些声明是冷元数据，普通配置提交不能修改，正常执行组重建时才加载新的声明。
+
+`help` 显示分组总览，`help config rc set` 等完整 token 路径显示详情；`policy help [来源或实例] [命令]` 查询静态 manifest，永不导入或启动未运行模型；命令位置填写 `config` 可只查看配置说明。原生 chain 也显示简介、成员顺序及各成员声明；未加载链显示计划实例身份，仍保留示例占位符。完整的三处声明见 `policy/example/policy.yaml.example`。
+
+所有帮助入口共用 JSON 可序列化的 `HelpDocument`（`schema_version: 1`），包括标题、摘要、用法、章节、命令目录、参数和示例。日志 `message` 保存完整纯文本，并附 `help_document` 供 TUI 排版；headless 和文件不含 ANSI。HTTP MCP 的 `content.text` 是同一可读文本，`structured_content` 保留原能力字段并附 `help_document`。普通状态与操作回执仍使用结构化 JSON；文本批次中的帮助不改变批次回执结构。
 
 ## 参数提示与路径补全（0.15）
 

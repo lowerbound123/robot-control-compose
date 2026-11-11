@@ -22,7 +22,7 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
         command = app.query_one(CommandInput)
         for prefix, expected in (("mc", "mcp "), ("mcp se", "mcp send_command "),
                                  ("mcp retry_r", "mcp retry_reload "),
-                                 ("mcp retry_b", "mcp retry_backend "), ("mcp return_", "mcp return_and_wait "),
+                                 ("mcp retry_c", "mcp retry_connector "), ("mcp return_", "mcp return_and_wait "),
                                  ("mcp get_pol", "mcp get_policy_result ")):
             command.value = prefix
             command.cursor_position = len(command.value)
@@ -31,9 +31,9 @@ async def test_tui_completes_tools_preserves_arguments_and_logs_errors(local_ser
             await wait_completion(pilot, command, [expected.strip().split()[-1]])
             await pilot.press("enter")
             assert command.value == expected
-        for prefix, labels in (("mcp ret", ["return", "return_and_wait", "retry_backend", "retry_reload"]),
+        for prefix, labels in (("mcp ret", ["return", "return_and_wait", "retry_connector", "retry_reload"]),
                                ("mcp retu", ["return", "return_and_wait"]),
-                               ("mcp retry", ["retry_backend", "retry_reload"])):
+                               ("mcp retry", ["retry_connector", "retry_reload"])):
             command.value = prefix; command.cursor_position = len(prefix)
             await pilot.press("tab")
             await wait_completion(pilot, command, labels)

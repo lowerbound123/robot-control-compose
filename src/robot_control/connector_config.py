@@ -39,7 +39,7 @@ def validate_connectors(config):
         if set(robot) != {'profile'}:
             raise ValueError('robot.profile cannot be mixed with inline connection settings')
         if not isinstance(robot['profile'], str) or not PROFILE.fullmatch(robot['profile']):
-            raise ValueError('invalid backend profile name')
+            raise ValueError('invalid connector profile name')
         # An optional direct selector is dormant while a profile is selected.
         if 'connectors' not in config:
             return

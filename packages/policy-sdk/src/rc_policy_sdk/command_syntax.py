@@ -6,12 +6,12 @@ import shlex
 # Each entry is (literal path, argument usage). One source for help/reservation/completion.
 COMMAND_TREE = (
     ('help', '[命令路径]'), ('status', ''), ('pause', ''), ('resume', ''), ('reset', ''), ('exit', ''),
-    ('backend list', ''), ('backend status', ''), ('backend switch', '<名称>'), ('backend retry', ''),
+    ('connector list', ''), ('connector status', ''), ('connector switch', '<名称>'), ('connector retry', ''),
     ('config rc show', ''), ('config rc set', '<字段> <JSON>'), ('config rc save', ''),
     ('global show', '[key]'), ('global set', '<key> <JSON>'), ('global remove', '<key>'),
     ('pose save', '<名称>'), ('pose restore', '<名称或路径>'), ('snapshot', ''),
     ('record', ''), ('record start', ''), ('record stop', ''), ('record status', ''),
-    ('camera show', ''), ('camera hide', ''), ('camera toggle', ''), ('monitor', '[实例]'),
+    ('camera', ''), ('camera show', ''), ('camera hide', ''), ('camera toggle', ''), ('monitor', '[实例]'),
     ('policy help', '[来源或实例] [命令]'), ('policy list', ''), ('policy switch', '<id> [--reset]'),
     ('policy manage', ''), ('policy manage apply', ''), ('policy manage save', ''), ('policy manage close', ''),
     ('policy <实例> config show', ''), ('policy <实例> config set', '<设置项> <原始值>'),
@@ -37,7 +37,7 @@ class Command:
     @property
     def readonly(self):
         return (self.kind in READ_KINDS or self.kind == 'record' and self.args == ('status',)
-                or self.kind == 'backend' and self.args in (('list',), ('status',)))
+                or self.kind == 'connector' and self.args in (('list',), ('status',)))
 
     @property
     def local_only(self):
@@ -95,13 +95,13 @@ def parse_command(line: str) -> Command:
     head, args = words[0], words[1:]
     if head in ('status', 'pause', 'resume', 'reset', 'exit', 'snapshot') and not args:
         return Command(head)
-    if head == 'backend' and (args in (['list'], ['status'], ['retry']) or
+    if head == 'connector' and (args in (['list'], ['status'], ['retry']) or
                               len(args) == 2 and args[0] == 'switch'):
-        return Command('backend', args=tuple(args))
+        return Command('connector', args=tuple(args))
     if head == 'help':
-        if args and args[0] in ('mcp', 'policy'):
+        if len(args) == 1 and args[0] in ('mcp', 'policy'):
             raise ValueError(f'请使用 {args[0]} help')
-        if args and not any(path.startswith(' '.join(args)) for path, _ in COMMAND_TREE):
+        if args and not any(path.split()[:len(args)] == args for path, _ in COMMAND_TREE):
             raise ValueError('未知帮助主题；策略帮助使用 policy help <实例>')
         return Command('help', args=tuple(args))
     if head == 'config' and args in (['rc', 'show'], ['rc', 'save']):
@@ -115,8 +115,8 @@ def parse_command(line: str) -> Command:
         return Command('pose_' + args[0], args[1])
     if head == 'record' and (not args or args in (['start'], ['stop'], ['status'])):
         return Command('record', args=tuple(args))
-    if head == 'camera' and args in (['show'], ['hide'], ['toggle']):
-        return Command('camera', args=tuple(args))
+    if head == 'camera' and (not args or args in (['show'], ['hide'], ['toggle'])):
+        return Command('camera', args=tuple(args or ['toggle']))
     if head == 'monitor' and len(args) <= 1:
         if args and args[0] in ('on', 'off', 'show', 'hide', 'toggle'):
             raise ValueError('用法：monitor [实例]；不带实例切换机器人面板')

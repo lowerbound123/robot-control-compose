@@ -8,7 +8,7 @@ import uuid
 import pytest
 
 from config_helpers import read_config
-from test_backend_switch import profile
+from test_connector_switch import profile
 from test_example_controller import ROOT, command, example_rc
 from test_ros_integration import _stop_simulator
 
@@ -40,14 +40,14 @@ def test_repeated_mock_ros_and_named_domain_switches_keep_policy_process(example
             processes.append(subprocess.Popen([sys.executable, '-m', 'robot_control_test_sim.simulator', '--namespace', namespace],
                 env={**os.environ, 'ROS_DOMAIN_ID': str(141+index)}, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         profile(rc, 'mock-return', .1)
-        command(rc, 'policy example config set execution.on_backend_switch "reset"')
+        command(rc, 'policy example config set execution.on_connector_switch "reset"')
         context = command(rc, 'policy example example')['context_id']
         for name in ('ros-0', 'mock-return', 'ros-1', 'ros-0', 'mock-return'):
             old = rc.robot.raw
-            command(rc, 'backend switch ' + name)
+            command(rc, 'connector switch ' + name)
             assert rc._worker is worker and rc._worker.pid == worker.pid
             assert command(rc, 'policy example example')['context_id'] == context
-            assert rc.status()['backend']['profile'] == name and rc.status()['state'] == 'paused'
+            assert rc.status()['connector']['profile'] == name and rc.status()['state'] == 'paused'
             assert len(rc.robot.read_images()) == 3
             assert old.closed and old.process.poll() == 0
             assert rc.robot.raw.process.pid != old.process.pid
@@ -55,8 +55,8 @@ def test_repeated_mock_ros_and_named_domain_switches_keep_policy_process(example
             if name.startswith('ros-'):
                 assert rc.robot.raw.spec['source'] == 'acone'
                 assert rc.robot.raw.config['ros_domain_id'] == 141 + int(name[-1])
-        command(rc, 'policy example config set execution.on_backend_switch "reinitialize_policy"')
-        command(rc, 'backend switch ros-1')
+        command(rc, 'policy example config set execution.on_connector_switch "reinitialize_policy"')
+        command(rc, 'connector switch ros-1')
         assert rc._worker is worker and command(rc, 'policy example example')['context_id'] != context
     finally:
         # Close the active connection before its simulator; avoid a stale-feedback fault during teardown.

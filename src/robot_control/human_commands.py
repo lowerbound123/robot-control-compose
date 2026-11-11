@@ -3,7 +3,7 @@ import copy
 import json
 import shlex
 
-from rc_policy_sdk.command_syntax import Command, parse_command, command_help
+from rc_policy_sdk.command_syntax import Command, parse_command
 from .config import dotted_set, _validate_rc
 from .secret_config import public_value, reject_secret_edit
 from .yaml_config import save_yaml_config
@@ -26,8 +26,8 @@ def execution_line(command):
     kind, target, args = command.kind, command.target, command.args
     if kind in ('help', 'status', 'pause', 'resume', 'reset', 'exit'):
         return kind
-    if kind == 'backend':
-        return shlex.join(['backend', *args])
+    if kind == 'connector':
+        return shlex.join(['connector', *args])
     if kind == 'policy_list':
         return 'policies'
     if kind == 'policy_switch':
@@ -121,8 +121,8 @@ class HumanCommandSupport:
         parsed = parse_command(line)
         if not parsed.readonly:
             raise ValueError('not a read command')
-        if parsed.kind == 'backend' and parsed.args == ('list',):
-            return self.backend_profiles.list()
+        if parsed.kind == 'connector' and parsed.args == ('list',):
+            return self.connector_profiles.list()
         with self._lock:
             return self._query_parsed(parsed)
 
@@ -143,12 +143,17 @@ class HumanCommandSupport:
     def _query_parsed(self, parsed):
         kind = parsed.kind
         if kind == 'help':
-            if parsed.args == ('record',):
-                from .recording_control import RECORD_HELP
-                return RECORD_HELP
-            rows = command_help().splitlines()
-            prefix = ' '.join(parsed.args)
-            return '\n'.join(row for row in rows if not prefix or row.startswith(prefix))
+            from .help_content import builtin_help
+            from .help_document import help_payload
+            value = builtin_help(parsed.args)
+            if not parsed.args:
+                capabilities = self.policy_capabilities()
+                for policy in capabilities['policies']:
+                    if policy['loaded']:
+                        identity = policy['instance_id']
+                        value['commands'].append({'group': '已加载策略实例', 'command': 'policy help ' + identity,
+                            'summary': f"来源 {policy['source_id']}；查看命令、参数与示例。"})
+            return help_payload(value)
         if kind == 'rc_config_show':
             draft = getattr(self, '_rc_config_draft', self.config)
             return public_value({'active': self.config, 'draft': draft, 'changes': config_changes(self.config, draft)})

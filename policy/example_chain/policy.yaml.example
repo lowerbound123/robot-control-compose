@@ -1,4 +1,16 @@
 schema_version: 3
 kind: chain
+help: 由两个独立 example 实例组成的原生链
+help_details:
+  group: 示例与验证
+  description: 动作按 example-0 到 example-1 的顺序传递；共享一个来源目录和镜像，各自拥有容器、执行进程与 context。
+  sections:
+    - title: 实例身份
+      body: 链自身不创建执行容器。命令、监控、保存与退出证明都针对确切成员实例。
+  examples:
+    - title: 查看链成员帮助
+      command: policy help example_chain
+    - title: 加载链
+      command: policy switch example_chain
 # 两个独立实例 example-0、example-1；只需准备 example 一个来源镜像。
 policies: [example, example]

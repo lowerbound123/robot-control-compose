@@ -56,7 +56,7 @@ test('stale camera status recovers and closing the page releases all preview sub
   await page.goto('/monitor')
   const head = page.locator('[data-camera="head"]')
   await expect(head.locator('.camera-state')).toHaveAttribute('data-state', 'live')
-  // Backend stale-source/recovery behavior is covered by test_web_preview.py;
+  // Connector stale-source/recovery behavior is covered by test_web_preview.py;
   // this exercises how the browser renders that status without losing the image.
   await page.route('**/preview/status', async route => {
     const response = await route.fetch()

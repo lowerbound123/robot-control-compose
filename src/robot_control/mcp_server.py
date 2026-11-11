@@ -34,6 +34,8 @@ from .operations import TERMINAL
 from .policy_results import PolicyWaitActive
 from .web_preview import WebPreview, multipart_frames
 from .web_state import WebState, state_events
+from .help_document import help_payload, help_text
+from .secret_config import public_value
 
 Timeout = Annotated[float, Field(ge=0, le=120)]
 PolicyWaitTimeout = Annotated[FiniteFloat, Field(ge=0)]
@@ -92,8 +94,18 @@ class BearerTokenMiddleware:
         await self.app(scope, receive, send)
 
 
-def result(payload, images=(), *, error=False):
-    return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, allow_nan=False)), *images],
+def result(payload, images=(), *, error=False, help_document=None):
+    if help_document is not None:
+        payload = public_value(payload)
+        help_document = public_value(help_document)
+        text = help_text(help_document)
+        if 'help_document' in payload:
+            payload.update(help_document=help_document, help=text)
+        elif isinstance(payload.get('result'), dict) and 'help_document' in payload['result']:
+            payload['result'].update(help_document=help_document, help=text)
+    else:
+        text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    return CallToolResult(content=[TextContent(type="text", text=text), *images],
                           structured_content=payload, is_error=error)
 
 
@@ -113,8 +125,8 @@ def create_server(controller):
         "policy_config reads an exact instance without take; set/save require take and preserve MCP ownership. "
         "Use structured take/return tools; command text uses policy list, config rc show, global show, "
         "policy <instance> config show|set|save, policy <instance> retry, and record start|stop. "
-        "backend_profiles lists named connections; switch_backend/retry_backend require take and remain paused. "
-        "Backend changes apply execution.on_backend_switch for each instance; failed instances are listed in retry_reload_instances. "
+        "connector_profiles lists named connections; switch_connector/retry_connector require take and remain paused. "
+        "Connector changes apply execution.on_connector_switch for each instance; failed instances are listed in retry_reload_instances. "
         "Only confirmed operation success means completion; wait timeout does not cancel motion."
     ))
     read = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -133,11 +145,11 @@ def create_server(controller):
         if not include_images:
             return payload, []
         epoch = getattr(controller.robot, 'generation', None)
-        expected_epoch = payload.get('state', {}).get('backend_generation',
-            payload.get('controller', {}).get('backend', {}).get('generation'))
+        expected_epoch = payload.get('state', {}).get('connector_generation',
+            payload.get('controller', {}).get('connector', {}).get('generation'))
         def stale():
             return {**payload, 'images': [], 'image_errors': {
-                name: 'backend changed during image capture; request a fresh snapshot'
+                name: 'connector changed during image capture; request a fresh snapshot'
                 for name in (cameras or camera_names)}}, []
         if expected_epoch is not None and epoch != expected_epoch:
             return stale()
@@ -158,7 +170,7 @@ def create_server(controller):
                 image.save(stream, format="JPEG", quality=image_quality or 85)
                 content.append(ImageContent(type="image", mime_type="image/jpeg", data=base64.b64encode(stream.getvalue()).decode()))
                 metadata.append({"camera": camera, "timestamp": timestamp, "width": image.width, "height": image.height,
-                                 **({'backend_generation': epoch} if epoch is not None else {}),
+                                 **({'connector_generation': epoch} if epoch is not None else {}),
                                  "content_index": len(content)})
             except Exception as exc:
                 errors[camera] = str(exc)
@@ -166,7 +178,7 @@ def create_server(controller):
             return stale()
         return {**payload, "images": metadata, "image_errors": {key: value for key, value in errors.items() if key in selected}}, content
 
-    async def finish_operation(identity, wait, timeout_s, include_images=False, cameras=None, image_quality=None):
+    async def finish_operation(identity, wait, timeout_s, include_images=False, cameras=None, image_quality=None, *, human_help=False):
         payload = controller.get_operation(identity)
         deadline = time.monotonic() + timeout_s
         while wait and payload["status"] not in TERMINAL:
@@ -178,12 +190,15 @@ def create_server(controller):
             payload = await asyncio.to_thread(controller.wait_operation, identity, min(.1, remaining))
         payload = {**payload, "controller": controller.status()}
         payload, images = await asyncio.to_thread(attach_images, payload, include_images, cameras, image_quality)
-        return result(payload, images, error=payload["status"] in ("failed", "cancelled"))
+        help_document = payload.get('result', {}).get('help_document') if human_help and isinstance(payload.get('result'), dict) else None
+        return result(payload, images, error=payload["status"] in ("failed", "cancelled"), help_document=help_document)
 
     async def query(line):
         try:
             payload = await asyncio.to_thread(controller.query, line)
-            return result(payload if isinstance(payload, dict) else {"result": payload})
+            from rc_policy_sdk.command_syntax import parse_command
+            help_document = payload.get('help_document') if isinstance(payload, dict) and parse_command(line).kind in ('help', 'policy_help') else None
+            return result(payload if isinstance(payload, dict) else {"result": payload}, help_document=help_document)
         except (ValueError, RuntimeError) as exc:
             return result({"error": str(exc)}, error=True)
 
@@ -212,11 +227,30 @@ def create_server(controller):
             return result({'error': str(exc)}, error=True)
 
     @server.tool(annotations=read)
-    async def help(policy_id: str | None = None, command: str | None = None) -> CallToolResult:
-        """Read RC help, or a policy/instance's declared capabilities and one optional command."""
+    async def help(policy_id: str | None = None, command: str | None = None,
+                   tool: str | None = None, topic: str | None = None) -> CallToolResult:
+        """Read RC help, one MCP tool schema, or policy/instance declarations without loading models.
+
+        policy_id/command select policy help. tool selects an MCP tool. topic selects a complete RC command path.
+        These three selection modes are mutually exclusive. Text and help_document carry the same human content.
+        """
+        if sum((policy_id is not None or command is not None, tool is not None, topic is not None)) > 1:
+            return result({'error': 'policy_id/command、tool、topic 只能选择一种帮助范围'}, error=True)
+        if tool is not None:
+            from .mcp_help import mcp_help_document
+            try:
+                tools = [{'name': item.name, 'description': item.description, 'input_schema': item.input_schema}
+                         for item in await server.list_tools()]
+                value = mcp_help_document(tools, tool)
+                return result(help_payload(value), help_document=value)
+            except ValueError as exc:
+                return result({'error': str(exc)}, error=True)
+        if topic is not None:
+            return await query('help ' + topic)
         if policy_id is not None or command is not None:
             try:
-                return result(await asyncio.to_thread(controller.policy_help, policy_id, command))
+                payload = await asyncio.to_thread(controller.policy_help, policy_id, command)
+                return result(payload, help_document=payload['help_document'])
             except (ValueError, RuntimeError) as exc:
                 return result({'error': str(exc)}, error=True)
         return await query("help")
@@ -232,7 +266,7 @@ def create_server(controller):
     @server.tool(annotations=read)
     async def props() -> CallToolResult:
         """Read robot configuration, control units, gripper defaults and directions."""
-        connection = (controller.backend_properties() if hasattr(controller, 'backend_properties')
+        connection = (controller.connector_properties() if hasattr(controller, 'connector_properties')
                       else {'robot': config.get('robot', {})})
         return result({**connection, "frequency_hz": config.get("frequency_hz"),
                        "direct_control": direct, "safety": config.get("safety", {}),
@@ -259,9 +293,9 @@ def create_server(controller):
                 seq = sum(observation["sequences"].values())
             payload = {"state": observation, "seq": seq, "controller": controller.status(), "waited_for_new": wait_for_new and seq > baseline}
             payload, images = await asyncio.to_thread(attach_images, payload, include_images, cameras, image_quality)
-            epoch = observation.get('backend_generation')
+            epoch = observation.get('connector_generation')
             if epoch is not None and epoch != getattr(controller.robot, 'generation', epoch):
-                raise RuntimeError('backend changed while reading state/images; request a fresh snapshot')
+                raise RuntimeError('connector changed while reading state/images; request a fresh snapshot')
             return result(payload, images)
         except (ValueError, RuntimeError) as exc:
             return result({"error": str(exc), "controller": controller.status()}, error=True)
@@ -296,7 +330,9 @@ def create_server(controller):
             # Shutdown acknowledges acceptance before the server closes its listener.
             if line.strip() == "exit":
                 return result({"operation_id": identity, "status": "accepted"})
-            return await finish_operation(identity, wait, timeout_s)
+            from rc_policy_sdk.command_syntax import parse_command
+            return await finish_operation(identity, wait, timeout_s,
+                human_help=parse_command(line).kind in ('help', 'policy_help'))
         except (ValueError, RuntimeError, PermissionError) as exc:
             return rejected('command', exc)
 
@@ -354,26 +390,26 @@ def create_server(controller):
             return rejected(tool, exc)
 
     @server.tool(annotations=write)
-    async def switch_backend(profile: StrictStr, wait: bool = False, timeout_s: Timeout = 30,
+    async def switch_connector(profile: StrictStr, wait: bool = False, timeout_s: Timeout = 30,
                              expected_control: ControlGuard | None = None) -> CallToolResult:
         """After take, reconnect a named profile and adapt each policy; keep ownership and remain paused. Never automatically retry."""
         import shlex
-        return await manage('switch_backend', controller.submit, shlex.join(['backend', 'switch', profile]),
-            origin='mcp', mcp_tool='switch_backend', wait=wait, timeout_s=timeout_s,
+        return await manage('switch_connector', controller.submit, shlex.join(['connector', 'switch', profile]),
+            origin='mcp', mcp_tool='switch_connector', wait=wait, timeout_s=timeout_s,
             expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=write)
-    async def retry_backend(wait: bool = False, timeout_s: Timeout = 30,
+    async def retry_connector(wait: bool = False, timeout_s: Timeout = 30,
                             expected_control: ControlGuard | None = None) -> CallToolResult:
-        """After take and an explicit retry request, finish pending cleanup and retry the failed backend connection."""
-        return await manage('retry_backend', controller.submit, 'backend retry',
-            origin='mcp', mcp_tool='retry_backend', wait=wait, timeout_s=timeout_s,
+        """After take and an explicit retry request, finish pending cleanup and retry the failed connector connection."""
+        return await manage('retry_connector', controller.submit, 'connector retry',
+            origin='mcp', mcp_tool='retry_connector', wait=wait, timeout_s=timeout_s,
             expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=read)
-    async def backend_profiles() -> CallToolResult:
+    async def connector_profiles() -> CallToolResult:
         """List named robot connection profiles without connecting, importing policies or taking control."""
-        return await query('backend list')
+        return await query('connector list')
 
     @server.tool(annotations=write)
     async def policy_chain(policies: list[StrictStr], action: Literal['apply', 'save'] = 'apply',

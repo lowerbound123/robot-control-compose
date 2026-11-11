@@ -6,6 +6,7 @@ import shlex
 
 from rc_policy_sdk.command_syntax import ROOT_COMMANDS, POLICY_COMMAND_RESERVED
 from rc_policy_sdk.argument_hints import executable_type, normalize_parameter
+from rc_policy_sdk.help_metadata import help_string, normalize_help_details
 
 BUILTIN_COMMANDS = ROOT_COMMANDS
 RELOAD_EFFECTS = ("reload_policy", "reload_all_policy", "reinitialize_policy")
@@ -32,7 +33,7 @@ def command_specs(config):
     for name, entry in raw.items():
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) or name in POLICY_COMMAND_RESERVED:
             raise ValueError(f"invalid or reserved TUI command name: {name}")
-        if not isinstance(entry, dict) or set(entry) - {"handler", "args", "help", "timeout_s", "effect"}:
+        if not isinstance(entry, dict) or set(entry) - {"handler", "args", "help", "help_details", "timeout_s", "effect"}:
             raise ValueError(f"invalid command declaration: {name}")
         handler, args = entry.get("handler"), entry.get("args")
         if not isinstance(handler, str) or not handler.isidentifier():
@@ -43,15 +44,15 @@ def command_specs(config):
         timeout = entry.get("timeout_s", -1)
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or (timeout != -1 and timeout <= 0):
             raise ValueError(f"{name}: timeout_s must be -1 or a positive finite number")
-        help_text = entry.get("help", "")
-        if not isinstance(help_text, str):
-            raise ValueError(f"{name}: help must be a string")
+        help_text = help_string(entry.get("help", ""), f'{name}.help')
         if "effect" in entry and entry["effect"] not in COMMAND_EFFECTS:
             raise ValueError(f"{name}: expected one of {COMMAND_EFFECTS} for effect")
         result[name] = {"handler": handler, "args": [executable_type(p) for p in parameters],
                         "parameters": parameters, "help": help_text, "timeout_s": timeout}
         if "effect" in entry:
             result[name]["effect"] = entry["effect"]
+        if 'help_details' in entry:
+            result[name]['help_details'] = normalize_help_details(entry['help_details'])
     return result
 
 

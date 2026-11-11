@@ -90,7 +90,7 @@ policy/my_policy/
 
 RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。两个 LLM 策略各自通过 `params.provider_config_path` 读取供应商 YAML。在 TUI 中用 `policy <实例> switch-provider <文件路径>` 切换，成功后只重建该实例并暂停整链。目标初始化失败可修正文件后执行 `policy <实例> retry`。
 
-RC/SDK 0.16 支持 [机器人 backend 热切换](docs/backend-switching.md)：`backend switch <命名配置>` 退出旧 connector 并创建新 connector，RC 与策略容器持续运行，完成后暂停。每个策略的 `execution.on_backend_switch` 默认 `reinitialize_policy`，可热改为 `reset` 保留原 context；混合链按实例执行，录制自动分会话。
+RC/SDK 0.17 支持 [机器人 connector 热切换](docs/connector-switching.md)：`connector switch <命名配置>` 退出旧 connector 并创建新 connector，RC 与策略容器持续运行，完成后暂停。每个策略的 `execution.on_connector_switch` 默认 `reinitialize_policy`，可热改为 `reset` 保留原 context；混合链按实例执行，录制自动分会话。
 
 主配置和 LLM 供应商配置使用 `.yaml.example`，模型配置使用 `.json.example`，部署环境使用 `deployment.env.example`。setup 从模板生成缺失文件，保留已有供应商文件。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。
 

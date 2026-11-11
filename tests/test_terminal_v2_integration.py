@@ -24,6 +24,7 @@ def router():
 
 
 @pytest.mark.parametrize('line,expected', [
+    ('camera', ('camera', None)),
     ('camera show', ('camera', True)),
     ('camera hide', ('camera', False)),
     ('camera toggle', ('camera', None)),
@@ -49,7 +50,7 @@ def test_policy_manage_is_a_local_subtree(router, action):
 
 
 @pytest.mark.parametrize('line', [
-    'camera', 'camera on', 'monitor on', 'monitor example on', 'monitor-example',
+    'camera on', 'monitor on', 'monitor example on', 'monitor-example',
     'manage-policy', 'example-set-message hello', 'set example.params.message hello',
     'mcp', 'help mcp', 'mcp command status', 'mcp send_command left:open',
     'mcp state []', 'mcp state null', 'mcp state {"wait":NaN}',
@@ -78,6 +79,27 @@ def test_local_help_filters_shared_grammar(router):
     assert router.controller.lines == []
 
 
+@pytest.mark.asyncio
+async def test_bare_camera_twice_opens_then_closes_the_panel():
+    from robot_control.graphics import GraphicsSupport
+    from robot_control.tui import RobotControlApp
+    from robot_control.tui_panels import CameraPanel
+    from test_tui import FakeController
+
+    controller = FakeController()
+    controller.robot = SimpleNamespace(camera_preview_snapshot=lambda: {})
+    app = RobotControlApp(controller, graphics=GraphicsSupport('kitty'))
+    async with app.run_test():
+        panel = app.query_one(CameraPanel)
+        assert not panel.display
+        app.router.submit('camera')
+        assert panel.display
+        app.router.submit('camera')
+        assert not panel.display
+        assert controller.commands == []
+        controller.done.set()
+
+
 def test_mcp_help_targets_a_tool_without_calling_it(router):
     calls = []
     router.service = SimpleNamespace(tools=(
@@ -87,7 +109,7 @@ def test_mcp_help_targets_a_tool_without_calling_it(router):
     ), submit_tool=lambda *args: calls.append(args))
     router.submit('mcp help send_command')
     output = '\n'.join(router.controller.logs)
-    assert 'commands' in output and 'send motion' in output
+    assert 'commands' in output and '相对运动' in output and '串行' in output
     assert 'read the robot' not in output
     assert calls == []
     with pytest.raises(ValueError):

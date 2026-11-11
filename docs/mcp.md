@@ -1,10 +1,12 @@
 # MCP 管理与控制
 
-新增只读 `backend_profiles` 与需先take的 `switch_backend(profile)`、`retry_backend`，支持 `expected_control` 和操作回执。`status.backend`报告阶段，`retry_reload_instances`列出可逐个冷重试的实例，原单实例字段保留为首项。WebUI动态发现这些工具，不自动重试或恢复运动。见 [backend 热切换](backend-switching.md)。
+新增只读 `connector_profiles` 与需先take的 `switch_connector(profile)`、`retry_connector`，支持 `expected_control` 和操作回执。`status.connector`报告阶段，`retry_reload_instances`列出可逐个冷重试的实例，原单实例字段保留为首项。WebUI动态发现这些工具，不自动重试或恢复运动。见 [connector 热切换](connector-switching.md)。
 
 WebUI 使用的 `status` 额外返回本次 RC 的 `run_id`。`take`、`return`、`command`、`record`、`policy_command`、`policy_config`、`policy_chain`、`retry_reload`、`return_and_wait`、`send_command`、`move_eef`、`move_joints` 支持可选 `expected_control={run_id, control_epoch, generation}`：RC 对提交时状态进行原子复核，普通排队控制命令在执行前再次复核。浏览器可据此拒绝翻译期间人工干预或重启前生成的旧操作。不传时沿用原有行为；录制仍不要求接管。终态回执新增不可变的 `completion_control`（相同三个字段），记录完成时的控制状态；`controller` 仍是查询时的当前快照，不能用它替代完成证明。见 [WebUI](webui.md)。
 
-服务默认提供 Streamable HTTP `/mcp`。本地 TUI/headless 的 `mcp <工具> <JSON>` 使用同一组注册工具。`mcp help` 查看完整参数；MCP `help()` 查看 RC 帮助。工具参数只能是 JSON 对象，无参数时可省略对象；不支持位置参数简写。TUI 接管和归还分别使用 `mcp take` / `mcp return`，裸 take/return 拒绝。`resume` 不会归还 MCP 控制权。
+服务默认提供 Streamable HTTP `/mcp`。本地 TUI/headless 的 `mcp <工具> <JSON>` 使用同一组注册工具。`mcp help` 查看分组目录，`mcp help send_command` 查看某个工具的完整参数、语法和示例；MCP `help()` 查看 RC 帮助。工具参数只能是 JSON 对象，无参数时可省略对象；不支持位置参数简写。TUI 接管和归还分别使用 `mcp take` / `mcp return`，裸 take/return 拒绝。`resume` 不会归还 MCP 控制权。
+
+`help(tool="send_command")` 从实际注册 JSON schema 展开参数，包括引用、联合类型、嵌套对象、必填、枚举和已声明默认值。`help(topic="config rc set")` 查看 RC 完整命令路径。`policy_id/command`、`tool`、`topic` 三种筛选互斥。帮助的 `content.text` 为完整可读文本；`structured_content` 保留 `policies/errors` 等能力字段，并增加 `help_document` 和纯文本 `help`。`command(line="help ...")` 与 `command(line="policy help ...")` 同样提供可读文本，机器端仍保留完整操作回执。`tui_command` 批次、`get_operation` 和其他普通结果继续返回 JSON。
 
 HTTP MCP 使用无状态 JSON 响应，初始化和工具调用通过 POST 完成。`GET/HEAD /mcp`（含尾斜杠）在认证及 Host/Origin 校验后返回 `405 Allow: POST`，表示不提供独立 MCP 通知流；兼容的 Streamable HTTP 客户端继续使用 POST。相机 MJPEG 和 `/state/stream` 使用各自的流式入口，不占用额外的 MCP 长连接。
 

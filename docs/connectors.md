@@ -29,11 +29,11 @@ robot:
 ./scripts/compose.sh -f compose.acone.yaml up -d --no-build
 ```
 
-setup 只初始化缺失的 `connector/*/devices/*.yaml`，不覆盖已有设备配置。ACOne 的 topic、消息类型、namespace、反馈超时和 `ros_domain_id` 位于 `connector/acone/devices/robot-main.yaml`。ROS 模拟器使用同目录的 `ros-test.yaml`。这些参数属于连接配置；修改后通过命名 profile 执行 `backend switch <名称>` 重新创建 connector，或重启整个部署。切换成功后 policy 保持暂停。
+setup 只初始化缺失的 `connector/*/devices/*.yaml`，不覆盖已有设备配置。ACOne 的 topic、消息类型、namespace、反馈超时和 `ros_domain_id` 位于 `connector/acone/devices/robot-main.yaml`。ROS 模拟器使用同目录的 `ros-test.yaml`。这些参数属于连接配置；修改后通过命名 profile 执行 `connector switch <名称>` 重新创建 connector，或重启整个部署。切换成功后 policy 保持暂停。
 
 旧部署通过 RC 环境变量设置的 ROS 域，需要写入设备配置的 `ros_domain_id`。ROS 模拟器的 `ROS_DOMAIN_ID` 仍需与 `ros-test.yaml` 一致，默认均为 83。RMW 和 ROS 网络设置由 `connector/acone/compose.yaml` 管理，不再通过 RC 容器环境传递。
 
-旧 `robot.backend` 配置会明确报迁移错误。迁移时将旧 `robot` 中除 `backend` 外的设备字段移入对应来源的设备 YAML，再用上面的 `connectors` 与 `robot.connector` 引用替换。也可用 `robot: {profile: acone}` 选择命名连接，具体结构与手动重试规则见 [backend 热切换](backend-switching.md)。RC 的控制频率、限速、reset 和策略配置保留在 RC YAML。不要把私有 YAML 或运行产物提交到版本库。
+旧 `robot.backend` 配置会明确报迁移错误。迁移时将旧 `robot` 中除 `backend` 外的设备字段移入对应来源的设备 YAML，再用上面的 `connectors` 与 `robot.connector` 引用替换。也可用 `robot: {profile: acone}` 选择命名连接，具体结构与手动重试规则见 [connector 热切换](connector-switching.md)。RC 的控制频率、限速、reset 和策略配置保留在 RC YAML。不要把私有 YAML 或运行产物提交到版本库。
 
 基础 Compose 仍只有 RC 和 ipc-anchor。RC 的生命周期线程动态创建 connector，加入 anchor 的 IPC，并使用独立的 connector RPC 卷；policy 不挂载这个调用端点。只有 ACOne connector 使用 ROS 所需的 host network，RC 保持基础网络配置。
 

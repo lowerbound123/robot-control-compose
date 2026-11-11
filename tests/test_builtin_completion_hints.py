@@ -18,7 +18,7 @@ def test_builtin_settings_are_discoverable_without_loading_policy(source):
     info = PolicyCapabilities._describe_commands(source, None, config)
     hints = info['config_hints']['settings']
     assert all('params.' + name in hints for name in config['params'])
-    assert hints['execution.on_backend_switch']['choices'] == ['reset', 'reinitialize_policy']
+    assert hints['execution.on_connector_switch']['choices'] == ['reset', 'reinitialize_policy']
     assert hints['execution.mode']['type'] == 'enum'
     assert config['execution']['mode'] in hints['execution.mode']['choices']
     assert hints['execution.control_mode']['type'] == 'enum'

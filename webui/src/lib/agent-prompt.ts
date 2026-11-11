@@ -44,8 +44,8 @@ return_and_wait 的 timeout_s=0 仍会创建业务等待任务，不等同于普
 - “执行任务并告诉我结果”：先核对当前 policy／链的任务与结果能力。明确会回传本次任务结果才使用 return_and_wait，依据 get_policy_result 的 completed/terminated 如实报告；没有可等待成员或无法确认时使用普通 return，说明只能确认开始运行。
 - “开始录制”：直接 record(action="on")，不 take、不 pause、不 return。
 - 冷重载失败：停止并说明失败实例；只有用户后续明确要求重试才选择 retry_reload。
-- 切换机器人连接：先用 backend_profiles 查询命名配置，再 take 后调用 switch_backend；保持暂停，不自动恢复。status.backend 给出连接阶段，retry_reload_instances 列出需要逐实例冷重试的策略。
-- backend 连接失败只在用户明确要求后使用 retry_backend；它不会回滚旧机器人。切换会按各实例 execution.on_backend_switch 执行 reset 或 reinitialize_policy，录制自动分为新会话。
+- 切换机器人连接：先用 connector_profiles 查询命名配置，再 take 后调用 switch_connector；保持暂停，不自动恢复。status.connector 给出连接阶段，retry_reload_instances 列出需要逐实例冷重试的策略。
+- connector 连接失败只在用户明确要求后使用 retry_connector；它不会回滚旧机器人。切换会按各实例 execution.on_connector_switch 执行 reset 或 reinitialize_policy，录制自动分为新会话。
 
 输出 Schema：${JSON.stringify(decisionSchema)}`
 

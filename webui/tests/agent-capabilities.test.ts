@@ -90,7 +90,7 @@ it('treats policy_config show as read-only and preserves raw values for guarded 
   expect(prepareToolCall(decision('policy_config', { instance_id: 'example-1', action: 'save' }).tool_call, snapshot).readOnly).toBe(false)
 })
 
-it('allows only explicitly failed instances from a backend recovery set', async () => {
+it('allows only explicitly failed instances from a connector recovery set', async () => {
   const snapshot = await discoverCapabilities(fixtureGateway())
   snapshot.status.retry_reload_instance = 'example-0'
   snapshot.status.retry_reload_instances = ['example-0', 'example-1']

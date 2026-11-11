@@ -26,12 +26,12 @@ def test_default_switch_reinitializes_without_replacing_worker(example_rc):
     old = rc.robot
     old_version = worker.config_version
     name = profile(rc)
-    result = command(rc, 'backend switch ' + name)
+    result = command(rc, 'connector switch ' + name)
     after = command(rc, 'policy example example')
     assert rc._worker is worker and after['module_id'] == before['module_id']
     assert after['context_id'] != before['context_id']
     assert worker.config_version == old_version + 1
-    assert rc.status()['backend']['profile'] == name
+    assert rc.status()['connector']['profile'] == name
     assert rc.status()['state'] == 'paused'
     assert rc.robot.read_state()['qpos'] == pytest.approx([.2]*14)
     assert rc.status()['queue_remaining'] == 0
@@ -39,14 +39,14 @@ def test_default_switch_reinitializes_without_replacing_worker(example_rc):
 
 def test_hot_reset_choice_keeps_context_and_versions_on_switch(example_rc):
     rc = example_rc
-    command(rc, 'policy example config set execution.on_backend_switch "reset"')
+    command(rc, 'policy example config set execution.on_connector_switch "reset"')
     command(rc, 'resume')
     from test_controller import until
     until(lambda: rc.status()['consumed'] > 1)
     command(rc, 'pause')
     before = command(rc, 'policy example example')
     worker, version = rc._worker, rc._worker.config_version
-    command(rc, 'backend switch ' + profile(rc))
+    command(rc, 'connector switch ' + profile(rc))
     after = command(rc, 'policy example example')
     assert rc._worker is worker and worker.config_version == version
     assert after['context_id'] == before['context_id']
@@ -57,10 +57,10 @@ def test_mixed_repeated_instances_follow_their_own_switch_configuration(example_
     rc = example_rc
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
     command(rc, 'policy switch example_chain')
-    command(rc, 'policy example-0 config set execution.on_backend_switch "reset"')
+    command(rc, 'policy example-0 config set execution.on_connector_switch "reset"')
     before = [command(rc, f'policy example-{i} example') for i in range(2)]
     workers = rc._worker.member_workers()
-    command(rc, 'backend switch ' + profile(rc))
+    command(rc, 'connector switch ' + profile(rc))
     after = [command(rc, f'policy example-{i} example') for i in range(2)]
     assert rc._worker.member_workers() == workers
     assert after[0]['context_id'] == before[0]['context_id']
@@ -73,7 +73,7 @@ def test_bad_profile_preserves_connection_context_and_recording(example_rc):
     command(rc, 'record start')
     session = rc.status()['recording']['session_id']
     before = command(rc, 'policy example example')
-    command(rc, 'backend switch absent', status='failed')
+    command(rc, 'connector switch absent', status='failed')
     assert command(rc, 'policy example example')['context_id'] == before['context_id']
     assert rc.status()['recording']['session_id'] == session
     assert rc.robot.read_state()['qpos'][0] == pytest.approx(.01)
@@ -83,7 +83,7 @@ def test_recording_splits_sessions_on_connection_commit(example_rc):
     rc = example_rc
     command(rc, 'record start')
     old = rc.status()['recording']['session_id']
-    command(rc, 'backend switch ' + profile(rc))
+    command(rc, 'connector switch ' + profile(rc))
     status = rc.status()['recording']
     assert status['state'] == 'recording' and status['session_id'] != old
 
@@ -95,7 +95,7 @@ def test_partial_failures_continue_and_retry_only_failed_instance(example_rc, mo
     workers = rc._worker.member_workers()
     before = command(rc, 'policy example-1 example')
     monkeypatch.setattr(workers['example-0'], 'initialize_context', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('injected init failure')))
-    command(rc, 'backend switch ' + profile(rc), status='failed')
+    command(rc, 'connector switch ' + profile(rc), status='failed')
     assert rc.status()['retry_reload_instances'] == ['example-0']
     assert workers['example-1'].config_version > 1
     healthy_context = workers['example-1'].context_id
@@ -113,7 +113,7 @@ def test_multiple_failed_instances_can_be_retried_in_any_order(example_rc, monke
     command(rc, 'policy switch example_chain')
     for worker in rc._worker.member_workers().values():
         monkeypatch.setattr(worker, 'initialize_context', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('injected failure')))
-    command(rc, 'backend switch ' + profile(rc), status='failed')
+    command(rc, 'connector switch ' + profile(rc), status='failed')
     assert rc.status()['retry_reload_instances'] == ['example-0', 'example-1']
     command(rc, 'policy example-1 retry')
     healthy = rc._worker.member_workers()['example-1']
@@ -133,11 +133,11 @@ def test_old_close_failure_blocks_creation_until_explicit_retry(example_rc, monk
             raise RuntimeError('old transport still alive')
         original(**kwargs)
     monkeypatch.setattr(old, 'close', fail_once)
-    command(rc, 'backend switch ' + profile(rc), status='failed')
-    assert not rc.status()['backend']['connected']
+    command(rc, 'connector switch ' + profile(rc), status='failed')
+    assert not rc.status()['connector']['connected']
     assert rc.robot.raw is old and not old.closed
-    assert rc.status()['backend']['retry_available']
-    command(rc, 'backend retry')
+    assert rc.status()['connector']['retry_available']
+    command(rc, 'connector retry')
     assert old.closed and rc.robot.raw is not old
     assert rc.status()['state'] == 'paused'
 
@@ -153,7 +153,7 @@ def test_record_off_during_switch_cancels_automatic_restart(example_rc, monkeypa
         assert go.wait(5)
         old_close(**kwargs)
     monkeypatch.setattr(rc.robot.raw, 'close', delayed_close)
-    operation = rc.submit('backend switch ' + profile(rc))
+    operation = rc.submit('connector switch ' + profile(rc))
     try:
         assert entered.wait(5)
         command(rc, 'record stop')
@@ -163,9 +163,9 @@ def test_record_off_during_switch_cancels_automatic_restart(example_rc, monkeypa
     assert rc.status()['recording']['state'] != 'recording'
 
 
-def test_backend_mcp_requires_take_and_preserves_owner(example_rc):
+def test_connector_mcp_requires_take_and_preserves_owner(example_rc):
     rc = example_rc
-    line = 'backend switch ' + profile(rc)
+    line = 'connector switch ' + profile(rc)
     with pytest.raises(PermissionError):
         rc.submit(line, origin='mcp')
     rc.wait_operation(rc.submit_control('take'), 5)
@@ -176,11 +176,11 @@ def test_backend_mcp_requires_take_and_preserves_owner(example_rc):
 
 def test_same_profile_reloads_file_and_never_reuses_old_hold(example_rc):
     rc = example_rc
-    command(rc, 'backend switch ' + profile(rc, position=.3))
+    command(rc, 'connector switch ' + profile(rc, position=.3))
     retired = rc.robot.raw
     count = len(retired.commands)
     profile(rc, position=-.4)
-    command(rc, 'backend switch second')
+    command(rc, 'connector switch second')
     time.sleep(.1)
     assert retired.closed and len(retired.commands) >= count
     assert all(values == pytest.approx([-.4]*14) for values in rc.robot.commands)
@@ -194,8 +194,8 @@ def test_switch_cancellation_after_new_binding_preserves_connection_and_requires
         command(rc, 'pause')
         return flags
     monkeypatch.setattr(rc._worker, 'initialize_context', pause_after_initialize)
-    command(rc, 'backend switch ' + profile(rc), status='cancelled')
-    assert rc.status()['backend']['profile'] == 'second'
+    command(rc, 'connector switch ' + profile(rc), status='cancelled')
+    assert rc.status()['connector']['profile'] == 'second'
     assert rc.status()['retry_reload_instances'] == ['example']
     command(rc, 'policy example retry')
     assert rc.status()['state'] == 'paused'
@@ -211,43 +211,43 @@ def test_connection_failure_keeps_model_and_resumes_recording_only_after_retry(e
     def broken_connect(self, cancel_event=None, **kwargs):
         raise RuntimeError('new feedback unavailable')
     monkeypatch.setattr(ConnectorRobot, 'connect', broken_connect)
-    command(rc, 'backend switch ' + profile(rc), status='failed')
-    assert not rc.status()['backend']['connected']
+    command(rc, 'connector switch ' + profile(rc), status='failed')
+    assert not rc.status()['connector']['connected']
     assert rc.status()['recording']['state'] != 'recording'
     assert rc._worker.runnable
     monkeypatch.setattr(ConnectorRobot, 'connect', connect)
-    command(rc, 'backend retry')
+    command(rc, 'connector retry')
     assert rc.status()['recording']['state'] == 'recording'
     assert rc.status()['recording']['session_id'] != old_session
     assert command(rc, 'policy example example')['context_id'] != old_context
 
 
-def test_running_old_request_cannot_supply_actions_or_images_to_new_backend(example_rc):
+def test_running_old_request_cannot_supply_actions_or_images_to_new_connector(example_rc):
     from test_controller import until
     rc = example_rc
     command(rc, 'policy example config set params.inference_delay_s 0.2')
     command(rc, 'resume')
     until(lambda: rc.status()['in_flight'])
     old = rc.robot.raw
-    command(rc, 'backend switch ' + profile(rc, position=.7))
+    command(rc, 'connector switch ' + profile(rc, position=.7))
     assert old.closed and rc.status()['queue_remaining'] == 0
     time.sleep(.1)
     assert rc.robot.commands and all(values == pytest.approx([.7]*14) for values in rc.robot.commands)
     assert rc._inflight is None and rc._observe_inflight is None
 
 
-def test_queued_old_motion_is_cancelled_at_backend_boundary(example_rc):
+def test_queued_old_motion_is_cancelled_at_connector_boundary(example_rc):
     rc = example_rc
     name = profile(rc, position=.6)
     with rc._lock:
-        switched = rc.submit('backend switch ' + name)
+        switched = rc.submit('connector switch ' + name)
         motion = rc.submit('reset')
     assert rc.wait_operation(switched, 10)['status'] == 'succeeded'
     assert rc.wait_operation(motion, 5)['status'] == 'cancelled'
     assert rc.robot.read_state()['qpos'] == pytest.approx([.6]*14)
 
 
-def test_return_interrupts_pending_backend_commit(example_rc, monkeypatch):
+def test_return_interrupts_pending_connector_commit(example_rc, monkeypatch):
     import threading
     rc = example_rc
     command(rc, 'take')
@@ -258,7 +258,7 @@ def test_return_interrupts_pending_backend_commit(example_rc, monkeypatch):
         assert go.wait(5)
         close(**kwargs)
     monkeypatch.setattr(rc.robot.raw, 'close', slow_close)
-    operation = rc.submit('backend switch ' + profile(rc), origin='mcp')
+    operation = rc.submit('connector switch ' + profile(rc), origin='mcp')
     try:
         assert entered.wait(5)
         returned = rc.submit_control('return')
@@ -267,7 +267,7 @@ def test_return_interrupts_pending_backend_commit(example_rc, monkeypatch):
         go.set()
     receipt = rc.wait_operation(operation, 10)
     assert receipt['status'] == 'cancelled'
-    assert rc.status()['backend']['profile'] != 'second'
+    assert rc.status()['connector']['profile'] != 'second'
 
 
 def test_cancelled_chain_revokes_unprocessed_old_contexts(example_rc, monkeypatch):
@@ -281,7 +281,7 @@ def test_cancelled_chain_revokes_unprocessed_old_contexts(example_rc, monkeypatc
         command(rc, 'pause')
         return flags
     monkeypatch.setattr(workers['example-0'], 'initialize_context', interrupted)
-    command(rc, 'backend switch ' + profile(rc), status='cancelled')
+    command(rc, 'connector switch ' + profile(rc), status='cancelled')
     assert rc.status()['retry_reload_instances'] == ['example-0', 'example-1']
     assert not workers['example-1']._context_enabled
     with pytest.raises(RuntimeError, match='stale policy context'):
@@ -308,9 +308,9 @@ def test_named_startup_and_empty_policy_switch_can_be_saved(tmp_path):
     rc.start()
     try:
         until(lambda: rc.status()['state'] == 'paused')
-        assert rc.status()['backend']['profile'] == 'first'
+        assert rc.status()['connector']['profile'] == 'first'
         assert rc.robot.read_state()['qpos'][0] == .2
-        command(rc, 'backend switch second')
+        command(rc, 'connector switch second')
         assert read_config(path)['robot'] == {'profile': 'first'}
         command(rc, 'config rc save')
         assert read_config(path)['robot'] == {'profile': 'second'}
@@ -331,13 +331,13 @@ def test_unconfirmed_external_reader_keeps_old_connection_and_allows_retry(examp
         raise TimeoutError('external reader has not released images')
         yield
     monkeypatch.setattr(rc._external, 'reader_barrier', unconfirmed)
-    command(rc, 'backend switch ' + profile(rc), status='failed')
+    command(rc, 'connector switch ' + profile(rc), status='failed')
     assert rc.robot.raw is old and not old.closed
     assert command(rc, 'policy example example')['context_id'] == before
-    assert rc.status()['backend']['retry_available']
+    assert rc.status()['connector']['retry_available']
     monkeypatch.setattr(rc._external, 'reader_barrier', original)
-    command(rc, 'backend retry')
-    assert old.closed and rc.status()['backend']['profile'] == 'second'
+    command(rc, 'connector retry')
+    assert old.closed and rc.status()['connector']['profile'] == 'second'
 
 
 def test_record_on_during_initial_connect_retains_existing_recording_semantics(setup_controller, monkeypatch):
@@ -364,12 +364,12 @@ def test_automatic_recording_session_has_its_own_global_state_snapshot(example_r
     from pathlib import Path
     from test_controller import until
     rc = example_rc
-    command(rc, 'global set backend_marker 42')
+    command(rc, 'global set connector_marker 42')
     command(rc, 'record start')
     until(lambda: rc._record_global_version == rc._global_service.version)
-    command(rc, 'backend switch ' + profile(rc))
+    command(rc, 'connector switch ' + profile(rc))
     path = Path(rc.status()['recording']['path'])
     until(lambda: rc.status()['recording']['samples_written'] >= 2)
     command(rc, 'record stop')
     configs = [json.loads(file.read_text()) for file in (path/'configs').glob('*.json')]
-    assert any(row.get('kind') == 'globals' and row['value'].get('backend_marker') == 42 for row in configs)
+    assert any(row.get('kind') == 'globals' and row['value'].get('connector_marker') == 42 for row in configs)

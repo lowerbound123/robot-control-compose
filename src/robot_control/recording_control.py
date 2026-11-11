@@ -43,7 +43,7 @@ class RecordingControl:
             record = self.registry.get(self._identity) if self._identity else None
             members = record.members if record and record.is_chain else (record,) if record else ()
             data = {'run_id':self.run_id, 'timestamp_ns':time.time_ns(),
-                    'backend': self.backend_status(),
+                    'connector': self.connector_status(),
                     'rc':self.config, 'policy':self._identity,
                     'generation':self.buffer.generation, 'control_epoch':self._control_epoch,
                     'control_owner':self.control_owner,
@@ -69,10 +69,10 @@ class RecordingControl:
             action = words[1] if len(words) == 2 else 'toggle'
             if action in ('toggle', 'on', 'off'):
                 self._record_requested = not self._record_requested if action == 'toggle' else action == 'on'
-            if (self._backend_record_transition or (self._backend_retry_available and not self._connected)) and action in ('toggle', 'on', 'off'):
-                self._backend_record_wanted = self._record_requested
-                if self._backend_record_wanted:
-                    self.operations.update(identity, 'succeeded', result={**self._recorder.status(), 'requested': 'on', 'deferred_until_backend_ready': True})
+            if (self._connector_record_transition or (self._connector_retry_available and not self._connected)) and action in ('toggle', 'on', 'off'):
+                self._connector_record_wanted = self._record_requested
+                if self._connector_record_wanted:
+                    self.operations.update(identity, 'succeeded', result={**self._recorder.status(), 'requested': 'on', 'deferred_until_connector_ready': True})
                     return
                 action = 'off'
             if action in ('toggle', 'on') and not self._recorder.active:

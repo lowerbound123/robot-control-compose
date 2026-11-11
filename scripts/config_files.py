@@ -57,6 +57,7 @@ def configuration_updates(root):
     # adding source paths, and host down must work without the YAML dependency.
     from robot_control.config_paths import main_config_targets, is_main_json
     from robot_control.yaml_config import load_yaml_config, render_yaml_config, strict_equal
+    from rc_policy_sdk.catalog import validate_connector_switch_settings
     root = Path(root).resolve()
     mains = main_config_targets(root)  # Reject legacy main files before preparing any changes.
     profile_dir = root / 'configs/robots'
@@ -83,6 +84,12 @@ def configuration_updates(root):
         current = read(target) if target.exists() else None
         template = template if template is not None and template.is_file() else None
         default = read(template) if template is not None else None
+        for document in (current, default):
+            if target.name == 'policy.yaml':
+                validate_connector_switch_settings(document)
+            if (yaml and isinstance(document, dict) and isinstance(document.get('robot'), dict)
+                    and 'backend' in document['robot']):
+                raise ValueError(f'{target}: robot.backend is not supported; use robot.profile or robot.connector')
         if (isinstance(current, dict) and isinstance(default, dict) and
                 isinstance(current.get('robot'), dict) and isinstance(default.get('robot'), dict) and
                 ('profile' in current['robot']) != ('profile' in default['robot'])):
@@ -92,11 +99,11 @@ def configuration_updates(root):
         if (target.name == 'policy.yaml' and isinstance(value, dict) and
                 isinstance(value.get('execution'), dict) and value.get('kind') != 'chain'):
             value = copy.deepcopy(value)
-            value['execution'].setdefault('on_backend_switch', 'reinitialize_policy')
+            value['execution'].setdefault('on_connector_switch', 'reinitialize_policy')
             if isinstance(value.get('hot_reloadable', []), list):
                 paths = value.setdefault('hot_reloadable', [])
-                if 'execution.on_backend_switch' not in paths:
-                    paths.append('execution.on_backend_switch')
+                if 'execution.on_connector_switch' not in paths:
+                    paths.append('execution.on_connector_switch')
         documents[target.relative_to(root).as_posix()] = value
         if not strict_equal(current, value):
             content = (render_yaml_config(target, value, template=template) if yaml else

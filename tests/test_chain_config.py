@@ -36,7 +36,7 @@ def test_chain_resolves_independent_occurrences_and_keeps_active_snapshot(tmp_pa
     assert record.config == definition
     assert record.is_chain
     assert [item.instance_id for item in record.members] == ["a-0", "b", "a-1"]
-    assert record.execution == {"mode": "async", "call_every_actions": 3, "control_mode": "qpos", "on_backend_switch": "reinitialize_policy"}
+    assert record.execution == {"mode": "async", "call_every_actions": 3, "control_mode": "qpos", "on_connector_switch": "reinitialize_policy"}
     updated = copy.deepcopy(registry.get("a").config)
     updated["execution"]["call_every_actions"] = 7
     registry.commit("a", updated)

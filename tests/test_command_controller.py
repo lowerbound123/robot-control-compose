@@ -26,7 +26,7 @@ def command_controller(tmp_path, monkeypatch, request):
         config["execution"].update(mode="sync", call_every_actions=1)
         (directory / "policy.yaml").write_text(json.dumps(config))
     config = {"schema_version": 3, "frequency_hz": 100, "policy_directory": "policy",
-              "startup_policy": "first", "robot": {"backend": "mock"},
+              "startup_policy": "first", "robot": {"connector": "body"},
               "safety": {"enabled": False, "reference_frequency_hz": 50, "max_delta_per_step": [.1]*14},
               "reset_qpos": [0]*14, "outputs_directory": "outputs",
               # These tests exercise commands, not cold Python/NumPy startup

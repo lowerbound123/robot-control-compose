@@ -3,7 +3,7 @@ import copy
 import hashlib
 from pathlib import Path
 
-from rc_policy_sdk.catalog import policy_id, socket_path, validate_policy
+from rc_policy_sdk.catalog import policy_id, socket_path, validate_policy, validate_connector_switch_settings
 from .config_paths import policy_config_path
 from .yaml_config import load_yaml_config
 
@@ -20,6 +20,7 @@ def read_descriptor(directory):
     except OSError as exc:
         raise ValueError(f'{identity}: missing or unreadable policy.yaml') from exc
     config = load_yaml_config(path)
+    validate_connector_switch_settings(config)
     try:
         validate_policy(config, identity)
     except (ValueError, TypeError, KeyError):
@@ -27,7 +28,7 @@ def read_descriptor(directory):
     config = copy.deepcopy(config)
     config['id'] = identity
     if config.get('kind') != 'chain':
-        config['execution'].setdefault('on_backend_switch', 'reinitialize_policy')
+        config['execution'].setdefault('on_connector_switch', 'reinitialize_policy')
         for name in ('main.py', 'compose.yaml'):
             if not (directory / name).is_file():
                 raise ValueError(f'{identity}: missing {name}')

@@ -44,7 +44,7 @@ def test_preview_deduplicates_frames_and_updates_connection_without_encoding():
         preview.close()
 
 
-def test_backend_generation_discards_completed_old_encoder():
+def test_connector_generation_discards_completed_old_encoder():
     from robot_control.preview import LivePreview
     epoch = [1]
     entered, go = threading.Event(), threading.Event()

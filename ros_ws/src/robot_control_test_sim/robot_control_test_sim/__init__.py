@@ -1,1 +1,1 @@
-"""ROS-only integration simulator; never imported by the production backend."""
+"""ROS-only integration simulator; never imported by the production connector."""

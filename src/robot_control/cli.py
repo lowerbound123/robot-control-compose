@@ -120,10 +120,14 @@ def make_mcp_service(controller, override=None):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Robot control terminal")
-    parser.add_argument("--config", default="rc.yaml", help="RC YAML config (default: rc.yaml)")
-    parser.add_argument("--headless", action="store_true", help="read commands from stdin and log to stdout")
-    parser.add_argument("--mcp", metavar="HOST:PORT", help="MCP listen override (default: 127.0.0.1:4000)")
+    parser = argparse.ArgumentParser(description="RC 机器人控制终端", add_help=False,
+        epilog="启动后输入 help 查看分组命令；policy help 查看策略声明；mcp help 查看工具与 JSON 参数。")
+    general = parser.add_argument_group('启动与配置')
+    general.add_argument('-h', '--help', action='help', help='显示此帮助并退出，不连接设备或启动服务')
+    general.add_argument("--config", default="rc.yaml", metavar='路径', help="RC YAML 配置文件（默认：rc.yaml）")
+    display = parser.add_argument_group('终端与服务')
+    display.add_argument("--headless", action="store_true", help="从标准输入读取命令，向标准输出写入完整纯文本日志")
+    display.add_argument("--mcp", metavar="HOST:PORT", help="覆盖 MCP 监听地址；省略时使用配置文件中的设置")
     args = parser.parse_args(argv)
     try:
         controller = make_controller(args.config)

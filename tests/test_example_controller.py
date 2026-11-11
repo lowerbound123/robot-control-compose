@@ -227,6 +227,7 @@ def example_mcp(example_rc):
 
 @pytest.mark.asyncio
 async def test_mcp_http_reads_images_and_direct_motion(example_rc, example_mcp):
+    from robot_control.help_document import help_text
     from test_mcp import client
     async with client(example_mcp.url) as session:
         async def call(name, **args):
@@ -237,7 +238,9 @@ async def test_mcp_http_reads_images_and_direct_motion(example_rc, example_mcp):
         assert (await call("status"))["control_owner"] == "policy"
         assert [row["id"] for row in (await call("policies"))["result"]] == ["example"]
         assert (await call("show", scope="policy"))["id"] == "example"
-        assert "switch" in (await call("help"))["result"]
+        help_result = await call('help')
+        assert 'switch' in help_result['help']
+        assert help_result['help'] == help_text(help_result['help_document'])
         assert "epos" in (await call("props"))["policy_modes"]
         state = await call("state", include_images=True, cameras=["head"])
         assert [im["camera"] for im in state["images"]] == ["head"]

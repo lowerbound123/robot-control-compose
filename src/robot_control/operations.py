@@ -49,7 +49,7 @@ class ControlRequest:
     expected_control: dict | None = None
     config_edit: PolicyConfigEdit | None = None
     parsed: object = None
-    backend_retry: str | None = None
+    connector_retry: str | None = None
 
 
 class Operations:

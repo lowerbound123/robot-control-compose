@@ -5,8 +5,9 @@ import json
 import threading
 
 from .wire import encode_message
+from .catalog import validate_connector_switch_settings
 
-IMMUTABLE_FIELDS = {"schema_version", "id", "hot_reloadable", "tui_commands", "kind", "timeouts"}
+IMMUTABLE_FIELDS = {"schema_version", "id", "hot_reloadable", "tui_commands", "kind", "timeouts", "help", "help_details", "config_hints"}
 
 
 class ConfigureCallback:
@@ -42,6 +43,7 @@ class ConfigureCallback:
 def validate_candidate(config, candidate, action):
     if type(candidate) is not dict or action not in (None, "reset", "reinitialize"):
         raise ValueError("invalid configure candidate or action")
+    validate_connector_switch_settings(candidate)
     if not same_config(candidate, json.loads(encode_message(candidate)[4:])):
         raise ValueError('configure candidate must contain plain JSON values and string keys')
     for key in set(config) | set(candidate):
@@ -57,8 +59,6 @@ def validate_candidate(config, candidate, action):
     execution = candidate["execution"]
     if execution.get("control_mode", "qpos") not in ("qpos", "epos", "mixed"):
         raise ValueError("invalid execution.control_mode")
-    if execution.get("on_backend_switch", "reinitialize_policy") not in ("reinitialize_policy", "reset"):
-        raise ValueError("invalid execution.on_backend_switch")
     if "mode" in execution and execution["mode"] not in ("sync", "async"):
         raise ValueError("invalid execution.mode")
     if "call_every_actions" in execution and (type(execution["call_every_actions"]) is not int or execution["call_every_actions"] <= 0):
@@ -94,6 +94,7 @@ def same_config(left, right):
 
 
 def prepare_patch(config, patch):
+    validate_connector_switch_settings(config)
     if not isinstance(patch, dict) or not patch:
         raise ValueError("config patch must be a nonempty mapping")
     encode_message(patch)

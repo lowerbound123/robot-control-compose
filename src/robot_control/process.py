@@ -97,7 +97,7 @@ class PolicyProcess(MonitorClient):
         self.command_specs = command_specs(config)
         self._reinitialize_enabled = any(spec.get("effect") == "reinitialize_policy" for spec in self.command_specs.values())
         self.context_id = uuid.uuid4().hex
-        self.supports_backend_switch = False
+        self.supports_connector_switch = False
         self._context_enabled = True
         self._reinitializing = False
         self.release_dispatched = False
@@ -180,7 +180,7 @@ class PolicyProcess(MonitorClient):
                     raise RuntimeError('host restarted after readiness; stale endpoint')
                 if self._reinitialize_enabled and not getattr(self.host, "reinitialize_policy", False):
                     raise RuntimeError("policy host lacks reinitialize_policy capability; upgrade rc-policy-sdk")
-                self._reinitialize_enabled = self._reinitialize_enabled or getattr(self.host, 'backend_switch_v1', False)
+                self._reinitialize_enabled = self._reinitialize_enabled or getattr(self.host, 'connector_switch_v1', False)
                 self.host.register(self)
                 self.host.preflight(self.config['id'], timeout=min(10, self.init_timeout_s))
                 self._submitted_load = True
@@ -192,7 +192,7 @@ class PolicyProcess(MonitorClient):
                                tui_command_effects_v2=list(COMMAND_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
                                global_state=global_descriptor, context_id=self.context_id,
                                configure=getattr(self.host, 'configure', False),
-                               backend_switch_v1=getattr(self.host, 'backend_switch_v1', False)))
+                               connector_switch_v1=getattr(self.host, 'connector_switch_v1', False)))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
             with self._condition:
@@ -231,7 +231,7 @@ class PolicyProcess(MonitorClient):
             self.runtime_id = packet['runtime_id']
             message = packet['event']; kind = message['type']
             if kind == 'ready':
-                self.supports_backend_switch = message.get('backend_switch_v1') is True and getattr(self.host, 'backend_switch_v1', False)
+                self.supports_connector_switch = message.get('connector_switch_v1') is True and getattr(self.host, 'connector_switch_v1', False)
                 if message.get('global_state_version') not in (None, 1):
                     self._record_failure('incompatible global state protocol'); return
                 self.supports_monitor = message.get('monitor') is True

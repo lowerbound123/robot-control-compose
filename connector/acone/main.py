@@ -45,7 +45,7 @@ def _load_ros(message_types):
     except (ImportError, AttributeError) as error:
         raise RuntimeError(
             f"ROS 2 bindings or {message_types} are unavailable; manually install/source "
-            "ROS and the arm message package before selecting the acone backend"
+            "ROS and the arm message package before selecting the acone connector"
         ) from error
     return SimpleNamespace(
         rclpy=rclpy, Context=Context, Executor=SingleThreadedExecutor,

@@ -1,6 +1,6 @@
 # Schema 3 部署准备
 
-连接配置与升级见 [backend 热切换](backend-switching.md)。`./setup.sh --config-only` 增补公共policy切换配置和缺失连接模板，保留既有设备配置及 profile 文件；旧内联 `robot.backend` 必须先手动迁移。
+连接配置与升级见 [connector 热切换](connector-switching.md)。`./setup.sh --config-only` 增补公共policy切换配置和缺失连接模板，保留既有设备配置及 profile 文件；旧内联 `robot.backend` 必须先手动迁移。
 
 ## 配置和镜像
 
@@ -72,7 +72,7 @@ RC 从 `/workspace/src` 导入，SDK 从 `/workspace/packages/policy-sdk/src` �
 | Qwen vendor 或 Transformers 补丁 | 重新 switch，创建新的策略容器 |
 | Python ROS 仿真程序 | 重新创建 ros-sim 容器 |
 | 第三方依赖、Python/CUDA/系统环境 | 修改对应依赖声明并重建相关镜像 |
-| connector 实现 | 通过命名 profile 执行 `backend switch <名称>`，或正常 down/up 重新创建连接 |
+| connector 实现 | 通过命名 profile 执行 `connector switch <名称>`，或正常 down/up 重新创建连接 |
 | ROS 消息定义 | 重建 ACOne connector 镜像，重新编译消息包 |
 
 首次迁移需要一次完整构建：先用原部署的 `./scripts/compose.sh down` 正常收尾，再更新源码、执行 `./setup.sh --policies <需要的策略>`，最后使用原有 Compose 覆盖参数 `up -d --no-build`。两个 Qwen 仍按相同构建输入去重。以后普通源码修改无需 setup/build。迁移前的旧镜像仍含旧实现，不能作为“源码已外置”的验收镜像。
@@ -138,8 +138,10 @@ RC 与 SDK 同步升级到 0.15.0，清单仍为 schema 3。更新源码后完�
 
 本地 TUI 增加跨重启历史虚影、显式确认的 Tab 菜单及非阻塞格式提示，按键说明见 [输入辅助](commands.md#输入辅助rcsdk-015)。HTTP 能力查询增加参数提示元数据，原结构化命令的基础参数类型及执行约束不变。历史按配置文件隔离保存在 outputs 下，不进入来源清单或模型配置。
 
-## 从 0.15 升级到 0.16
+## RC 与 SDK 0.17
 
-RC 与 SDK 同步升级到 0.16.0，schema 保持 3。RC 镜像移除 ROS，独立 connector 提供设备连接；`./setup.sh --policies example --connectors mock,acone` 准备所需镜像，setup 不覆盖本地设备 YAML。旧 `robot.backend` 必须手动迁移，见 [connector 配置](connectors.md)。命名 backend profile 改为 `{connector: body, source: acone, config: devices/robot-main.yaml}`，设备参数位于 connector 来源目录；旧 profile 中的 `domain_id` 改为设备配置的 `ros_domain_id`。
+RC 与 SDK 同步使用 0.17.0，schema 保持 3。RC 镜像不包含 ROS，独立 connector 提供设备连接；`./setup.sh --policies example --connectors mock,acone` 准备所需镜像，setup 不覆盖本地设备 YAML。连接使用 [connector 配置](connectors.md)，命名 profile 为 `{connector: body, source: acone, config: devices/robot-main.yaml}`，设备参数与 `ros_domain_id` 位于 connector 来源目录。
 
-`backend switch` 现在重建 connector 并保留正常 policy 容器。完成后保持暂停；policy 的 reset/reinitialize 选择、逐实例冷重试与录制分会话继续有效，见 [热切换说明](backend-switching.md)。TUI 0.15 的命令树、配置入口、候选菜单及容器路径补全保留。
+`connector switch` 现在重建 connector 并保留正常 policy 容器。完成后保持暂停；policy 的 reset/reinitialize 选择、逐实例冷重试与录制分会话继续有效，见 [热切换说明](connector-switching.md)。TUI 0.15 的命令树、配置入口、候选菜单及容器路径补全保留。
+
+策略切换选项统一为 `execution.on_connector_switch`，包括 `hot_reloadable` 与 `config_hints.settings` 中的字段路径。setup 会先拒绝已移除的字段，再增补缺失默认值；不自动改名或转换既有私有配置。同步更新 RC/SDK 后重新创建运行组，协商 `connector_switch_v1`。

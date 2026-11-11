@@ -1,4 +1,4 @@
-"""Backend switching changes the independent connector, not the policy process."""
+"""Connector switching changes the independent connector, not the policy process."""
 import json
 
 import pytest
@@ -22,7 +22,7 @@ def test_switch_replaces_connector_process_and_preserves_loaded_policy(example_r
     worker = rc._worker
     before = command(rc, 'policy example example')
     profile, _ = connector_profile(rc)
-    command(rc, 'backend switch ' + profile)
+    command(rc, 'connector switch ' + profile)
     after = command(rc, 'policy example example')
     assert old_connector.closed and old_connector.process.poll() == 0
     assert rc.robot.raw.process.pid != old_pid
@@ -39,17 +39,17 @@ def test_invalid_device_preflight_preserves_connection_and_recording(example_rc)
     old_connector = rc.robot.raw
     profile, device = connector_profile(rc)
     device.write_text('feedback_timeout_s: -1\n')
-    command(rc, 'backend switch ' + profile, status='failed')
+    command(rc, 'connector switch ' + profile, status='failed')
     assert rc.robot.raw is old_connector and old_connector.process.poll() is None
     assert rc.status()['recording']['session_id'] == session
-    assert rc.status()['backend']['connected']
+    assert rc.status()['connector']['connected']
 
 
 def test_new_connector_receipts_cannot_consume_previous_publications(example_rc):
     rc = example_rc
     profile, _ = connector_profile(rc)
     old_generation = rc.robot.generation
-    command(rc, 'backend switch ' + profile)
+    command(rc, 'connector switch ' + profile)
     assert rc.robot.generation > old_generation
     assert all(pending['generation'] == rc.buffer.generation for pending in rc._publications.values())
     assert rc.buffer.consumed == 0
@@ -69,9 +69,9 @@ def test_switch_drains_old_receipts_before_recording_boundary_and_stops_holds(ex
     monkeypatch.setattr(connector, 'poll_results', lambda: poll() if release.is_set() else [])
     until(lambda: bool(rc._publications))
     profile, _ = connector_profile(rc)
-    operation = rc.submit('backend switch ' + profile)
+    operation = rc.submit('connector switch ' + profile)
     try:
-        until(lambda: rc.status()['backend']['phase'] == 'draining')
+        until(lambda: rc.status()['connector']['phase'] == 'draining')
         submitted = connector.client.serial
         time.sleep(.1)
         assert connector.client.serial == submitted

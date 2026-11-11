@@ -77,7 +77,7 @@ class EndToEnd:
         config = {
             "schema_version": 3, "frequency_hz": 100, "policy_directory": "policy",
             "startup_policy": startup,
-            "robot": {"backend": "mock"},
+            "robot": {"connector": "body"},
             "safety": {"enabled": True, "reference_frequency_hz": 100,
                        "max_delta_per_step": [0.1] * 14},
             "reset_qpos": [0.0] * 14, "outputs_directory": "outputs",

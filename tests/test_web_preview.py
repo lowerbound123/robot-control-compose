@@ -33,7 +33,7 @@ class CameraSource:
 
 
 @pytest.mark.asyncio
-async def test_backend_generation_rejects_old_encoding_and_cached_frame():
+async def test_connector_generation_rejects_old_encoding_and_cached_frame():
     from robot_control.web_preview import WebPreview
     source, epoch = CameraSource(), [1]
     entered, go = threading.Event(), threading.Event()

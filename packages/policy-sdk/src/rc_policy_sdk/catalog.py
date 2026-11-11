@@ -11,6 +11,27 @@ IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,47}')
 INSTANCE_IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
 
 
+def validate_connector_switch_settings(config):
+    """Reject removed connection settings before any defaults can hide them."""
+    if not isinstance(config, dict):
+        return
+    execution = config.get('execution', {})
+    removed = 'execution.on_backend_switch'
+    if isinstance(execution, dict):
+        if 'on_backend_switch' in execution:
+            raise ValueError(removed + ' is not supported; use execution.on_connector_switch')
+        if execution.get('on_connector_switch', 'reinitialize_policy') not in ('reinitialize_policy', 'reset'):
+            raise ValueError('invalid execution.on_connector_switch')
+    paths = config.get('hot_reloadable', [])
+    hints = config.get('config_hints', {})
+    settings = hints.get('settings', {}) if isinstance(hints, dict) else {}
+    candidates = [*paths] if isinstance(paths, list) else []
+    if isinstance(settings, dict):
+        candidates.extend(settings)
+    if any(isinstance(path, str) and (path == removed or path.startswith(removed + '.')) for path in candidates):
+        raise ValueError(removed + ' is not supported in hot_reloadable/config_hints; use execution.on_connector_switch')
+
+
 def policy_id(value):
     if not isinstance(value, str) or not IDENTITY.fullmatch(value):
         raise ValueError('policy ID must match [a-z0-9][a-z0-9_-]{0,47}')
@@ -40,6 +61,7 @@ def validate_runtime_policy(config, source_id, runtime_id):
 
 
 def validate_policy(config, identity=None):
+    validate_connector_switch_settings(config)
     if not isinstance(config, dict) or config.get('schema_version') != 3:
         raise ValueError('policy schema_version must be 3')
     identity = policy_id(identity if identity is not None else config.get('id'))
@@ -47,8 +69,12 @@ def validate_policy(config, identity=None):
         raise ValueError('policy id differs from directory name')
     if {'policy_host', 'conda_env', 'deployment'} & config.keys():
         raise ValueError('legacy policy_host/conda_env/deployment fields are not supported; use policy compose.yaml')
+    from rc_policy_sdk.help_metadata import help_string, normalize_help_details
+    help_string(config.get('help', ''))
+    if 'help_details' in config:
+        normalize_help_details(config['help_details'])
     if config.get('kind') == 'chain':
-        if set(config) - {'schema_version', 'id', 'kind', 'policies'}:
+        if set(config) - {'schema_version', 'id', 'kind', 'policies', 'help', 'help_details'}:
             raise ValueError('invalid chain fields')
         members = config.get('policies')
         if not isinstance(members, list) or not members:
@@ -61,8 +87,6 @@ def validate_policy(config, identity=None):
     execution = config.get('execution')
     if not isinstance(execution, dict) or execution.get('mode') not in ('sync', 'async'):
         raise ValueError('invalid execution.mode')
-    if execution.get('on_backend_switch', 'reinitialize_policy') not in ('reinitialize_policy', 'reset'):
-        raise ValueError('invalid execution.on_backend_switch')
     if type(execution.get('call_every_actions')) is not int or execution['call_every_actions'] <= 0:
         raise ValueError('call_every_actions must be a positive integer')
     if execution.get('control_mode') not in ('qpos', 'epos', 'mixed'):

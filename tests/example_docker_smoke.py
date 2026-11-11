@@ -52,7 +52,11 @@ def mcp_management_checks(controller, report, connector_checkpoint):
         connector_checkpoint('before MCP ' + name)
         reply = asyncio.run(request(name, arguments))
         assert reply.is_error == fail, reply
-        if name != 'switch_backend':
+        if name == 'help' and not fail:
+            from robot_control.help_document import help_text
+            assert reply.content[0].text == help_text(reply.structured_content['help_document'])
+            assert not reply.content[0].text.startswith('{')
+        if name != 'switch_connector':
             connector_checkpoint('after MCP ' + name)
         return reply.structured_content
     def identities():
@@ -187,28 +191,28 @@ def mcp_management_checks(controller, report, connector_checkpoint):
         device = profiles / 'alternate-device.json'
         device.write_text(json.dumps({'initial_qpos': [.25]*14}))
         (profiles / 'alternate.yaml').write_text(json.dumps({'connector': 'body', 'source': 'mock', 'config': str(device)}))
-        call('policy_config', instance_id='example-0', action='set', key='execution.on_backend_switch', value_text='reset', wait=True)
-        backend_before = identities()
-        context_before = {i: context(i) for i in backend_before}
+        call('policy_config', instance_id='example-0', action='set', key='execution.on_connector_switch', value_text='reset', wait=True)
+        connector_before = identities()
+        context_before = {i: context(i) for i in connector_before}
         recorded_before = call('record', action='on', wait=True)['result']['session_id']
         old_connector = controller.robot.raw
         old_connector_cid = old_connector.handle.container_id
-        call('switch_backend', profile='alternate', wait=True)
+        call('switch_connector', profile='alternate', wait=True)
         new_connector_cid = controller.robot.raw.handle.container_id
         assert old_connector.closed and new_connector_cid != old_connector_cid
-        connector_checkpoint('explicit backend switch', replaced=True)
-        backend_after = identities()
-        context_after = {i: context(i) for i in backend_before}
-        assert backend_after['example-0'] == backend_before['example-0']
-        assert backend_after['example-1'] == {**backend_before['example-1'], 'version':backend_before['example-1']['version']+1}
+        connector_checkpoint('explicit connector switch', replaced=True)
+        connector_after = identities()
+        context_after = {i: context(i) for i in connector_before}
+        assert connector_after['example-0'] == connector_before['example-0']
+        assert connector_after['example-1'] == {**connector_before['example-1'], 'version':connector_before['example-1']['version']+1}
         assert context_after['example-0']['context_id'] == context_before['example-0']['context_id']
         assert context_after['example-1']['context_id'] != context_before['example-1']['context_id']
         assert all(abs(value-.25) < 1e-6 for value in controller.robot.read_state()['qpos'])
         assert controller.status()['recording']['session_id'] != recorded_before
         call('record', action='off', wait=True)
-        report['backend_switch'] = dict(before=backend_before, after=backend_after,
-            connector_before=old_connector_cid, connector_after=new_connector_cid, status=controller.status()['backend'])
-        report['checks'].append('backend switch replaces connector, keeps policy containers/PIDs, mixes reset/reinitialize and splits recording')
+        report['connector_switch'] = dict(before=connector_before, after=connector_after,
+            connector_before=old_connector_cid, connector_after=new_connector_cid, status=controller.status()['connector'])
+        report['checks'].append('connector switch replaces connector, keeps policy containers/PIDs, mixes reset/reinitialize and splits recording')
         episode = call('return_and_wait', timeout_s=0)['operation_id']
         wait(lambda: controller.status()['state'] == 'running')
         epoch = controller._control_epoch
@@ -343,7 +347,9 @@ def in_container():
         report['connector'] = {'source': controller.robot.spec['source'], 'container': connector_identity[0],
                                'runtime': connector_identity[1], 'rc_without_ros': True}
         assert controller.status()["policy"] is None and not containers()
-        assert "policy example example" in command("policy help example")["help"]
+        static_help = command("policy help example")
+        assert 'policy <实例> example' in static_help['help'] and '未加载' in static_help['help']
+        assert static_help['help_document']['schema_version'] == 1
         command("policy switch example")
         assert controller.status()["state"] == "paused"
         first = containers()

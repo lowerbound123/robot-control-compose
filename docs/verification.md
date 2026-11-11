@@ -2,6 +2,30 @@
 
 当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前公共契约变更须运行 `python3 scripts/test_scope.py --interface`，跳过不计通过。
 
+## 0.17 连接命名与统一帮助（2026-11-11）
+
+RC 与 policy SDK 更新至 0.17.0，保留 schema 3。裸 `camera` 等价 `camera toggle`；机器人连接命令、MCP 工具、配置、状态与图像代次、能力协商和录制字段统一使用 connector。旧命令及配置直接报错，没有别名或自动迁移。Profile 的 `source` 和 `connector` 分别保留来源、实例含义。
+
+帮助使用静态 `help_details`、可序列化 `HelpDocument` 和完整纯文本投影。TUI 在现有日志区排版，headless 保留纯文本，MCP 帮助提供文本与结构化数据。未加载来源和原生 chain 的帮助不导入模型；重复策略按确切实例填充示例。普通共享 JSON 即使包含 `help`、`help_document` 键也不会被当成帮助。完整内置路径如 `help policy switch`、`help mcp take` 可达，`--reset` 只展示一个可选 flag。
+
+最终验证使用本机 `.venv/bin/python` 3.10.22；默认系统 Python 3.9 不参与本次测试。独立全分支审查发现的两个功能问题和一个重复参数问题均已修复，修复范围复审通过。测试期间通过源码哈希确认最终实现保持冻结。
+
+| 范围 | 最终结果 | 证据 |
+| --- | --- | --- |
+| 完整接口回归 | **1960 passed、78 skipped**，退出码 0，678.88 秒 | `/private/tmp/rc017-postreview-interface.log` |
+| WebUI | **175 passed**；生产构建通过 | `/private/tmp/rc017-webui-unit-final.log`、`/private/tmp/rc017-webui-build.log` |
+| 真实隔离 Docker example 与自链 | **9 组检查通过**；含 connector 切换、实例身份、MCP、静态帮助及 HTTP 帮助双投影 | `/private/tmp/rc017-postreview-docker/result.json` |
+| Docker 清理 | 本次项目 `rc-077786c866b3` 的容器、卷均为空 | `/private/tmp/rc017-postreview-docker/cleanup.json` |
+| 帮助内容与入口增量 | 267 passed；审查修复相关 77 passed | `/private/tmp/rc017-task2-final.log`、`/private/tmp/rc017-task2-review-green.log` |
+| 日志与实际 Textual 交互 | 110 passed，含中文、窄屏、滚动、正反向拖选、复制、缩放与异步旧排版丢弃 | `/private/tmp/rc017-render-final-regression.log` |
+| 独立审查与修复复审 | 已确认缺陷全部关闭 | `/private/tmp/rc017-final-review.md`、`/private/tmp/rc017-fix-review.md` |
+
+完整回归保留 14 条告警：13 条现有 Pillow/Sixel 弃用告警，以及 policy monitor 生命周期测试中的一次 `multiprocessing.resource_tracker` 重启告警。首次最终回归的两处旧帮助返回结构断言已按新契约修正，原有运动、图像和代次断言保留；上述最终全套为修复后重新完整运行的结果。
+
+原始 Textual SVG 截图保存在 `/private/tmp/rc017-help-*.svg`。Rich 15 的 SVG 导出按字符数设置 `textLength`，会压缩中文；实际终端 Strip 已验证双宽字符及列对齐。`*-cells.svg` 与对应 PNG 仅在临时预览中按实际终端格宽逐字定位，用于目视核验，未修改产品或第三方包。原图、校正预览和映射测试证据均保留。
+
+78 项跳过涉及未安装的可选策略依赖、ROS/GPU/模型及未启用的专用镜像等环境条件，不计通过。本次没有运行真实 ROS 驱动、真实模型供应商、GPU 模型或机器人硬件，没有操作远端部署，也没有自动修改私有配置。
+
 
 ## 0.16 集成：TUI、热切换与独立 connector（2026-11-07）
 
@@ -68,7 +92,7 @@ Docker 验收包含 209 个普通操作检查点，均保持 connector CID/runti
 
 ## Backend 热切换（2026-11-06）
 
-RC/SDK 0.14，manifest 保持 schema 3。覆盖命名连接、默认原进程重初始化、可热改 reset、重复实例混合处理、多失败实例定向冷重试、MCP控制权与取消、图像代次隔离及录制分会话。操作说明见 [backend 热切换](backend-switching.md)。
+RC/SDK 0.14，manifest 保持 schema 3。覆盖命名连接、默认原进程重初始化、可热改 reset、重复实例混合处理、多失败实例定向冷重试、MCP控制权与取消、图像代次隔离及录制分会话。操作说明见 [backend 热切换](connector-switching.md)。
 
 - 公共接口完整回归：隔离 Linux / Python 3.10 / ROS Humble 环境运行 `python3 scripts/test_scope.py --interface`，**1387 passed、83 skipped**（525.59s）；日志 `/tmp/rc-backend-linux-final.log`。13条警告均来自既有 Pillow/Sixel 弃用提示。Python 3.10 的 Future 超时异常与 builtin TimeoutError 不同，修正了对应调度测试的捕获类型，没有修改模型调度实现。
 - 宿主阶段完整回归：Python 3.11，**1583 passed、66 skipped**（601.52s），日志 `/tmp/rc-backend-interface-final.log`；最终图像/MCP补强专项 **34 passed**，日志 `/tmp/rc-backend-final-review-green.log`。

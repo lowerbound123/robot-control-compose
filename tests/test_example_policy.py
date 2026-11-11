@@ -279,4 +279,4 @@ def test_template_setup_and_catalog_discovery(tmp_path):
     assert row["id"] == "example" and row["valid"]
     config = documents["policy/example/policy.yaml"]
     assert command_specs(config)["example"]["args"] == []
-    assert config["execution"] == {"mode": "sync", "call_every_actions": 1, "control_mode": "qpos", "on_backend_switch": "reinitialize_policy"}
+    assert config["execution"] == {"mode": "sync", "call_every_actions": 1, "control_mode": "qpos", "on_connector_switch": "reinitialize_policy"}

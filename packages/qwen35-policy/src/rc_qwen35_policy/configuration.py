@@ -126,8 +126,8 @@ def validate_manifest(config):
     if (execution.get('mode') != 'sync' or execution.get('call_every_actions') != 1
             or execution.get('control_mode') != 'qpos'):
         raise ValueError('Qwen requires sync callbacks every complete qpos action')
-    if any(path not in ('params.task', 'execution.on_backend_switch') for path in config.get('hot_reloadable', [])):
-        raise ValueError('only params.task and execution.on_backend_switch are hot reloadable; use switch-model for model settings')
+    if any(path not in ('params.task', 'execution.on_connector_switch') for path in config.get('hot_reloadable', [])):
+        raise ValueError('only params.task and execution.on_connector_switch are hot reloadable; use switch-model for model settings')
     task = config.get('params', {}).get('task')
     if task is not None and (not isinstance(task, str) or not task.strip()):
         raise ValueError('params.task must be null or a nonempty string')

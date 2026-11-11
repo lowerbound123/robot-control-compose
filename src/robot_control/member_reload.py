@@ -22,8 +22,8 @@ class MemberReloadSupport:
                               source_generation=self.buffer.generation, origin=origin)
 
     def _queue_reload_retry(self, identity, line, words, *, origin='tui', expected_control=None):
-        if len(words) == 2 and words[1] in self._backend_failures:
-            return self._queue_backend_member_retry(identity, line, words[1], origin, expected_control)
+        if len(words) == 2 and words[1] in self._connector_failures:
+            return self._queue_connector_member_retry(identity, line, words[1], origin, expected_control)
         candidate = self._retry_candidate
         try:
             if len(words) != 2:
@@ -50,7 +50,7 @@ class MemberReloadSupport:
         self._start_member_reload(candidate.record, candidate.member, request.operation_id, origin=request.origin)
 
     def _awaiting_member_retry(self):
-        if self._backend_failures:
+        if self._connector_failures:
             return True
         if self._retry_candidate is None:
             return False

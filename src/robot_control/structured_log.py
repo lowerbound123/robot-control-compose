@@ -33,11 +33,42 @@ class ParsedJson:
 
 
 @dataclass(frozen=True)
+class DisplaySpan:
+    """A contiguous source slice at a character offset in a decorated row."""
+
+    display_start: int
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class DisplayRow:
     start: int
     end: int
     text: Text
     header: bool = False
+    # None is the ordinary identity mapping; () is decoration without source.
+    spans: tuple[DisplaySpan, ...] | None = None
+
+    def source_at(self, character: int) -> int:
+        if self.spans is None:
+            return min(self.end, self.start + character)
+        previous = self.start
+        for span in self.spans:
+            if character < span.display_start:
+                return previous
+            end = span.display_start + span.end - span.start
+            if character <= end:
+                return span.start + character - span.display_start
+            previous = span.end
+        return previous
+
+    def selection_ranges(self, lower: int, upper: int):
+        spans = self.spans if self.spans is not None else (DisplaySpan(0, self.start, self.end),)
+        for span in spans:
+            start, end = max(lower, span.start), min(upper, span.end)
+            if start < end:
+                yield span.display_start + start - span.start, span.display_start + end - span.start
 
 
 @dataclass(frozen=True)
@@ -46,6 +77,7 @@ class FormattedRecord:
     rows: tuple[DisplayRow, ...]
     copy_text: str
     parsed: ParsedJson | None
+    source_complete: bool = False
 
 
 def clean_text(value: str) -> str:
@@ -146,7 +178,10 @@ def _log_text(label, message, style, *, single_line=False):
 
 
 def format_record(message: str, *, label="", style="", width=80, expanded=False,
-                  parsed: ParsedJson | None = None) -> FormattedRecord:
+                  parsed: ParsedJson | None = None, help_document=None) -> FormattedRecord:
+    if help_document is not None:
+        from .help_render import format_help_record
+        return format_help_record(message, help_document, label=label, style=style, width=width)
     width = max(1, width - 2)  # gutter for fold marker
     parsed = parsed if parsed is not None else parse_json_message(message)
     rows = []

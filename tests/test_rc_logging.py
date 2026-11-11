@@ -33,7 +33,7 @@ def rc(tmp_path):
     config = {
         'schema_version': 3, 'frequency_hz': 30,
         'policy_directory': 'policy',
-        'startup_policy': 'hold', 'robot': {'backend': 'mock'},
+        'startup_policy': 'hold', 'robot': {'connector': 'body'},
         'safety': {'enabled': False, 'reference_frequency_hz': 50, 'max_delta_per_step': [.1]*14},
         'reset_qpos': [0]*14, 'outputs_directory': 'outputs',
     }

@@ -20,7 +20,7 @@ class PolicyCommandSupport(PolicyCapabilities):
 
     def _local_specs(self):
         worker = self._worker
-        if (self._backend_failures or self._retry_candidate is not None or worker is None or not getattr(worker, "runnable", worker.alive) or worker in self._command_faults
+        if (self._connector_failures or self._retry_candidate is not None or worker is None or not getattr(worker, "runnable", worker.alive) or worker in self._command_faults
                 or self._operation is not None or self._stop.is_set()):
             return {}
         return getattr(worker, "command_specs", {})
@@ -57,20 +57,18 @@ class PolicyCommandSupport(PolicyCapabilities):
         return result
 
     def local_help(self, name=None):
-        from .controller import HELP
+        from .help_content import builtin_help
+        from .help_document import help_text
         with self._lock:
             specs = self._local_specs()
             try:
                 capabilities = self.policy_capabilities(name)
             except ValueError:
-                if name == 'record':
-                    from .recording_control import RECORD_HELP
-                    return RECORD_HELP
                 if name not in specs:
-                    raise
+                    return help_text(builtin_help(name.split()))
                 capabilities = self.policy_capabilities(command=name)
             text = self._format_capabilities(capabilities)
-            return '\n'.join(([HELP, 'Policy TUI commands:'] if name is None else []) + [text])
+            return '\n\n'.join(([help_text(builtin_help())] if name is None else []) + [text])
 
     def submit_policy_command(self, instance_id, command, args=None, *, expected_control=None):
         arguments = [] if args is None else args

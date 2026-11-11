@@ -143,8 +143,8 @@ def validate_manifest(config):
     if (execution.get('mode') != 'sync' or type(execution.get('call_every_actions')) is not int
             or execution['call_every_actions'] != 1 or execution.get('control_mode') != 'qpos'):
         raise ValueError('history requires sync callbacks every complete qpos action; use model.json pipelined')
-    if any(path not in ('params.task', 'execution.on_backend_switch') for path in config.get('hot_reloadable', [])):
-        raise ValueError('only params.task and execution.on_backend_switch are hot reloadable')
+    if any(path not in ('params.task', 'execution.on_connector_switch') for path in config.get('hot_reloadable', [])):
+        raise ValueError('only params.task and execution.on_connector_switch are hot reloadable')
     task = config.get('params', {}).get('task')
     if task is not None and (not isinstance(task, str) or not task.strip()):
         raise ValueError('params.task must be null or nonempty text')

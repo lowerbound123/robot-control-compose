@@ -495,7 +495,7 @@ def run_local(args, evidence):
     report = {'deployment_id': args.deployment_id, 'mode': 'smoke' if args.smoke else 'acceptance',
               'platform': platform.platform(), 'python': sys.version, 'source_sha256': source_hashes(),
               'requested_duration_s': args.duration, 'width': args.width, 'height': args.height,
-              'pattern': 'ros-static-png' if args.ros else args.pattern, 'robot_backend': 'acone_ros' if args.ros else 'mock',
+              'pattern': 'ros-static-png' if args.ros else args.pattern, 'robot_connector': 'acone_ros' if args.ros else 'mock',
               'camera_hz': 30, 'control_hz': args.control_hz,
               'thread_switch_interval_s': sys.getswitchinterval(),
               'model_delay_s': args.model_delay, 'verdict': 'failed'}
@@ -512,7 +512,7 @@ def run_local(args, evidence):
             recorder.sent(event)
         robot.set_command_observer(on_publish)
         metadata = {'deployment_id': args.deployment_id, 'fixture': 'recording-acceptance',
-                    'source_sha256': report['source_sha256'], 'robot': {'backend': report['robot_backend'], 'image_size': [args.height, args.width]},
+                    'source_sha256': report['source_sha256'], 'robot': {'connector': report['robot_connector'], 'image_size': [args.height, args.width]},
                     'policy': worker.config, 'recording_hz': 30}
         recorder.command('on', metadata).result(10)
         start = time.monotonic()

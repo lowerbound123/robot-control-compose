@@ -4,11 +4,11 @@ execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
-  on_backend_switch: reinitialize_policy
+  on_connector_switch: reinitialize_policy
 params:
   model_config_path: model.json
 hot_reloadable:
-- execution.on_backend_switch
+- execution.on_connector_switch
 tui_commands:
   switch-model:
     handler: switch_model
@@ -49,7 +49,7 @@ config_hints:
     execution.tui_command_workers:
       type: int
       help: 命令执行线程数；修改后重新初始化并暂停
-    execution.on_backend_switch:
+    execution.on_connector_switch:
       type: enum
       choices:
       - reset

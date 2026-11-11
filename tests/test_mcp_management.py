@@ -59,7 +59,8 @@ def test_text_help_prioritizes_policy_named_record_over_builtin_topic(example_rc
     (folder / 'policy.yaml').write_text(json.dumps(config))
     (folder / 'main.py').write_text('raise RuntimeError("help imported policy")\n')
     reply = tool(example_mcp, 'command', line='policy help record')
-    assert 'policy record set-chunk-size' in reply['result']['help']
+    assert 'policy <实例> set-chunk-size' in reply['result']['help']
+    assert '来源：record' in reply['result']['help']
     assert example_rc.control_owner == 'policy'
 
 

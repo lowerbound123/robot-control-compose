@@ -339,7 +339,7 @@ class PolicyHost:
                     'python': sys.version.split()[0], 'policy_id': self.host_id,
                     'deployment_id': self.deployment_id, 'run_id': self.run_id, 'generation': self.generation,
                     'healthy': not (self.closing or self.shutting_down or self.cleanup_failed), 'reinitialize_policy': True,
-                    'configure': True, 'list_paths': True, 'backend_switch_v1': True}
+                    'configure': True, 'list_paths': True, 'connector_switch_v1': True}
         if not peer.owner: raise ValueError('hello required')
         if kind == 'ping':
             if self.owner == peer.owner:
