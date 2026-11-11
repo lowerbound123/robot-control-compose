@@ -97,6 +97,81 @@ def test_daemon_failure_is_not_exit_proof(tmp_path):
     assert handle.container_id in engine.containers
 
 
+@pytest.mark.parametrize('budget', [.5, 1.5, 2.0])
+def test_short_shutdown_budget_allows_a_clean_process_exit(tmp_path, budget):
+    import subprocess
+    import sys
+
+    runtime, engine = manager(tmp_path)
+    runtime.context['connector_rpc_volume'] = 'connector-rpc'
+    directory = tmp_path / 'connector/mock'
+    directory.mkdir(parents=True)
+    (directory / 'compose.yaml').write_text(json.dumps({
+        'services': {'connector': {'image': 'mock:local'}}}))
+    handle = runtime.start_connector('body', directory, {},
+                                     threading.Event(), time.monotonic() + 10)
+    # Model Docker's integer stop timeout with a real process that needs a
+    # little time to finish its SIGTERM handler, as the ROS connector does.
+    process = subprocess.Popen([sys.executable, '-u', '-c', '''
+import signal, time
+def close(*_):
+    time.sleep(.05)
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, close)
+print('ready', flush=True)
+while True:
+    time.sleep(1)
+'''], stdout=subprocess.PIPE, text=True)
+    try:
+        assert process.stdout.readline().strip() == 'ready'
+
+        def stop_process(args, **kwargs):
+            if args[0] == 'stop':
+                grace = int(args[args.index('--time') + 1])
+                process.terminate()
+                try:
+                    process.wait(timeout=min(grace, kwargs['timeout']))
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1)
+                engine.containers[handle.container_id]['State']['ExitCode'] = (
+                    process.returncode if process.returncode >= 0 else 128 - process.returncode)
+            return engine(args, **kwargs)
+
+        runtime.runner = stop_process
+        proof = runtime.stop_and_remove(handle, time.monotonic() + budget)
+        assert process.returncode == 0
+        assert proof.removed and not proof.forced
+        assert not runtime.cleanup_forced
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=1)
+        process.stdout.close()
+
+
+def test_stop_wait_cannot_extend_the_absolute_cleanup_deadline(tmp_path, monkeypatch):
+    runtime, engine = manager(tmp_path)
+    handle = runtime.start(spec(runtime, tmp_path, 'body'), 1,
+                           threading.Event(), time.monotonic() + 10)
+    now = [100.0]
+    monkeypatch.setattr('robot_control.runtime_manager.time.monotonic', lambda: now[0])
+
+    def stalled_stop(args, **kwargs):
+        if args[0] == 'stop':
+            now[0] += kwargs['timeout']
+            raise TimeoutError('Docker command deadline exceeded')
+        return engine(args, **kwargs)
+
+    runtime.runner = stalled_stop
+    with pytest.raises(TimeoutError, match='deadline'):
+        runtime.stop_and_remove(handle, 100.5)
+    assert now[0] == 100.5
+    assert handle.container_id in engine.containers
+    assert handle.phase != 'removed'
+    assert not any(event[0] in ('kill', 'rm') for event in engine.events)
+
+
 def test_timeout_intent_finds_and_cleans_daemon_created_container(tmp_path):
     runtime,engine=manager(tmp_path); engine.late=True
     with pytest.raises(TimeoutError):

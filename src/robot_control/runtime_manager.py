@@ -5,6 +5,7 @@ from dataclasses import asdict
 import copy
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -400,7 +401,10 @@ class ComposeRuntimeManager(ConnectorRuntime):
             item = self._inspect([cid], deadline)[0]
             self._verify(item, handle)
             if item['State'].get('Running'):
-                grace = max(0, min(5, int(remaining(deadline) / 2)))
+                # Docker accepts whole seconds: truncating a positive short
+                # budget to zero immediately kills a normally exiting driver.
+                # The CLI call remains bounded by the same absolute deadline.
+                grace = min(5, math.ceil(remaining(deadline) / 2))
                 try:
                     self._run(['stop', '--time', str(grace), cid], deadline)
                 except Exception:
