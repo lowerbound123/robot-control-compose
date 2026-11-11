@@ -59,7 +59,8 @@ class CandidateRejected(ValueError):
 
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
-                 init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None, on_trace=None):
+                 init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None, on_trace=None,
+                 on_log_event=None):
         from rc_policy_sdk.catalog import instance_id
         instance_id(config.get('id'))
         self.endpoint = endpoint
@@ -73,6 +74,7 @@ class PolicyProcess(MonitorClient):
         self.policy_dir, self.config, self.config_version = Path(policy_dir), config, config_version
         self.init_timeout_s, self.inference_timeout_s, self.release_timeout_s = init_timeout_s, inference_timeout_s, release_timeout_s
         self.on_log = on_log
+        self.on_log_event = on_log_event
         self.on_trace = on_trace
         self._trace_requests = OrderedDict()
         self.global_state = global_state
@@ -104,6 +106,8 @@ class PolicyProcess(MonitorClient):
         self._release_confirmed = False
         self.supports_commands = self.supports_observe = False
         self.supports_configure = False
+        self.supports_table_output = False
+        self._log_pending_version = None
         self._configure_fenced = self._configure_failed = self._configure_committed = False
         self._configure_prepared = None
         self._configure_applied_version = None
@@ -143,6 +147,66 @@ class PolicyProcess(MonitorClient):
             except Exception:
                 pass
         self._log(packet['message'])
+
+    def _log_binding(self, packet):
+        """Read a publication binding while holding the short receive lock."""
+        message = packet['event']
+        # Diagnostics from the new initializing context may precede ready/ACK
+        # and publication. Failed initialization diagnostics remain observable.
+        if (not getattr(self.host, 'table_output_v1', False)
+                or (self.runtime_id is not None and packet.get('runtime_id') != self.runtime_id)
+                or packet.get('session_id') != self.session_id
+                or message.get('context_id') != self.context_id
+                or type(message.get('config_version')) is not int
+                or message['config_version'] not in (self.config_version, self._log_pending_version)):
+            return
+        return (packet['runtime_id'], self.session_id, self.context_id, message['config_version'],
+                self.config['id'], self.policy_dir.name, self.host, self.host.instance_id)
+
+    def _policy_log_packet(self, packet):
+        with self._condition:
+            binding = self._log_binding(packet)
+            if binding is None:
+                return
+            self.runtime_id = binding[0]
+        message = packet['event']
+        from .secret_config import public_message, public_value
+        from .table_output import public_json_fields, public_table_fields
+        try:
+            if 'table_document' in message:
+                try:
+                    fields = public_table_fields(message['result'], message['table_document'])
+                except (TypeError, ValueError, RecursionError):
+                    fields = public_json_fields(message['result'])
+            elif message.get('log_event') == 'sdk.log_gap':
+                fields = {'message': public_message(str(message.get('message', 'SDK log records dropped')))}
+            else:
+                return
+            metadata = public_value({key: message[key] for key in (
+                'level', 'context_id', 'config_version', 'request_id', 'generation',
+                'log_event', 'stage', 'count', 'count_saturated') if key in message})
+            event = {
+                **metadata,
+                **fields, 'event': 'policy.log', 'instance_id': binding[4], 'source_id': binding[5],
+                'runtime_id': binding[0], 'session_id': binding[1],
+                'host_instance_id': binding[7],
+                'timestamp_ns': time.time_ns(), 'monotonic_ns': time.monotonic_ns()}
+        except (KeyError, TypeError, ValueError):
+            return
+        with self._condition:
+            # A context/runtime/config commit may have happened while preparing
+            # the full public snapshot. Recheck before publishing its old data.
+            if self._log_binding(packet) != binding:
+                return
+            on_trace, on_log_event = self.on_trace, self.on_log_event
+        if on_trace:
+            try: on_trace(event)
+            except Exception: pass
+        if on_log_event:
+            try: on_log_event(event)
+            except Exception: pass
+        else:
+            self._log(event['message'])
 
     def _trace_key(self, message, runtime_id=None):
         return (self.runtime_id if runtime_id is None else runtime_id,
@@ -191,6 +255,7 @@ class PolicyProcess(MonitorClient):
                     event=dict(type='initialize',config=self.config,config_version=self.config_version,
                                tui_command_effects_v2=list(COMMAND_EFFECTS), runtime_tools=list(RUNTIME_TOOLS),
                                global_state=global_descriptor, context_id=self.context_id,
+                               table_output_v1=getattr(self.host, 'table_output_v1', False),
                                configure=getattr(self.host, 'configure', False),
                                connector_switch_v1=getattr(self.host, 'connector_switch_v1', False)))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
@@ -223,6 +288,9 @@ class PolicyProcess(MonitorClient):
         self.host.enqueue(packet)
 
     def _receive(self, packet):
+        if packet['event'].get('type') == 'log':
+            self._policy_log_packet(packet)
+            return
         with self._condition:
             if self.runtime_id is not None and packet['runtime_id'] != self.runtime_id:
                 if packet['event'].get('type') in ('result', 'error') and 'request_id' in packet['event']:
@@ -231,6 +299,7 @@ class PolicyProcess(MonitorClient):
             self.runtime_id = packet['runtime_id']
             message = packet['event']; kind = message['type']
             if kind == 'ready':
+                self.supports_table_output = message.get('table_output_v1') is True and getattr(self.host, 'table_output_v1', False)
                 self.supports_connector_switch = message.get('connector_switch_v1') is True and getattr(self.host, 'connector_switch_v1', False)
                 if message.get('global_state_version') not in (None, 1):
                     self._record_failure('incompatible global state protocol'); return
@@ -548,6 +617,7 @@ class PolicyProcess(MonitorClient):
                     or self._configure_applied_version is not None or type(next_version) is not int
                     or next_version <= self.config_version):
                 raise ValueError('invalid prepared configure application')
+            self._log_pending_version = next_version
         self._configure_operation('configure_apply', dict(config=config, action=action, new_config_version=next_version), cancel)
         with self._condition:
             self._configure_applied_version = next_version
@@ -570,6 +640,7 @@ class PolicyProcess(MonitorClient):
                 raise RuntimeError('configure commit is not confirmed')
             apply_candidate(self.config, config)
             self.config_version = version
+            self._log_pending_version = None
             self._configure_prepared = None
             self._configure_applied_version = None
             self._configure_fenced = self._configure_committed = False
@@ -599,6 +670,7 @@ class PolicyProcess(MonitorClient):
                     prepare_patch(self.config, extras["patch"])
                     if type(extras["config_version"]) is not int or extras["config_version"] <= self.config_version:
                         raise ValueError("config version must increase")
+                    self._log_pending_version = extras['config_version']
                 self.stop_commands()
                 self._operation_number += 1
                 operation_id = self._operation_number
@@ -619,6 +691,7 @@ class PolicyProcess(MonitorClient):
                                     raise RuntimeError('hot config acknowledgement version mismatch')
                                 apply_patch(self.config, extras["patch"])
                                 self.config_version = extras["config_version"]
+                                self._log_pending_version = None
                             self._commands_blocked = False
                             return
                         self._condition.wait(.05)
@@ -713,6 +786,7 @@ class PolicyProcess(MonitorClient):
         if self.global_state is not None:
             self.global_state.revoke(self)
         self.context_id = uuid.uuid4().hex
+        self._log_pending_version = next_version
         self._context_enabled = True
         try:
             descriptor = self.global_state.attach_session(self) if self.global_state is not None else None
@@ -738,6 +812,7 @@ class PolicyProcess(MonitorClient):
                 raise RuntimeError('configure state is uncertain; cold retry required')
             self.config = config
             self.config_version = version
+            self._log_pending_version = None
             self.command_specs = command_specs(config)
             self.supports_observe = flags['observe']
             self.supports_monitor = flags['monitor']
@@ -794,11 +869,17 @@ class PolicyProcess(MonitorClient):
         elif kind in ("command_result", "command_error", "command_cancelled"):
             deadline = call["deadline"]
             if deadline is not None and message.get("finished_at", time.monotonic()) > deadline:
-                message = {**message, "type": "command_timeout", "error": "policy command timeout"}
+                message = {"command_id": identity, 'config_version': call['version'],
+                           "type": "command_timeout", "error": "policy command timeout"}
                 self._command_fatal = True
             self._command_calls.pop(identity, None)
         else:
             raise ValueError(f"unexpected command response: {kind}")
+        if message['type'] == 'command_result' and 'table_document' in message:
+            message = {**message, 'table_log_context': {
+                'instance_id': self.config['id'], 'source_id': self.policy_dir.name,
+                'runtime_id': self.runtime_id, 'session_id': self.session_id,
+                'context_id': self.context_id, 'config_version': message['config_version']}}
         self._command_responses.append(message)
 
     def poll_command(self):

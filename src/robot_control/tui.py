@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.message import Message
 from textual.suggester import Suggester
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
 from .log_tui import StructuredLog
@@ -25,6 +25,7 @@ from .tui_config import tui_settings
 from .tui_panels import CameraPanel, MonitorPanel
 from .policy_monitor_tui import PolicyMonitorSidebar
 from .policy_manager_tui import PolicyManagerPanel
+from .statusbar import format_statusbar
 
 from .completion import apply_completion
 from .completion_service import CompletionService
@@ -309,6 +310,7 @@ class RobotControlApp(App):
     Screen { layout: vertical; }
     #log-area { height: 1fr; min-height: 2; }
     #output { width: 2fr; min-width: 0; height: 1fr; min-height: 2; border: solid $accent; padding: 0 1; }
+    #status-area { height: auto; min-height: 1; }
     #status { height: auto; min-height: 1; padding: 0 1; background: $panel; }
     #command-area { dock: bottom; height: auto; max-height: 100%; background: $surface; }
     #command { height: 3; }
@@ -344,7 +346,8 @@ class RobotControlApp(App):
                           height_limit=self._camera_height_limit)
         with Vertical(id='command-area'):
             yield PolicyManagerPanel()
-            yield Static("Starting…", id="status")
+            with VerticalScroll(id='status-area', can_focus=False):
+                yield Static("Starting…", id="status")
             yield CompletionPanel()
             yield CommandInput(id="command", placeholder="help · ↑/↓ history · Tab candidates · → history · Ctrl+C exit")
 
@@ -381,6 +384,16 @@ class RobotControlApp(App):
 
     def on_resize(self, event: events.Resize) -> None:
         self._restore_terminal_input()
+        self.call_after_refresh(self._fit_statusbar)
+
+    def _fit_statusbar(self):
+        """Let long status text scroll before it can push input off screen."""
+        if not self._ui_active or not self.is_running:
+            return
+        controls = (self.query_one(selector) for selector in
+                    ('#command', '#completion-panel', '#policy-manager'))
+        reserved = sum(widget.outer_size.height for widget in controls if widget.display)
+        self.query_one('#status-area').styles.max_height = max(1, self.size.height - reserved - 2)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
@@ -605,19 +618,8 @@ class RobotControlApp(App):
         monitors = getattr(self.controller, "policy_monitors", None)
         if monitors is not None:
             self.query_one(PolicyMonitorSidebar).update_snapshots(monitors.snapshot())
-        status = self.controller.status()
-        fields = [f"{key}={value}" for key, value in status.items() if key not in ("direct", "runtime", "last_action_request")]
-        last_request = status.get('last_action_request')
-        if last_request is not None:
-            fields.append(f"请求 {last_request['request_id']}：裁剪 {last_request['trim']}，缓存 {last_request['cached']}")
-        runtime = status.get('runtime')
-        if runtime:
-            fields.extend([f"runtime={runtime['phase']}", f"target={runtime['target']}"])
-            if runtime.get('error'):
-                fields.append(f"runtime_error={runtime['error']}")
-        if "direct" in status:
-            fields.extend([f"direct={status['direct']['phase']}", f"direct_pending={status['direct']['pending_steps']}"])
-        self.query_one("#status", Static).update(Text(" | ".join(fields)))
+        self.query_one("#status", Static).update(Text(format_statusbar(self.controller._statusbar_snapshot())))
+        self.call_after_refresh(self._fit_statusbar)
         if self.controller.done.is_set() and self.controller.events.empty() and not self.router.pending:
             self._ui_active = False
             for timer in self._refresh_timers:

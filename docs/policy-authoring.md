@@ -1,5 +1,7 @@
 # 策略作者规范
 
+RC / SDK 0.18 提供显式 `Table`、`TableOutput` 和 `runtime.log_table()`；manifest 仍使用 schema 3。表格是附加展示信息，命令的业务 JSON、普通 `print()` 与未包装的返回值保持原有语义，见下文“结构化表格输出”。
+
 SDK 0.17 保留公共配置字段 `execution.on_connector_switch`，默认 `reinitialize_policy`，可选 `reset`。所有策略从初始化时建立可重绑定的context身份，不再需要声明重初始化命令才能参与connector切换。reset必须结束旧后台请求、清空旧机器人状态；release/initialize沿用旧绑定释放、新绑定初始化的语义。详见 [connector 热切换](connector-switching.md)。
 
 SDK 0.11 的 `runtime.globals` 提供跨策略共享状态：直接读取共享内存，RC 统一提交写入，退出全量保存到 global.env。完整接口、并发与持久化约定见 [全局共享状态](global-state.md)。
@@ -133,6 +135,65 @@ MCP 持有控制权时可用 `retry_reload(instance_id=...)` 或 `command("polic
 旧 `release` 可使用此前保存的 `runtime.globals`。回调退出后，旧 runtime 的资源登记和全局写入失效。释放时请自行结束创建的后台任务。`initialize` 可以正常返回 `None`，初始化抛错时也可能需要 `release(None)` 收尾。新 context 通过确认后，RC 才提交配置、更新目标及链的版本，等待显式 `resume`。释放、初始化或最终确认失败时，先检查 `status.retry_reload_command`，修复后手动冷重建目标实例。未确认释放的图像将继续占用租约。
 
 `policy a-0 config save` 保存该实例的有效配置到来源目录 `policy/a/`，保留 YAML 注释和顺序，并将落盘 ID 写为 a。不会创建实例目录或修改其他实例。重复来源必须指定实例，不能用 `policy a config save`。多个实例先后保存时，最后一次成功保存决定来源默认配置。链顺序通过本地 `policy manage save` 或 MCP `policy_chain(action="save", policies=[...])` 保存。
+
+## 结构化表格输出（0.18）
+
+命令 handler 可以显式返回 `TableOutput(result=..., tables=[...])`。`result` 放完整业务返回值，`tables` 放按显示顺序排列的表格。下面复用 example 已有的 `monitor(context)` 快照；原命令 `example(context)` 继续直接返回该字典：
+
+```python
+from rc_policy_sdk import Table, TableOutput
+
+def table_stats(context):
+    snapshot = monitor(context)
+    return TableOutput(
+        result=snapshot,
+        tables=[Table(
+            title="实例统计",
+            columns=["实例", "推理次数", "观测次数", "已释放"],
+            rows=[[snapshot["instance"], snapshot["calls"],
+                   snapshot["observations"], bool(snapshot["released"])]],
+        )],
+    )
+```
+
+在 schema 3 的 manifest 中按普通命令注册即可，无需新的命令类型：
+
+```yaml
+tui_commands:
+  table-stats:
+    handler: table_stats
+    args: []
+    help: 以表格查看实例统计，业务回执保留完整 JSON
+    timeout_s: 5
+```
+
+表格模型、校验和纯文本投影只使用 Python 标准库，策略无需导入 Rich 或 Textual；SDK 的依赖仍只有 NumPy 与 posix-ipc。`Table` 的 `title` 是字符串，`columns` 至少包含一个字符串，`rows` 中每行长度必须与列数相同；空行集合 `rows=[]` 合法。单元格和 `result` 必须是有限 JSON 数据，支持字符串、数字、布尔、null、数组与对象，不接受 NaN、Infinity 或任意 Python 对象。`TableOutput` 必须显式提供 `result` 且至少含一张 `Table`。构建时生成独立数据副本；既有 wire 帧大小和日志队列预算继续适用，不能靠表格绕过限制。
+
+传输展示文档是 `{"schema_version":1,"tables":[{"title":...,"columns":[...],"rows":[...]}]}`，与原始 `result` 分开。RC 只有在命令最终成功后才发布表格；带 `update_config`、`reinitialize_policy` 或冷重载 effect 时，仍用原始 `result` 校验和提交补丁，失败或取消不显示成功表格。operation 回执和 HTTP MCP 的业务 `result` 不增加包装层，也不包含表格文档。未包装的字典即使有 `tables` 或 `table_document` 键，也仍按普通 JSON 处理。
+
+主动诊断在 `initialize`、`policy` 或 `observe` 回调中使用当前 context 的 runtime：
+
+```python
+# 在 initialize(config, *, runtime) 建好 context 后，可先于 ready 输出一次。
+if config["params"].get("table_logs", False):
+    runtime.log_table(table_stats(context), level="info")
+
+# 在 policy / observe 中，先更新该回调自己的计数，再按需要采样。
+if config["params"].get("table_logs", False) and count % interval == 0:
+    accepted_locally = runtime.log_table(table_stats(context), level="debug")
+```
+
+`level` 支持 trace、debug、info、warning、error、critical。返回的 bool 仅表示本地发送队列是否收下这条日志，不是 RC 已收到、已显示或已持久化的确认。调用会同步校验并复制数据，但不等待 socket 发送或 ACK。worker、host 和客户端各阶段都使用有界的尽力发送队列；压力下允许丢弃，丢失提示只汇总数量，可见日志可能出现缺口。调用方应限制表格大小和频率，不要因返回 false 重试、阻塞推理或保留图像视图。
+
+表格能力通过 `table_output_v1` 协商，不能在 manifest 中自行打开。旧端未支持时，新命令返回或 `runtime.log_table()` 会明确报需要升级 RC/SDK 的错误，不会静默转换成普通成功结果。使用前同步更新 RC 和挂载的 SDK 源码，并通过正常生命周期重建运行组；依赖未变时无需为表格单独安装 UI 库或重建模型依赖镜像。
+
+事件中的实例、来源、runtime、session、context 与配置版本由框架绑定。重复来源的 `example-0` 与 `example-1` 分别产生自己的日志与复制内容，不会按来源合并。原进程重初始化时，新的 initialize 可以在 ready/最终提交前输出合法的新 context 日志；旧绑定交接完成后，旧 runtime 的 `log_table()` 会被拒绝。普通配置提交保留 config 引用，日志携带当前提交版本；不要跨 context 保留和复用旧 runtime。
+
+TUI 在原日志区展开这些表格，多表纵向排列。只有最后一列换行；前列过宽、含换行或窗口过窄时，整表改为逐条纵向显示，保留完整字段。`0`、`false`、`null` 和空字符串各自保留，空表显示“无记录”。文字中的 Rich 标记和终端控制字符按字面处理。整条“复制”得到完整原始业务 JSON（沿用既有敏感字段脱敏），拖选复制逻辑正文，不含边框、补齐空格或软换行。headless 和日志文件保留可读纯文本投影；日志事件同时保留 `table_document` 与 `copy_json`。
+
+内置 `connector list`、`policy list`、`status`、`connector status` 和 `record status` 使用同一展示；`help` 仍保留原 `HelpDocument`、完整帮助文本与复制行为。普通配置、global、MCP 回执和 `print()` 不会自动变成表格。完整规则见[统一命令树](commands.md)。
+
+example 的 `table-stats` 展示实例、回调和已脱离图像映射的相机摘要，业务值与 `example` 命令的完整快照一致。`params.table_logs` 默认 false，旧本机 manifest 缺少该字段也按 false 处理；显式开启后初始化输出一次，policy/observe 分别按自己的计数和 `log_every_n_calls` 采样。通过 `config set params.table_logs true|false` 普通提交，不触发 reset/reinitialize；下一次初始化才会产生新的初始化表。已有私有 manifest 由用户核对并更新[模板](../policy/example/policy.yaml.example)中的 `table-stats` 注册与帮助声明，setup 不覆盖本机文件。
 
 ## 链、动作与租约
 

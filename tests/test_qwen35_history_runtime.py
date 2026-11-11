@@ -112,7 +112,8 @@ def test_history_indices_capacity_ownership_and_duplicate_counter(make):
     assert policy.monitor()['history_tick'] == 500
 
 
-def test_async_keeps_tail_copies_inputs_trims_and_uses_existing_blend(make):
+@pytest.mark.parametrize('jump', [False, True])
+def test_async_keeps_tail_copies_inputs_trims_and_uses_existing_blend(make, jump):
     from rc_policy_sdk.transitions import TemporalTransition
     policy, backend = make(25, True)
     chunk = step(policy, [], 0)
@@ -127,8 +128,11 @@ def test_async_keeps_tail_copies_inputs_trims_and_uses_existing_blend(make):
     assert backend.started.wait(1)
     image['head'][:] = 255
     assert np.all(backend.calls[-1][1]['head'] == 25)
-    for count in range(26, 31):
-        chunk = step(policy, chunk[1:], count)
+    if jump:
+        chunk = step(policy, chunk[5:], 30)
+    else:
+        for count in range(26, 31):
+            chunk = step(policy, chunk[1:], count)
     assert len(chunk) == 20  # old steps 31..50 survive after X=25
     backend.gate.set()
     policy.pending.result(2)
@@ -157,8 +161,58 @@ def test_late_async_result_has_one_pending_request_and_no_backlog(make):
     assert np.all(backend.calls[-1][1]['head'] == 21)
 
 
-@pytest.mark.parametrize('count,epoch,match', [(2, 1, 'missed'), (-1, 1, 'backwards'), (1, 2, 'epoch')])
-def test_counters_do_not_invent_history(make, count, epoch, match):
+@pytest.mark.parametrize('history_enabled', [False, True])
+def test_counter_jump_fills_current_observation_and_consumes_exact_tail(make, caplog, history_enabled):
+    policy, backend = make()
+    policy.history_enabled = history_enabled
+    backend.output[:, 0] = np.arange(50)
+    chunk = step(policy, [], 100)
+    chunk = step(policy, chunk[1:], 101, image=frames(11))
+    image = frames(77)
+    chunk = step(policy, chunk[3:], 104, image=image)
+    image['head'][:] = 255
+    np.testing.assert_array_equal(chunk[:, 0], np.arange(4, 25))
+    assert len(backend.calls) == 1
+    if history_enabled:
+        assert policy.monitor()['history_tick'] == 4
+        assert [f.index for f in policy.history.frames] == [0, 1, 2, 3]
+        assert [int(f.image[0, 0, 0]) for f in policy.history.frames] == [11, 77, 77, 77]
+        assert all(not f.image.flags.writeable for f in policy.history.frames)
+        assert any(record.levelname == 'WARNING' and '101' in record.message and '104' in record.message
+                   for record in caplog.records)
+    else:
+        assert policy.monitor()['history_tick'] == 0 and not policy.history.frames
+    step(policy, chunk, 104, image=frames(88))
+    assert policy.monitor()['history_tick'] == (4 if history_enabled else 0)
+    step(policy, chunk[1:], 105, image=frames(99))
+    assert policy.monitor()['history_tick'] == (5 if history_enabled else 0)
+    if history_enabled:
+        assert int(policy.history.frames[-1].image[0, 0, 0]) == 99
+
+
+def test_counter_jumps_replan_with_filled_history_and_keep_capacity(make):
+    policy, backend = make(25)
+    chunk = step(policy, [], 0)
+    for count in range(25, 501, 25):
+        chunk = step(policy, chunk[25:], count)
+        assert len(chunk) == 25
+        assert len(backend.calls) == 1 + count // 25
+    assert policy.monitor()['history_tick'] == 500
+    assert policy.monitor()['history_frames'] == 481
+    assert policy.history.frames[0].index == 19 and policy.history.frames[-1].index == 499
+    contexts = backend.calls[-1][3]
+    assert [f.index for f in contexts] == list(range(20, 500, 15))
+    assert int(contexts[0].image[0, 0, 0]) == 25
+    assert int(contexts[1].image[0, 0, 0]) == 50
+    assert int(contexts[-1].image[0, 0, 0]) == 500 % 256
+    policy.reset()
+    step(policy, [], 0, epoch=2)
+    assert policy.monitor()['history_tick'] == 0 and not policy.history.frames
+    assert backend.calls[-1][3] == ()
+
+
+@pytest.mark.parametrize('count,epoch,match', [(2, 1, 'canonical mirror'), (-1, 1, 'backwards'), (1, 2, 'epoch')])
+def test_invalid_counters_and_action_mirror_remain_errors(make, count, epoch, match):
     policy, backend = make()
     chunk = step(policy, [], 0)
     with pytest.raises(RuntimeError, match=match):

@@ -18,7 +18,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
 from .log_format import event_metadata, level_label
-from .structured_log import COPY_LABEL, COPY_WIDTH, FormattedRecord, clean_text, format_record, preview_record
+from .structured_log import COPY_LABEL, COPY_WIDTH, FormattedRecord, clean_text, copy_width, format_record, gutter_width, preview_record
 
 
 @dataclass
@@ -33,6 +33,8 @@ class LogRecord:
     ready: bool = False
     preserve_view_revision: int = -1
     help_document: dict | None = None
+    table_document: dict | None = None
+    copy_json: str | None = None
 
 
 @dataclass(frozen=True, order=True)
@@ -119,6 +121,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._pointer = None
         self._copy_pending = None
         self._batching = False
+        self._view_anchor = None
+        self._view_anchor_y = None
 
     def on_mount(self):
         self._formatter = _Formatter()
@@ -140,6 +144,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._indices.clear()
         self._selection = self._pressed = None
         self._copy_pending = None
+        self._view_anchor = self._view_anchor_y = None
 
     def write_event(self, event):
         timestamp, level, source = (clean_text(value).replace('\n', ' ') for value in event_metadata(event))
@@ -154,7 +159,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         label.append(f'[{source}] ', style='bold magenta' if source == 'MCP' else
                      'bold blue' if source.startswith('policy:') else 'bold cyan')
         return self.write(str(event.get('message', '')), label=label, style=style,
-                          help_document=event.get('help_document'))
+                          help_document=event.get('help_document'),
+                          table_document=event.get('table_document'), copy_json=event.get('copy_json'))
 
     def write_events(self, events):
         """One history/layout update for a controller drain, including eviction."""
@@ -171,7 +177,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             self._restore_view(anchor, follow)
             self.refresh()
 
-    def write(self, message, *, label='', style='', help_document=None):
+    def write(self, message, *, label='', style='', help_document=None, table_document=None, copy_json=None):
         if self._closed:
             return self
         if isinstance(message, Text):
@@ -183,7 +189,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._next_id += 1
         record = LogRecord(identity, message, label, style,
                            preview_record(message, label, style, self._width),
-                           help_document=help_document)
+                           help_document=help_document, table_document=table_document, copy_json=copy_json)
         self.records[identity] = record
         self._dirty[identity] = None
         removed = False
@@ -227,6 +233,13 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         return record, record.formatted.rows[row_index]
 
     def _anchor(self):
+        # Retain the exact logical position through repeated reflows. The first
+        # glyph on the new screen row may precede it; replacing the anchor with
+        # that glyph would drift on a narrow/wide round trip.
+        if (self._view_anchor is not None and self._view_anchor.record in self.records
+                and self.scroll_offset.y == self._view_anchor_y):
+            return self._view_anchor
+        self._view_anchor = self._view_anchor_y = None
         found = self._row_at(self.scroll_offset.y)
         return TextPosition(found[0].identity, found[1].start) if found else None
 
@@ -243,11 +256,17 @@ drag cross rows and scroll without invoking the fold/copy click actions.
 
     def _restore_view(self, anchor, follow=False):
         if follow:
+            self._view_anchor = self._view_anchor_y = None
             self.scroll_end(animate=False, immediate=True, x_axis=False)
         elif anchor is not None and anchor.record in self.records:
             record = self.records[anchor.record]
-            row = max(0, bisect_right([line.start for line in record.formatted.rows], anchor.offset) - 1)
-            self.scroll_to(y=self._starts[self._indices[anchor.record]] + row, animate=False, immediate=True)
+            row = record.formatted.row_for_offset(anchor.offset)
+            target = self._starts[self._indices[anchor.record]] + row
+            self.scroll_to(y=target, animate=False, immediate=True)
+            if self.scroll_offset.y == target:
+                self._view_anchor, self._view_anchor_y = anchor, target
+            else:
+                self._view_anchor = self._view_anchor_y = None
 
     def on_resize(self):
         self._resize_layout()
@@ -313,7 +332,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             record = self.records[identity]
             options = dict(label=record.label, style=record.style, width=self._width,
                            expanded=record.expanded, parsed=record.formatted.parsed,
-                           help_document=record.help_document)
+                           help_document=record.help_document,
+                           table_document=record.table_document, copy_json=record.copy_json)
             try:
                 self._formatter.jobs.put_nowait((identity, record.revision, record.message, options))
             except Full:
@@ -415,11 +435,13 @@ drag cross rows and scroll without invoking the fold/copy click actions.
                     for begin, finish in row.selection_ranges(lower, upper):
                         content.stylize(selection_style, begin, finish)
         marker = ('▾ ' if record.expanded else '▸ ') if row.header and record.formatted.parsed else '  '
-        text = Text(marker, style=self.rich_style)
-        room = max(0, width - 2 - (COPY_WIDTH if row.header else 0))
+        gutter = gutter_width(width)
+        button = copy_width(width - gutter) if row.header else 0
+        text = Text(marker if gutter else '', style=self.rich_style)
+        room = max(0, width - gutter - button)
         content.truncate(room, overflow='ellipsis')
         text.append_text(content)
-        if row.header:
+        if button:
             text.pad_right(max(0, width - COPY_WIDTH - text.cell_len))
             text.append(COPY_LABEL, style='cyan')
         # Rich's direct render omits the base style when there are no spans;
@@ -435,7 +457,9 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         if found is None:
             return None
         record, row = found
-        cells = max(0, offset.x - 2)
+        width = self.scrollable_content_region.width
+        gutter = gutter_width(width)
+        cells = max(0, offset.x - gutter)
         char = 0
         for char, value in enumerate(row.text.plain):
             size = get_character_cell_size(value)
@@ -445,7 +469,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         else:
             char = len(row.text.plain)
         position = TextPosition(record.identity, row.source_at(char))
-        action = 'copy' if row.header and offset.x >= self.scrollable_content_region.width - COPY_WIDTH else 'toggle' if row.header else None
+        action = 'copy' if row.header and copy_width(width - gutter) and offset.x >= width - COPY_WIDTH else 'toggle' if row.header else None
         return position, action
 
     def on_mouse_down(self, event: events.MouseDown):

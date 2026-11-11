@@ -152,7 +152,8 @@ def test_command_replies_bypass_threshold_without_matching_their_text(rc):
     TerminalCommandRouter(rc).submit('help')
     events = rc.read_events()['events']
     assert len(events) == 3
-    assert json.loads(events[0]['message'])['state'] == 'created'
+    assert json.loads(events[0]['copy_json'])['state'] == 'created'
+    assert ['state', 'created'] in events[0]['table_document']['tables'][0]['rows']
     assert 'config rc' in events[1]['message']
     assert 'snapshot' in events[2]['message']
     assert not rc._recorder.shutdown(time.monotonic()+5)
@@ -225,7 +226,8 @@ async def test_tui_status_shows_last_result_counts_without_action_log(rc):
         await pilot.pause(.08)
         text = str(app.query_one('#status', Static).content)
         assert '请求 21：裁剪 0，缓存 4' in text
-        assert 'queue_remaining=3' in text
+        assert 'queue_remaining=' not in text
         rc.buffer.invalidate()
         app.refresh_controller()
         assert '请求 21' not in str(app.query_one('#status', Static).content)
+        assert '请求 —：裁剪 —，缓存 —' in str(app.query_one('#status', Static).content)

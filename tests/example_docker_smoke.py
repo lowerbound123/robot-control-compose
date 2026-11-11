@@ -31,6 +31,106 @@ def wait(predicate, timeout=45):
     raise AssertionError("example acceptance condition timed out")
 
 
+def table_output_checks(controller, report, call, identities, callbacks_drained):
+    """Exercise shipped tables across the active duplicate example workers."""
+    from rc_policy_sdk.tables import table_document_text
+
+    members = controller._worker.member_workers()
+    assert set(members) == {'example-0', 'example-1'}
+    assert all(worker.supports_table_output and worker.host.table_output_v1 for worker in members.values())
+    original_ids = identities()
+    original_configs = {instance: call('policy_config', instance_id=instance, action='show', wait=True)['result']
+                        for instance in members}
+    original_contexts = {instance: call('policy_command', instance_id=instance, command='example', wait=True)['result']
+                         for instance in members}
+    # All writes target the isolated deployment copies, never local private manifests.
+    for instance in members:
+        call('policy_config', instance_id=instance, action='set', key='params.table_logs', value_text='true', wait=True)
+        call('policy_config', instance_id=instance, action='set', key='params.log_every_n_calls', value_text='2', wait=True)
+    enabled_ids = identities()
+    for instance in members:
+        assert enabled_ids[instance] == {**original_ids[instance], 'version': original_ids[instance]['version'] + 2}
+        current = call('policy_command', instance_id=instance, command='example', wait=True)['result']
+        assert current['context_id'] == original_contexts[instance]['context_id']
+
+    cursor = 0
+    while page := controller.read_events(after_seq=cursor, limit=1000)['events']:
+        cursor = page[-1]['seq']
+
+    def tables(*, command_id=None, active=False):
+        # Poll a bounded window belonging to this check, excluding earlier same-source runtimes.
+        return [event for event in controller.read_events(after_seq=cursor, limit=1000)['events']
+                if 'table_document' in event and event.get('instance_id') in members
+                and (command_id is None or event.get('command_id') == command_id)
+                and (not active or event.get('event') == 'policy.log')]
+
+    for instance in members:
+        call('policy_command', instance_id=instance, command='reinitialize', wait=True)
+    reinitialized = identities()
+    current_bindings = {instance: (worker.runtime_id, worker.context_id, worker.config_version)
+                        for instance, worker in members.items()}
+    def active_kinds():
+        return {(event['instance_id'], event['table_document']['tables'][0]['title']) for event in tables(active=True)
+                if (event['runtime_id'], event['context_id'], event['config_version']) == current_bindings[event['instance_id']]}
+    initialization = {(instance, instance + ' initialize') for instance in members}
+    wait(lambda: initialization <= active_kinds())
+    for instance in members:
+        assert reinitialized[instance] == {**enabled_ids[instance], 'version': enabled_ids[instance]['version'] + 1}
+
+    call('return', wait=True)
+    sampled = {(instance, instance + ' ' + phase) for instance in members for phase in ('policy', 'observe')}
+    wait(lambda: sampled <= active_kinds())
+    call('take', wait=True)
+    wait(callbacks_drained)
+    receipts, command_events = {}, {}
+    for instance in members:
+        receipt = call('policy_command', instance_id=instance, command='table-stats', wait=True)
+        assert receipt['status'] == 'succeeded'
+        raw = receipt['result']
+        assert raw['instance'] == instance and raw['python'] == report['example_python']
+        assert raw['calls'] > 0 and raw['observations'] > 0
+        assert 'table_document' not in raw and 'tables' not in raw
+        assert call('get_operation', operation_id=receipt['operation_id'])['result'] == raw
+        wait(lambda: tables(command_id=receipt['operation_id']))
+        event, = tables(command_id=receipt['operation_id'])
+        # Compare one command's frozen result, never counters from a later live query.
+        assert json.loads(event['copy_json']) == raw
+        assert (event['runtime_id'], event['context_id'], event['config_version']) == current_bindings[instance]
+        receipts[instance], command_events[instance] = receipt, event
+    assert len({row['result']['context_id'] for row in receipts.values()}) == 2
+    assert len({row['runtime_id'] for row in command_events.values()}) == 2
+
+    active = tables(active=True)
+    for event in [*active, *command_events.values()]:
+        assert event['source_id'] == 'example'
+        assert event['table_document']['schema_version'] == 1 and event['table_document']['tables']
+        assert event['message'] == table_document_text(event['table_document']) and event['message']
+        snapshot = json.loads(event['copy_json'])
+        assert snapshot['instance'] == event['instance_id']
+        assert all(event.get(key) for key in ('runtime_id', 'session_id', 'context_id'))
+        if event['event'] == 'policy.log':
+            assert event['host_instance_id'] == members[event['instance_id']].host.instance_id
+        phase = event['table_document']['tables'][0]['title'].rsplit(' ', 1)[-1]
+        if phase in ('policy', 'observe'):
+            assert snapshot['calls' if phase == 'policy' else 'observations'] % 2 == 0
+    http_events = call('events', after_seq=cursor, limit=1000)['events']
+    for event in command_events.values():
+        assert any(row.get('command_id') == event['command_id'] and row.get('copy_json') == event['copy_json']
+                   and row.get('table_document') == event['table_document'] for row in http_events)
+
+    # Restore both flags and cadence, so the remaining nine acceptance groups keep their inputs.
+    for instance, config in original_configs.items():
+        for key, value in (('table_logs', config['params'].get('table_logs', False)),
+                           ('log_every_n_calls', config['params']['log_every_n_calls'])):
+            call('policy_config', instance_id=instance, action='set', key='params.' + key,
+                 value_text=json.dumps(value), wait=True)
+    assert controller.control_owner == 'mcp' and controller.status()['state'] == 'paused'
+    report['tables'] = dict(cursor=cursor, capability='table_output_v1', before=original_ids,
+        enabled=enabled_ids, reinitialized=reinitialized, restored=identities(),
+        commands=receipts, command_events=command_events, active_events=active)
+    report['checks'].append('cross-Python example tables: two instance commands, initialize/policy/observe logs, negotiated capability, raw HTTP/operation JSON and independent copies')
+
+
 def mcp_management_checks(controller, report, connector_checkpoint):
     import httpx2
     from mcp import ClientSession
@@ -56,6 +156,8 @@ def mcp_management_checks(controller, report, connector_checkpoint):
             from robot_control.help_document import help_text
             assert reply.content[0].text == help_text(reply.structured_content['help_document'])
             assert not reply.content[0].text.startswith('{')
+        if name == 'policy_command' and arguments.get('command') == 'table-stats' and not fail:
+            assert json.loads(reply.content[0].text) == reply.structured_content
         if name != 'switch_connector':
             connector_checkpoint('after MCP ' + name)
         return reply.structured_content
@@ -151,6 +253,7 @@ def mcp_management_checks(controller, report, connector_checkpoint):
                                          after=current_configuration))
             previous_configuration = current_configuration
         evidence['configure'] = dict(initial=configure_before, steps=configured_steps)
+        table_output_checks(controller, report, call, identities, callbacks_drained)
         configured = identities()
 
         before_context = {i: context(i) for i in initial}
@@ -667,7 +770,7 @@ def on_host(evidence, *, ros=False):
             shutil.copyfile(output, evidence / "result.json")
         assert code == "0", logs[-6000:]
         report = read_config(output)
-        assert len(report["checks"]) == 9, report
+        assert len(report["checks"]) == 10, report
         print(json.dumps(report, ensure_ascii=False, indent=2))
     finally:
         # Fallback only touches this task's exact deployment label, never global prune.

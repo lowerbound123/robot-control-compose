@@ -471,13 +471,7 @@ class ConnectorLifecycle:
             if error:
                 self._emit_command('connector list 失败：' + error, 'error')
             else:
-                rows = result.get('profiles', [])
-                lines = ['connector list: name | source | instance | config | valid | error']
-                for row in rows:
-                    lines.append(' | '.join((row['name'], row.get('source', '-'),
-                        row.get('connector', '-'), row.get('config', '-'),
-                        'true' if row['valid'] else 'false', row.get('error', '-'))))
-                self._emit_command('\n'.join(lines) if rows else 'connector list: 暂无命名连接配置')
+                self._emit_query_result('connector list', result.get('profiles', []))
             return
         if job.get('prepared') or job['kind'] == 'connector_member_retry':
             self._state = 'paused' if self._connected else 'connector_fault'

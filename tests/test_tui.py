@@ -43,6 +43,10 @@ class FakeController:
                 "in_flight": False, "generation": 2, "consumed": 3,
                 "config_version": 1, "pending_config": None, "exit_code": 0}
 
+    def _statusbar_snapshot(self):
+        return {"state": "paused", "policy": "hold", "control_owner": "policy",
+                "in_flight": False, "consumed": 3}
+
 
 async def wait_completion(pilot, field, labels):
     deadline = asyncio.get_running_loop().time() + 3

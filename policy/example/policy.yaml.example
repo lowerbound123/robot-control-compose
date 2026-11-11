@@ -14,6 +14,8 @@ help_details:
   examples:
     - title: 查看实例统计
       command: policy <实例> example
+    - title: 以表格查看统计
+      command: policy <实例> table-stats
     - title: 查看配置
       command: policy <实例> config show
 execution:
@@ -25,6 +27,7 @@ params:
   message: example
   reset_token: 0     # config set 修改此标记后清空统计和待发结果，保留 context
   log_every_n_calls: 100
+  table_logs: false   # 显式开启后，初始化输出一次；推理/观测分别按日志间隔采样
   chunk_size: 1       # 仅空输入时生成；config set 会在原进程重新初始化
   inference_delay_s: 0.0  # 显式模拟慢推理，便于观察 sync / async 的缓存消费
   reader_url: ''      # 选填：能与 RC 共享 POSIX IPC 的演示 reader，默认不联网
@@ -58,6 +61,22 @@ tui_commands:
       examples:
         - title: 读取当前统计
           command: policy <实例> example
+    timeout_s: 5
+  table-stats:
+    handler: table_stats
+    args: []
+    help: 以表格查看完整统计快照；业务回执和整条复制保留原始 JSON
+    help_details:
+      group: 观测与诊断
+      description: 显示实例、回调与只读图片摘要；不改变控制权、动作、配置或图像租约。
+      sections:
+        - title: 主动表格日志
+          body: table_logs 默认关闭；开启后初始化输出一次，推理和观测各自按 log_every_n_calls 采样。
+      examples:
+        - title: 读取当前统计表
+          command: policy <实例> table-stats
+        - title: 开启采样表格日志
+          command: policy <实例> config set params.table_logs true
     timeout_s: 5
   next-result:
     handler: next_result
@@ -145,7 +164,7 @@ config_hints:
     description: 设置项与原始文本由 example 的 configure 解析；候选值和类型是帮助信息。
     sections:
       - title: 普通提交与生命周期
-        body: message 普通提交保留 context；reset_token 请求 reset；chunk_size 请求原进程 reinitialize。成功后均可显式保存本实例配置。
+        body: message、table_logs 普通提交保留 context；reset_token 请求 reset；chunk_size 请求原进程 reinitialize。成功后均可显式保存本实例配置。
     examples:
       - title: 普通消息配置
         command: policy <实例> config set params.message 整理桌面
@@ -162,7 +181,10 @@ config_hints:
       help: 重置标记；修改后清空统计和待发结果并暂停
     params.log_every_n_calls:
       type: int
-      help: 日志输出间隔（调用次数）
+      help: 日志输出间隔；推理与观测按各自调用次数采样
+    params.table_logs:
+      type: bool
+      help: 采样表格日志开关，默认 false；普通提交，不重置或重新初始化
     params.chunk_size:
       type: int
       help: 输出动作块长度

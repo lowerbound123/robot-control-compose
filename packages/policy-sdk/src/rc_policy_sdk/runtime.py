@@ -24,6 +24,8 @@ class WorkerChannel:
         self.on_command_gate = None
         self.on_command_resume = None
         self.context_id = None
+        self.config_version = None
+        self.table_output_v1 = False
         self.observations_gated = False
         self.reinitialize_enabled = False
         self.configure_fenced = False
@@ -45,6 +47,9 @@ class WorkerChannel:
 
     def send_monitor(self, message):
         return self.sender.send_monitor(message)
+
+    def send_log(self, message):
+        return self.sender.send_log(message, stage='worker')
 
     def _read(self):
         try:
@@ -194,6 +199,22 @@ class PolicyRuntime:
         self._globals = getattr(channel, 'global_proxy', None)
         self._inference_thread = None
         self._control_requests = []
+        self._log_identity = {key: message[key] for key in ('request_id', 'generation') if key in message}
+
+    def log_table(self, output, level='info') -> bool:
+        """Best-effort local enqueue; never wait for socket delivery or an ACK."""
+        from .tables import normalize_table_output, table_document_text
+        self._check_context()
+        if not getattr(self.channel, 'table_output_v1', False):
+            raise RuntimeError('runtime.log_table() is unsupported; upgrade robot-control and rc-policy-sdk')
+        if not isinstance(level, str) or level.lower() not in ('trace', 'debug', 'info', 'warning', 'error', 'critical'):
+            raise ValueError('invalid table log level')
+        result, document = normalize_table_output(output)
+        version = getattr(self.channel, 'config_version', None)
+        return self.channel.send_log({'type': 'log', 'level': level.lower(),
+            'message': table_document_text(document), 'result': result, 'table_document': document,
+            'context_id': self.context_id, 'config_version': self.config_version if version is None else version,
+            **self._log_identity})
 
     @property
     def globals(self):

@@ -22,7 +22,7 @@ class Controller:
     def start(self):
         pass
 
-    def status(self):
+    def _statusbar_snapshot(self):
         return {"state": "paused", "policy": None}
 
     def submit(self, line):

@@ -3,7 +3,7 @@ from importlib import import_module
 
 _EXPORTS = {'ImageLease':'images', 'ImagePool':'images', 'map_images':'images',
             'ActionChunk':'actions', 'normalize_actions':'actions', 'PolicyChain':'chain',
-            'GlobalStateConflict':'global_state'}
+            'GlobalStateConflict':'global_state', 'Table':'tables', 'TableOutput':'tables'}
 __all__ = list(_EXPORTS)
 
 

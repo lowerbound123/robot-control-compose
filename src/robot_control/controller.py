@@ -149,9 +149,16 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._init_recording()
         self._tui_batches = TerminalBatches(self)
 
-    def _emit_command(self, message, level="info", *, record_history=True, help_document=None):
+    def _emit_command(self, message, level="info", *, record_history=True, help_document=None,
+                      table_document=None, copy_json=None, log_context=None):
         self._emit(message, level, source=LogSource.COMMAND, record_history=record_history,
-                   help_document=help_document)
+                   help_document=help_document, table_document=table_document,
+                   copy_json=copy_json, log_context=log_context)
+
+    def _emit_policy_log(self, event):
+        self._emit(event['message'], event.get('level', 'info'),
+                   table_document=event.get('table_document'), copy_json=event.get('copy_json'),
+                   log_context=event)
 
     def _mcp_operation_logger(self, tool, details=None):
         """Follow the controller receipt, independently of an HTTP/local waiter."""
@@ -171,11 +178,29 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._emit_command(f'MCP {tool} {status}: ' + json.dumps(payload, ensure_ascii=False), level)
         return log
 
-    def _emit(self, message, level="info", *, record_history=True, source=LogSource.DIAGNOSTIC, help_document=None):
+    def _emit(self, message, level="info", *, record_history=True, source=LogSource.DIAGNOSTIC, help_document=None,
+              table_document=None, copy_json=None, log_context=None):
         if (source is not LogSource.COMMAND
                 and LEVELS.get(str(level).upper(), LEVELS['INFO']) < LEVELS[self.config['logging']['level']]):
             return
-        entry = {"time": format_log_time(time.time()), "level": level, "message": public_message(message)}
+        entry = {"time": format_log_time(time.time()), "level": level,
+                 "message": public_message(message) if table_document is None else ''}
+        if log_context is not None:
+            entry.update(public_value({key: log_context[key] for key in (
+                'event', 'instance_id', 'source_id', 'runtime_id', 'session_id', 'context_id', 'host_instance_id',
+                'config_version', 'request_id', 'generation', 'command_id', 'command_status',
+                'log_event', 'stage', 'count', 'count_saturated') if key in log_context}))
+        if table_document is not None:
+            from .table_output import public_table_document
+            from rc_policy_sdk.tables import table_document_text
+            try:
+                document = public_table_document(table_document)
+                entry['message'] = table_document_text(document)
+                entry['table_document'] = document
+            except (TypeError, ValueError, RecursionError):
+                entry['message'] = public_message(copy_json if copy_json is not None else message)
+        if copy_json is not None:
+            entry['copy_json'] = public_message(copy_json)
         if help_document is not None:
             from .help_document import help_text
             entry['help_document'] = public_value(help_document)
@@ -270,6 +295,19 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if words == ["show", "policy"] and self._identity is not None:
                 return public_value(self.registry.get(self._identity).config)
             raise ValueError("unknown read command or no active policy")
+
+    def _emit_query_result(self, command, result):
+        from .query_tables import query_table_document
+        from .table_output import public_table_fields
+        try:
+            document = query_table_document(command, result)
+            fields = public_table_fields(result, document) if document is not None else None
+        except (TypeError, ValueError, KeyError, OverflowError, RecursionError):
+            fields = None  # Optional presentation cannot change the query result.
+        if fields is not None:
+            self._emit_command(**fields)
+        else:
+            self._emit_command(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False))
 
     def get_operation(self, identity):
         return self.operations.get(identity)
@@ -375,7 +413,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     if help_document is not None:
                         self._emit_command(result['help'], help_document=help_document)
                     else:
-                        self._emit_command(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False))
+                        self._emit_query_result(command, result)
                 except Exception as exc:
                     self.operations.update(identity, "failed", error=exc)
                     self._emit_command(f"命令失败：{exc}", "error")
@@ -572,6 +610,24 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 "returning": self._return_requested, "direct": self.direct.progress(),
                 "policy_wait_operation_id": self._policy_wait['operation_id'] if self._policy_wait else None,
                 "recording": self._recorder.status(),
+            }
+
+    def _statusbar_snapshot(self):
+        """Copy display-only memory under RC -> connector/recorder lock order."""
+        with self._lock:
+            source, config = self.robot._binding_metadata() if self._connected else (None, None)
+            runtime = self.runtime.snapshot() if self.runtime else {}
+            recording = self._recorder.status()
+            request = self._last_action_request
+            return {
+                'state': self._state, 'policy': self._identity, 'control_owner': self.control_owner,
+                'in_flight': self._inflight is not None, 'consumed': self.buffer.consumed,
+                'last_action_request': (asdict(request) if request is not None
+                                        and request.generation == self.buffer.generation else None),
+                'runtime': runtime.get('phase'), 'target': runtime.get('target'),
+                'runtime_error': runtime.get('error'),
+                'recording_state': recording.get('state'), 'recording_error': recording.get('error'),
+                'connector_source': source, 'connector_config': config,
             }
 
     def capture_snapshot(self):
@@ -964,6 +1020,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             release_timeout_s=timeouts.get("release_s", 30),
             on_log=self._emit if record.is_chain else lambda message: self._emit(f"[{record.config['id']}] {message}"),
             on_trace=self._recorder.policy_event,
+            on_log_event=self._emit_policy_log,
         )
         endpoints = {h.policy_id:h for h in handles}
         if record.is_chain:
@@ -1046,6 +1103,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self._motion = {"target": finite_qpos(self.config["reset_qpos"]), "complete": result["complete"], "source": "reset"}
                 self._state = "moving"
                 continue
+            # The manager retains its last job while waiting for more work.
+            # Transfer display ownership on every terminal result, including
+            # failure/cancel/stop paths that return before success publication.
+            command_table_output = job.pop('command_table_output', None)
             self._operation = None
             self._clear_finished_lease()
             if job['kind'] in ('connector_switch', 'connector_list', 'connector_member_retry'):
@@ -1196,6 +1257,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 if not job.get("preserve_state"):
                     self._state = "fault"
             self.operations.update(job.get("public_id"), "succeeded", result=self.status())
+            if command_table_output is not None:
+                self._emit_command_table(job['public_id'], *command_table_output)
 
     def _collect_prediction(self):
         request = self._inflight
@@ -1237,6 +1300,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self._emit(f"已失效 policy 请求失败：{response.get('error')}", "warning")
                 if self._operation and not self._operation["launched"]:
                     public_id = self._operation.get('public_id')
+                    self._operation.pop('command_table_output', None)
                     self._operation = None
                     self._return_requested = False
                     self._return_operation = None
@@ -1257,6 +1321,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if self._operation is not None:
                 self._operation["cancel"].set()
                 if not self._operation["launched"]:
+                    self._operation.pop('command_table_output', None)
                     self._operation = None
             if self._operation is None:
                 self._operation_start("unload", worker=request["worker"])
@@ -1585,6 +1650,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if self._operation is not None:
                 self._operation["cancel"].set()
                 if not self._operation["launched"]:
+                    self._operation.pop('command_table_output', None)
                     self._operation = None
             self._pause("stopping")
             self._emit_command("退出：停止新操作，等待所有 policy 释放")
@@ -1596,6 +1662,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 if not self._operation["launched"]:
                     self.operations.update(self._operation.get("public_id"), "cancelled", error="cancelled by pause")
                     self._restore_policy_commands(self._operation.get("worker"))
+                    self._operation.pop('command_table_output', None)
                     self._operation = None
                     self._pending_config = None
                     self._return_requested = False
@@ -1617,9 +1684,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             value = builtin_help()
             self._emit_command(help_text(value), help_document=value)
         elif command == "status" and not args:
-            self._emit_command(json.dumps(self.status(), ensure_ascii=False))
+            self._emit_query_result('status', self.status())
         elif command == "policies" and not args:
-            self._emit_command(json.dumps(self.registry.list(), ensure_ascii=False))
+            self._emit_query_result('policies', self.registry.list())
         elif command == "show" and args in [["rc"], ["policy"]]:
             config = self.config if args[0] == "rc" else self.registry.get(self._identity).config
             self._emit_command(json.dumps(public_value(config), ensure_ascii=False, indent=2))

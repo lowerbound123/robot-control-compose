@@ -64,6 +64,25 @@ mcp return
 mcp state {"include_images":false}
 ```
 
+TUI 常驻状态栏依次显示 `state`、`policy`、`control_owner`、`in_flight`、`consumed`、`请求 N：裁剪 X，缓存 Y`、`runtime`、`target`、`runtime_error`、`recording_state`、`recording_error`、`connector_source` 和 `connector_config`。各项始终保留，缺失、空字符串或 `None` 显示为 `—`，`False` 和 `0` 正常显示。没有当前代次的动作请求摘要时显示 `请求 —：裁剪 —，缓存 —`。内容按终端宽度自然换行，完整保留路径与错误；错误中的换行合并为空格，合并后没有可见内容时显示 `—`。极小终端或很长的状态内容会让状态栏内部出现纵向滚动，可在状态栏上滚动查看全部文字；输入框与候选菜单保持可见，恢复足够尺寸后自动完整展开。
+
+`connector_source` 与 `connector_config` 来自当前生效连接的来源目录名和原始配置路径字符串。切换前仍显示旧连接；旧连接断开后两项显示 `—`，新连接提交后一起更新。新连接失败时保持 `—`；新连接已成功但策略适配失败时仍显示新连接。编辑磁盘上的 profile 或设备配置不会改写当前连接显示的元数据。
+
+状态栏只展示摘要，以下只读查询继续返回完整信息，字段与原有语义不变：
+
+| 查询 | 完整信息 |
+| --- | --- |
+| `status` | RC 运行标识、队列、请求原始摘要、代次、已消费计数、配置版本与待提交配置、重试实例与命令、保持姿态、退出码、控制权与归还状态、等待操作、direct 进度，以及完整 runtime、connector 和 recording 对象。 |
+| `connector status` | 当前与目标 profile、连接代次、是否连接、连接阶段、错误、可重试状态及每个实例的适配记录。 |
+| `record status` | 录制状态、会话 ID、输出路径、错误、待写入字节与样本数，以及采样、丢帧、重复帧和写入统计。 |
+
+`help status`、`help connector status` 和 `help record status` 可查看相应查询说明。
+
+`connector list`、`policy list`、`status`、`connector status` 和 `record status` 在 TUI 日志中以展开表格显示。多张表按顺序纵向排列；前面的列完整放在一行，最后一列保留全文并换行。前列过长或包含换行、终端过窄时，整张表改为逐条纵向显示。无结果显示“无记录”，缺失字段显示 `—`，空字符串显示 `""`，`false`、`0` 与 `null` 各自保留。状态查询保留未知字段、完整路径、错误、数组与空对象；对象字段用完整路径表示，含点号等特殊字符的键使用 JSON 方括号写法，重复来源的实例仍分别显示。
+
+每条表格日志右侧的“复制”复制该查询的完整原始 JSON 结果；拖选复制稳定的逻辑正文，不带边框、补齐空格或软换行。帮助的命令目录与参数使用相同布局，但整条复制仍是原有完整帮助文本。普通配置、global、MCP 返回值、打印内容和 JSON 不会被自动当作表格；policy 只有显式提供 SDK 表格元数据时才使用此展示。headless 与日志文件保留可读的普通文本投影，终端控制字符按字面显示，结构化业务结果不变。
+
+
 `config rc set` 只修改内存中的冷配置草稿，不重建或修改当前 RC。`config rc show` 返回 active、draft 和 changes；changes 按字段路径给出 active/draft 值。`config rc save` 将草稿写入 RC 配置文件，重启后生效。未保存草稿在退出后丢弃。
 
 `policy <实例> config set <key> <raw_value>` 保留 key 之后完整原文，由策略 `configure(context, candidate, key, value, callback) -> None` 解析。策略可以普通提交、请求 reset，或请求原进程 reinitialize。reset/reinitialize 完成后保持暂停，需显式恢复。显示和保存使用已提交配置，保存目标必须是明确实例。重复来源按出现顺序使用 -0/-1/...，不会把来源名隐式指向某个实例。

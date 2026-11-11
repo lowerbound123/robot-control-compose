@@ -12,6 +12,7 @@ import time
 
 from .terminal_commands import TerminalCommandRouter
 from .log_format import event_metadata, level_label
+from .literal_text import clean_text
 
 
 def make_controller(config_path):
@@ -23,7 +24,10 @@ def make_controller(config_path):
 def format_event(event: dict) -> str:
     timestamp, level, source = event_metadata(event)
     prefix = f"[{timestamp}] " if timestamp else ""
-    return f"{prefix}[{level_label(level)}] [{source}] {event.get('message', '')}"
+    message = event.get('message', '')
+    if 'table_document' in event:
+        message = clean_text(str(message))
+    return f"{prefix}[{level_label(level)}] [{source}] {message}"
 
 
 def drain_events(controller, stream) -> bool:

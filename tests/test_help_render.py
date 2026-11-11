@@ -85,3 +85,21 @@ def test_mismatched_help_metadata_cannot_replace_logged_message_or_parse_its_jso
     assert result.document == 'original {"x": 1}'
     assert result.copy_text == 'original {"x": 1}'
     assert result.parsed is None
+
+
+def test_help_catalog_uses_source_ordered_columns_without_replacing_authoritative_text():
+    value = document('帮助', commands=[
+        {'group': '查询', 'command': 'status', 'summary': '查看状态 ' * 30},
+        {'group': '查询', 'command': 'policy list', 'summary': '查看来源'},
+    ])
+    wide, narrow = (formatted_help(value, width) for width in (120, 12))
+    assert any('status' in row.text.plain and '│' in row.text.plain for row in wide.rows)
+    for result in (wide, narrow):
+        assert result.copy_text == help_text(value)
+        assert result.document == help_text(value)
+        previous = 0
+        for row in result.rows:
+            for span in row.spans or ():
+                assert span.start >= previous
+                assert row.text.plain[span.display_start:span.display_start + span.end - span.start] == result.document[span.start:span.end]
+                previous = span.end

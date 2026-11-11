@@ -2,16 +2,20 @@
 from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict, deque
+import ast
 import csv
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
 import time
 
+from rc_policy_sdk.tables import normalize_table_document, table_document_text
 from .secret_config import public_value
+from .table_output import _SecretMatcher, _hide_strings
 
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 STREAMS = ('state', 'control', 'events', 'policy', 'llm_failure', 'session')
@@ -34,39 +38,223 @@ def _sensitive(key):
 
 def clean(value, secrets=()):
     """JSON projection, with credential fields removed before persistence."""
+    return _clean(value, _credential_matcher(secrets))
+
+
+def _credential_matcher(secrets):
+    variants = {variant for secret in secrets if secret for variant in (
+        secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1])}
+    return _SecretMatcher(variants) if variants else None
+
+
+def _remember_hidden(value, hidden):
+    """Carry already-hidden string leaves into the other table projections."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if item and item != '***':
+                hidden.add(item)
+        elif isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            pending.extend(item)
+
+
+def _finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError('nonfinite JSON number')
+    return value
+
+
+class _TextNumber:
+    """A nonfinite token inside diagnostic text, never a business JSON value."""
+    def __init__(self, text):
+        self.text = text
+
+
+def _fragment_float(text):
+    value = float(text)
+    return value if math.isfinite(value) else _TextNumber(text)
+
+
+def _fragment_json(value):
+    """Serialize cleaned text structure while retaining nonfinite spellings.
+
+    Strict business/copy validation remains separate. Quoted strings such as
+    "NaN" still go through json.dumps; only decoder-created tokens stay bare.
+    """
+    if isinstance(value, _TextNumber):
+        return value.text
+    if isinstance(value, dict):
+        return '{' + ','.join(json.dumps(key, ensure_ascii=False) + ':' + _fragment_json(item)
+                              for key, item in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ','.join(_fragment_json(item) for item in value) + ']'
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+
+
+def _json_candidates(text):
+    """Index balanced containers without parsing arbitrary text recursively.
+
+    Work backwards so each quote/container jumps over its already-indexed
+    contents. Candidates inside quoted text are still available if an enclosing
+    fragment is invalid, matching the ordinary log fragment semantics.
+    """
+    tokens, escaped = [], False
+    for index, char in enumerate(text):
+        if char in '{}[]' or (char == '"' and not escaped):
+            tokens.append((char, index))
+        escaped = not escaped if char == '\\' else False
+    tails, depths = [None] * (len(tokens) + 1), [0] * (len(tokens) + 1)
+    candidates, quote = [], None
+    for index in range(len(tokens) - 1, -1, -1):
+        char, start = tokens[index]
+        if char in '}]':
+            tails[index] = index
+        elif char == '"':
+            if quote is not None:
+                tails[index], depths[index] = tails[quote + 1], depths[quote + 1]
+            quote = index
+        else:
+            end = tails[index + 1]
+            if end is not None and tokens[end][0] == {'[': ']', '{': '}'}[char]:
+                depth = depths[index + 1] + 1
+                candidates.append((start, tokens[end][1] + 1, depth))
+                tails[index], depths[index] = tails[end + 1], max(depth, depths[end + 1])
+    return reversed(candidates)
+
+
+def _clean(value, matcher, hidden=None):
+    if isinstance(value, _TextNumber):
+        return value
     if isinstance(value, dict):
         sensitive_patch = _sensitive(value.get('path', ''))
-        return {str(k): '***' if _sensitive(k) or (k == 'value' and sensitive_patch)
-                else clean(v, secrets) for k,v in value.items()}
+        projected = {}
+        for key, item in value.items():
+            if _sensitive(key) or (key == 'value' and sensitive_patch):
+                if hidden is not None:
+                    _remember_hidden(item, hidden)
+                projected[str(key)] = '***'
+            else:
+                projected[str(key)] = _clean(item, matcher, hidden)
+        return projected
     if isinstance(value, (list, tuple)):
-        return [clean(v, secrets) for v in value]
+        return [_clean(v, matcher, hidden) for v in value]
     if hasattr(value, 'tolist'):
-        return clean(value.tolist(), secrets)
+        return _clean(value.tolist(), matcher, hidden)
     if isinstance(value, Path):
         value = str(value)
     if isinstance(value, str):
         value = public_value(value)
-        for secret in secrets:
-            for variant in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1]):
-                value = value.replace(variant, '***')
+        if matcher is not None:
+            value = matcher.hide(value)
         # Model response bodies and stdout events can themselves be JSON strings.
         # Redact their decoded leaves, then re-escape, preserving parseability.
-        decoder = json.JSONDecoder()
-        for match in re.finditer(r'[\[{]', value):
+        # Walk disjoint fragments: depth follows JSON nesting, never row count.
+        # Diagnostic strings can contain nonfinite number tokens. Keep their
+        # structural context for redaction without accepting them as business
+        # JSON or converting an overflow spelling (1e999) into Infinity.
+        decoder = json.JSONDecoder(parse_float=_fragment_float, parse_constant=_TextNumber)
+        parts, cursor, failed_end, retry_depth = [], 0, 0, 0
+        for start, candidate_end, depth in _json_candidates(value):
+            if start < cursor or (start < failed_end and depth > retry_depth):
+                continue
             try:
-                parsed, end = decoder.raw_decode(value[match.start():])
+                parsed, end = decoder.raw_decode(value, start)
+                projected = _clean(parsed, matcher, hidden)
+                middle = _fragment_json(projected) if projected != parsed else value[start:end]
+            except RecursionError:
+                # A string can look deeply nested without being nested input
+                # data. Retain its text and try shallower contained fragments;
+                # halve probe depth instead of retrying every wrapping bracket.
+                failed_end, retry_depth = candidate_end, depth // 2
+                continue
             except ValueError:
                 continue
-            projected = clean(parsed, secrets)
-            middle = (json.dumps(projected, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
-                      if projected != parsed else value[match.start():match.start() + end])
-            return clean(value[:match.start()], secrets) + middle + clean(value[match.start() + end:], secrets)
-        return _CREDENTIAL_TEXT.sub(r'\1***', value)
+            parts.extend((_clean_credential_text(value[cursor:start], hidden), middle))
+            cursor = end
+        parts.append(_clean_credential_text(value[cursor:], hidden))
+        return ''.join(parts)
     return public_value(value)
 
 
+def _clean_credential_text(value, hidden):
+    def replace(match):
+        if hidden is not None:
+            secret = match[2]
+            if secret[:1] in ('"', "'") and secret[-1:] == secret[:1]:
+                _remember_hidden(secret[1:-1], hidden)
+                try:
+                    secret = json.loads(secret) if secret.startswith('"') else ast.literal_eval(secret)
+                except (ValueError, SyntaxError, RecursionError):
+                    try:
+                        secret = ast.literal_eval(secret)
+                    except (ValueError, SyntaxError, RecursionError):
+                        secret = secret[1:-1]
+            _remember_hidden(secret, hidden)
+        return match[1] + '***'
+    return _CREDENTIAL_TEXT.sub(replace, value)
+
+
+def _clean_table_record(data, matcher, secrets):
+    """Only the explicit top-level display envelope has table semantics.
+
+    Business JSON nested in the event continues through ordinary ``clean``.
+    Sanitize structured copies first, then derive the full text once; reparsing
+    the TSV loses sensitive-column relationships and repeats all cell work.
+    """
+    projected = _clean({key: value for key, value in data.items()
+                        if key not in ('message', 'table_document', 'copy_json')}, matcher)
+    hidden = set()
+    try:
+        original = json.loads(data['copy_json'], parse_float=_finite_float, parse_constant=_finite_float)
+    except (ValueError, TypeError, RecursionError):
+        original, valid_copy = data['copy_json'], False
+    else:
+        valid_copy = True
+    result = _clean(original, matcher, hidden)
+    try:
+        document = normalize_table_document(data['table_document'])
+    except (ValueError, TypeError, RecursionError):
+        document = None
+    for table in document['tables'] if document is not None else ():
+        columns = table['columns']
+        for row in table['rows']:
+            sensitive_value = any(
+                column in ('path', 'key', 'field', 'fields', 'name', '项目', '字段')
+                and isinstance(cell, str) and _sensitive(cell)
+                for column, cell in zip(columns, row))
+            for index, column in enumerate(columns):
+                if _sensitive(column) or (sensitive_value and column in ('value', 'value_text', '值')):
+                    _remember_hidden(row[index], hidden)
+                    row[index] = '***'
+    document = _clean(document, matcher, hidden)
+    # Reuse one linear matcher for every title, column, cell and original JSON
+    # copy. Include configured raw/escaped variants without scanning per key.
+    table_matcher = _credential_matcher((*secrets, *hidden))
+    if table_matcher is not None:
+        result = _hide_strings(result, table_matcher)
+        for table in document['tables'] if document is not None else ():
+            for key in ('title', 'columns', 'rows'):
+                table[key] = _hide_strings(table[key], table_matcher)
+    text = json.dumps(result, ensure_ascii=False, allow_nan=False) if valid_copy else result
+    if document is None or not valid_copy:
+        # Invalid display metadata is not persisted as a second, unsafe copy.
+        return {**projected, 'message': text, 'copy_json': text}
+    return {**projected, 'table_document': document, 'message': table_document_text(document),
+            'copy_json': text}
+
+
 def encoded_line(data, secrets=()):
-    text = json.dumps(clean(data, secrets), ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n'
+    matcher = _credential_matcher(secrets)
+    if (isinstance(data, dict) and 'table_document' in data
+            and isinstance(data.get('message'), str) and isinstance(data.get('copy_json'), str)):
+        data = _clean_table_record(data, matcher, secrets)
+    else:
+        data = _clean(data, matcher)
+    text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n'
     return text.encode('utf-8', errors='backslashreplace')
 
 

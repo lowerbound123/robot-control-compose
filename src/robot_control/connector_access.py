@@ -33,6 +33,16 @@ class ConnectorAccess:
             if hasattr(robot, 'set_command_observer'):
                 robot.set_command_observer(self._observer)
 
+    def _binding_metadata(self):
+        """Read the active binding's original source/path without device I/O."""
+        with self._lock:
+            if not self.available or self.raw is None:
+                return None, None
+            spec = getattr(self.raw, 'spec', None)
+            if not isinstance(spec, dict):
+                return None, None
+            return spec.get('source'), spec.get('config')
+
     def set_command_observer(self, callback):
         with self._lock:
             self._observer = callback

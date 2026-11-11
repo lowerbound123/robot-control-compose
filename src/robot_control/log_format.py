@@ -45,6 +45,8 @@ def event_metadata(event):
     policy = _POLICY.match(message) or _COMMAND.match(message)
     source = ('policy:' + policy.group(1) if policy else
               'MCP' if re.match(r'^mcp\b', message, re.IGNORECASE) else 'RC')
+    if event.get('event') in ('policy.log', 'policy.command') and event.get('instance_id'):
+        source = 'policy:' + str(event['instance_id'])
     # The display is always UTC+8; the persisted ISO timestamp keeps its offset.
     timestamp = format_log_time(event.get('time', '')).removesuffix('+08:00')
     return timestamp, str(event.get('level', 'INFO')).upper(), source

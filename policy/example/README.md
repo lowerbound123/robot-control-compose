@@ -27,9 +27,21 @@ policy switch example
 monitor example
 resume
 policy example example
+policy example table-stats
 ```
 
 `policy switch` 成功后是暂停状态。`policy example example` 返回该实例的快照，包括推理/观测次数、配置版本、控制代次、消费数量和图像摘要。`monitor example`、`camera`、`monitor` 是本地 TUI 面板切换命令；`monitor()` 仅读取有锁的标量快照，不做图像、网络或控制 I/O。
+
+RC / SDK 0.18 的 `policy example table-stats` 将同一完整快照附加为三张表：实例统计、观测与执行、只读图像摘要。整条复制和 operation / HTTP MCP 业务回执仍是原始 JSON，拖选复制表格的逻辑文字。已有本机 `policy.yaml` 需要由用户从模板补入 `table-stats` 注册，setup 不会覆盖私有清单；schema 仍为 3。
+
+主动表格日志默认关闭，普通初始化提示和按间隔输出的推理文字保持不变。开启方式如下；两项都是普通配置提交，保留 context 和进程：
+
+```text
+policy example config set params.log_every_n_calls 10
+policy example config set params.table_logs true
+```
+
+开启后 policy 与 observe 各自每 10 次调用输出一次表格；下一次初始化还会输出一次初始化表。缺少 `table_logs` 的旧配置按 false 处理。关闭用 `policy example config set params.table_logs false`。主动日志是有界的尽力发送诊断，不能作为动作、初始化或持久化成功的确认。接口与能力协商见[策略作者规范](../../docs/policy-authoring.md#结构化表格输出018)。
 
 ## 可以验证什么
 
@@ -38,6 +50,7 @@ policy example example
 | 动作与调度 | `policy example config set execution.control_mode mixed`、`policy example config set params.chunk_size 4`、`policy example config set execution.mode async`，再 `resume` | 控制模式与帧数在原进程重新初始化；调度模式普通应用。空输入时 qpos 读 `state["qpos"]`，epos 读 `state["eef"]`，mixed 从 qpos 开始逐帧交替；非空时保留上游动作与标签。 |
 | 模拟慢推理 | `policy example config set params.inference_delay_s 0.18` | 仅阻塞推理回调。sync 等结果再消费；async 可继续发送缓存中已就绪的目标，结果返回后裁掉实际消费的前缀。 |
 | 配置与日志 | `policy example config set params.message "新消息"`、`policy example config set params.log_every_n_calls 2`、`policy example example` | 普通应用保留 worker、context 与配置引用。重复节点用 `policy example-1 config set params.message "新消息"` 只修改指定实例。原 custom 命令 `policy example set-message "新消息"` 保留原效果。 |
+| 表格诊断 | `policy example table-stats`、`policy example config set params.table_logs true` | 显式命令返回完整 JSON 并附表格；主动日志按推理/观测各自计数采样，重复实例分别保留身份和复制内容。 |
 | 配置后重置 | `policy example config set params.reset_token 1` | handler 只修改候选配置并登记 reset；返回后才清空目标实例的统计与待发结果，保留 context。 |
 | 主动暂停与结束 | 先 `resume`，再 `policy example next-result pause 人工检查`、`policy example next-result completed 成功` 或 `policy example next-result terminated 未完成`（每次分别运行） | 下一轮推理提交一次请求。整条链成功后由 RC 丢弃结束轮动作、清空缓存并暂停。reset_context 会清除旧请求。 |
 | 异常与恢复 | 在 mock 上运行中执行 `policy example next-result fault 演练`，观察 `status`，再 `policy example retry` | 故障走 RC 原有清理流程；MCP 已持有的控制权不会被 policy 抢回。 |
@@ -53,7 +66,7 @@ policy example example
 
 | 来源 | 配置 key | 后续效果与业务限制 |
 | --- | --- | --- |
-| example | `params.message`、`params.log_every_n_calls`、`params.inference_delay_s` | 普通应用；日志周期为正整数，延迟为 0 到 5 秒。 |
+| example | `params.message`、`params.log_every_n_calls`、`params.table_logs`、`params.inference_delay_s` | 普通应用；日志周期为正整数，table_logs 为布尔值且默认 false，延迟为 0 到 5 秒。 |
 | example | `params.reset_token` | 非负整数，登记 reset，清空统计及待发结果。 |
 | example | `params.chunk_size`、`params.reader_url` | reinitialize；帧数为 1 到 256。 |
 | hold | `params.chunk_size` | 普通应用；正整数。 |
@@ -109,6 +122,6 @@ mcp get_policy_result
 python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence
 ```
 
-脚本使用独立临时部署和 mock 机器人，只准备 RC、IPC anchor 和 example，不读取本机策略配置。它检查容器身份、热改不换容器、局部与整组两种冷重载的进程及容器身份、实例保存、退出释放，并留下 result.json、container.log、cleanup.json。日常测试范围及公共接口变更的升级规则见[验证文档](../../docs/verification.md#按改动选择测试)。
+脚本使用独立临时部署和 mock 机器人，只准备 RC、IPC anchor 和 example，不读取本机策略配置。它检查容器身份、热改不换容器、局部与整组两种冷重载的进程及容器身份、实例保存、退出释放，以及 RC Python 3.10 与 example Python 3.14 间的表格命令、HTTP MCP 原始回执和两个实例的主动日志，并留下 result.json、container.log、cleanup.json。日常测试范围及公共接口变更的升级规则见[验证文档](../../docs/verification.md#按改动选择测试)。
 
 手动部署使用完后在 RC 输入 `exit`，再运行 `./scripts/compose.sh down`。mock、容器和 ROS 仿真验收均不代替真机或真实模型验收。

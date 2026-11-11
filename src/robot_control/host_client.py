@@ -50,6 +50,7 @@ class HostClient:
             self.configure = info.get('configure') is True
             self.list_paths = info.get('list_paths') is True
             self.connector_switch_v1 = info.get('connector_switch_v1') is True
+            self.table_output_v1 = info.get('table_output_v1') is True
             self.connection.settimeout(None)
         except BaseException:
             self.connection.close(); raise

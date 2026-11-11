@@ -9,6 +9,15 @@ from .outbox import PrioritySender
 from .worker import run_session
 
 
+def emit(output, session_id, message):
+    packet = {'session_id': session_id, 'event': message}
+    if message.get('type') == 'log':
+        return output.send_log(packet, stage='runtime')
+    if message.get('type') in ('monitor_result', 'monitor_error'):
+        return output.send_monitor(packet, session_id)
+    return output.send(packet)
+
+
 def run(fd):
     become_subreaper()
     upstream = socket.socket(fileno=fd)
@@ -16,21 +25,14 @@ def run(fd):
     sessions = {}
     senders = {}
 
-    def emit(session_id, message):
-        packet = {'session_id': session_id, 'event': message}
-        if message.get('type') in ('monitor_result', 'monitor_error'):
-            output.send_monitor(packet, session_id)
-        else:
-            output.send(packet)
-
     def forward(session_id, connection):
         try:
             while True:
                 event = receive_message(connection)
-                emit(session_id, event)
+                emit(output, session_id, event)
                 if event['type'] == 'closed': return
         except (OSError, EOFError, ValueError) as exc:
-            try: emit(session_id, {'type': 'fatal', 'error': str(exc)})
+            try: emit(output, session_id, {'type': 'fatal', 'error': str(exc)})
             except OSError: pass
 
     try:

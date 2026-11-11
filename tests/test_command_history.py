@@ -121,7 +121,7 @@ class Controller:
     events, done, exit_code = queue.Queue(), threading.Event(), 0
     def start(self): pass
     def submit(self, line): pass
-    def status(self): return {'state':'paused'}
+    def _statusbar_snapshot(self): return {'state':'paused'}
 class App(RobotControlApp):
     async def on_unmount(self):
         closing.set()

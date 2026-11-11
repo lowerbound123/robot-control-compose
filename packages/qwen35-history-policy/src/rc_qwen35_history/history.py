@@ -23,12 +23,14 @@ class HistoryBuffer:
         self.frames.clear()
         self.tick = 0
 
-    def append(self, image):
+    def append(self, image, *, count=1):
+        """Record consumed steps using one owned, immutable current observation."""
         # resize may return a view: always detach from the callback's mmap.
         owned = np.array(self.resize(image), dtype=np.uint8, copy=True, order='C')
         owned.flags.writeable = False
-        self.frames.append(HistoryFrame(self.tick, owned))
-        self.tick += 1
+        for index in range(self.tick, self.tick + count):
+            self.frames.append(HistoryFrame(index, owned))
+        self.tick += count
 
     def snapshot(self):
         first = self.tick - len(self.frames)

@@ -45,8 +45,9 @@ async def test_rendered_cjk_columns_align_in_terminal_cells_and_keep_semantic_st
         log.write_event({'message': help_text(value), 'help_document': value})
         await settled(log, pilot)
         record = next(iter(log.records.values()))
+        parameter_start = record.formatted.document.index('gain  number')
         table_lines = [log.render_line(index) for index, row in enumerate(record.formatted.rows)
-                       if '│' in row.text.plain]
+                       if '│' in row.text.plain and row.start >= parameter_start]
         assert len(table_lines) >= 5
         assert {cell_len(line.text.split('│')[0]) for line in table_lines} == {15}
         for line in table_lines:

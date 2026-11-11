@@ -1,6 +1,61 @@
 # Schema 3 动态策略容器验收
 
-当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前公共契约变更须运行 `python3 scripts/test_scope.py --interface`，跳过不计通过。
+当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前默认只做改动相关的定向验收；完整接口回归、整套 Docker smoke 等全量验收须获得用户对本轮的明确允许，不能因公共契约变化或阶段结束自动执行。跳过不计通过。
+
+## 0.18 TUI 通用表格与 policy 输出（2026-11-11 至 2026-11-12）
+
+RC 与 policy SDK 更新至 0.18.0，新增 `table_output_v1` 能力，manifest schema 3 与既有协议版本保持不变。SDK 的标准库表格层提供 `Table`、`TableOutput` 和 `runtime.log_table()`。仅显式包装使用表格，普通字典、打印与业务 JSON 保持原有语义；effect 命令在最终成功后显示表格，失败不发布成功展示。
+
+日志区支持多表、中文格宽、末列换行及整表纵向回退。`connector list`、`policy list`、`status`、`connector status`、`record status` 使用明确适配器，帮助目录与参数共用布局。未知嵌套字段、数组、空容器、长路径、0、false、null 和空字符串均保留。整条复制保持原始业务 JSON 的既有公开副本；拖选使用宽度无关的逻辑文字，帮助继续复制完整帮助文字。此前固定状态栏不变。
+
+三个传输出口分别使用有界低优先级日志队列，控制回执与 monitor 优先；`log_table()` 的布尔值只表示本级入队，溢出整条丢弃并汇总，不能当作持久化确认。初始化早于 ready、候选 context 早于配置提交、重复来源实例、旧 runtime 拒绝与迟到身份校验均有真实 worker/自链测试。example 提供 `table-stats`，`params.table_logs` 默认关闭；只更新模板，不自动覆盖私有清单。
+
+实施与独立审查均使用 gpt-6-astra / max，按 SDK/传输、TUI/查询、example/文档三个阶段交接。前两阶段审查修复了大表脱敏成本、接收锁占用、失败 effect 持有展示数据及字段展开后的脱敏问题。整体审查另外发现录制写入器对连续 JSON 单元格递归过深，以及表格投影丢失原持久化敏感字段语义；定向验收覆盖这些问题、纯文本 JSON 探测、转义凭证传播、无效复制元数据回退及实际落盘。
+
+最终修复后的定向证据如下，新增文件的 49 项包含在 230 项中，不重复累加：
+
+| 范围 | 结果 | 证据 |
+| --- | --- | --- |
+| 录制、脱敏、表格输出与控制器定向回归 | **230 passed**，30.17 秒，无跳过、无告警，退出码 0 | `/private/tmp/rc018-final-fix3-targeted-regression.log` |
+| 表格持久化专项 | **49 passed**，2.66 秒；含实际 writer idle/active、基础/events/policy 文件、持续采样与正常停止 | `/private/tmp/rc018-final-fix3-tests-green.log` |
+| 普通 JSON/文本行为对照 | **1792 组，0 差异** | `/private/tmp/rc018-final-fix3-text-comparison.log` |
+| 整体审查的原始及残余复现 | 全部通过；大表、转义凭证、字面括号、非有限复制元数据均保留对应安全语义 | `/private/tmp/rc018-final-fix3-original-green.log`、`/private/tmp/rc018-final-fix3-residual-green.log`、`/private/tmp/rc018-final-fix3-n1-green.log` |
+| 最终独立复审 | **Spec / Quality PASS**，全部发现关闭；另行复核 4 个原始案例及 6 种数字文字，无未关闭或延期项 | `/private/tmp/rc018-final-fix3-review.md` |
+
+定向回归使用本机 `.venv/bin/python3.10`（3.10.22），确切命令与文件清单见 `/private/tmp/rc018-final-fix-report.md` 的 Round 3。复现修复前先失败，再验证实际文件；没有通过吞掉写入异常、缩短表格或降低合法行数来取得通过。
+
+修复后的源码在定向验证与复审期间保持冻结，最终两个文件的哈希与 `/private/tmp/rc018-final-fix3-files.json` 一致。交付保留在 `codex/tui-statusbar` 的未提交工作区，保留此前状态栏、私有配置及另一项 Qwen 历史修改；没有自动暂存、提交、推送或操作远端部署。
+
+阶段证据不累加为总用例数：SDK 最终增量 142 passed、1 skipped；TUI/查询组合 283 passed，字段脱敏修正后 56 passed；example/文档增量 159 passed。对应日志为 `/private/tmp/rc018-fix2-final.log`、`/private/tmp/rc018-task2-final-regression.log`、`/private/tmp/rc018-task2-fix1-final-green.log`、`/private/tmp/rc018-task3-incremental.log`。
+
+真实 Textual 测试覆盖宽窄切换、滚动锚点、跨单元格/表/日志的正反向拖选、原 JSON 复制、异步旧 revision 淘汰、输入焦点与补全，相关 PTY 回归同时通过。原始 SVG、逻辑映射 JSON 位于 `/private/tmp/rc018-table-*`；120、50、24 列及窄屏底部预览已目视检查，PNG 位于 `/private/tmp/rc018-table-previews/`。预览仅对 Rich SVG 的中文格宽导出问题做临时定位校正，未修改产品或第三方包，也不等同原生桌面终端的人工验收。
+
+实现采用两项明确边界：每张表至少一列、每次输出至少一张表，空结果使用零行表并显示“无记录”；主动表格日志按尽力投递，而命令结果仍走控制回执通道。既有敏感字段规则继续生效，完整展示不意味着取消脱敏。
+
+用户在最终修复期间明确要求本轮只做定向验收，并禁止以后未经明确允许运行全量验收。该要求已写入 `AGENTS.md`，覆盖本计划原定的最终完整接口回归和整套 Docker smoke。本轮没有执行跨容器 table smoke；Docker 仅完成环境/依赖预检查，不计为跨容器验收。ROS、真实模型、机器人硬件未运行。
+
+修复前的完整接口记录为 2167 passed、78 skipped、17 warnings、732.02 秒，保存在 `/private/tmp/rc018-interface-prereview.log`，只能代表当时源码。后续一轮完整回归因复审发现剩余边界被主动中断，日志 `/private/tmp/rc018-interface-interrupted-string-boundary.log`；KeyboardInterrupt 和中断引起的清理断言不计为完成或通过，之后已确认无 SDK/录制子进程残留。最终修复后的证据以本节的定向验收和复审为准，不将旧全量结果替代最终验证。
+
+## TUI 固定状态栏精简（2026-11-11）
+
+本次只调整 RC 内部显示，未改变 `status()`、MCP 或 SDK 公共返回结构。常驻栏使用固定 13 项白名单；录制拆成状态与错误，连接只显示当前有效绑定的来源和原始配置路径。完整诊断仍通过 `status`、`connector status`、`record status` 查询，三条帮助和命令文档已同步。
+
+连接元数据在 RC → connector 锁顺序下读取，只访问内存。测试覆盖提交前保留旧绑定、断开后清空、连接失败与显式重试、连接成功但 policy 适配失败、缺少 spec，以及修改磁盘 profile 不改变当前显示。真实 Textual 用例覆盖空值、False/0、请求摘要更新和失效、中文、长路径、完整错误及宽窄窗口。
+
+高度不足时状态栏内部滚动，输入与候选保持可见；恢复宽窗口后自然展开。独立审查发现并修复了纯换行错误丢失占位和滚动容器抢输入焦点两项问题。最终容器不加入 Tab 焦点链，点击状态文字后仍可输入，鼠标滚动继续可用。
+
+| 范围 | 结果 | 证据 |
+| --- | --- | --- |
+| TUI、状态查询、connector、帮助及 PTY 组合回归 | **239 passed**，114.14 秒 | `/private/tmp/rc-statusbar-green-combined-final.log` |
+| 最后焦点修正后的状态栏、输入辅助和 PTY 定向回归 | **34 passed**，32.34 秒 | `/private/tmp/rc-statusbar-green-focus-regression.log` |
+| 最终默认 example 与 example 自链回归 | **82 passed、1 skipped**，85.24 秒，退出码 0 | `/private/tmp/rc-statusbar-delivery-scope.log` |
+| 独立最终复审 | Spec / Quality 均通过，无未关闭发现；**6 passed** 定向复验，14 文件哈希一致 | `/private/tmp/rc-statusbar-review.md` |
+
+组合回归之后的产品修改仅为状态滚动容器增加 `can_focus=False`，随后执行表中定向回归、独立复验和默认范围回归。使用现有 `.venv/bin/python` 3.10.22；tracked diff 和新增文件的空白检查通过。实现报告与源码清单分别为 `/private/tmp/rc-statusbar-report.md`、`/private/tmp/rc-statusbar-delivery-hashes.json`。
+
+Textual 导出覆盖 120 列、50 列和 28×16 极小终端，包括候选展开、滚动至路径末尾、收回及恢复宽窗口。原始 SVG、布局 JSON 和按终端格宽校正的预览位于 `/private/tmp/rc-statusbar-*`；已目视检查宽屏与极小终端预览。校正仅用于规避现有 Rich SVG 中文 `textLength` 导出问题，没有修改产品或第三方包，也不代替原生桌面终端的人工验收。
+
+唯一跳过项需要 ROS 2 和已构建消息包，不计通过。本轮没有运行 Docker 部署、ROS、真实模型或机器人硬件，没有修改私有配置或操作远端部署；工作保留于 `codex/tui-statusbar`，未自动提交或推送。
 
 ## 0.17 连接命名与统一帮助（2026-11-11）
 

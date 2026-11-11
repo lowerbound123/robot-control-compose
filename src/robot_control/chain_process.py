@@ -29,7 +29,8 @@ class _MemberResources:
 
 class ChainProcess:
     def __init__(self, record, *, process_factory=PolicyProcess, init_timeout_s=600,
-                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None, on_trace=None):
+                 inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None, on_trace=None,
+                 on_log_event=None):
         self.record = record
         self.config = copy.deepcopy(record.config)
         self.config_version = record.version
@@ -45,6 +46,7 @@ class ChainProcess:
         self._exit_authority = exit_authority
         self.global_state = global_state
         self.on_trace = on_trace
+        self.on_log_event = on_log_event
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -149,6 +151,7 @@ class ChainProcess:
             release_timeout_s=min(self.release_timeout_s, limits.get('release_s', self.release_timeout_s)),
             endpoint=endpoint, exit_authority=self._exit_authority, global_state=self.global_state,
             on_log=(lambda message: self._log(f'[{identity}] {message}') if self._log else None),
+            **({'on_log_event': self.on_log_event} if self.on_log_event is not None else {}),
             **({'on_trace': self.on_trace} if self.on_trace is not None else {}))
         worker.resources = _MemberResources(self, identity)
         return worker

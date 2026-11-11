@@ -133,7 +133,11 @@ class PolicyCommandSupport(PolicyCapabilities):
                 and self._policy_control_current(request.origin, request.epoch)
                 and self._operation is None and not self._stop.is_set())
 
-    def _reload_policy_result(self, identity, snapshot, patch):
+    def _emit_command_table(self, identity, fields, log_context):
+        self._emit_command(fields['message'], table_document=fields['table_document'], copy_json=fields['copy_json'],
+            log_context={**log_context, 'event': 'policy.command', 'command_id': identity, 'command_status': 'succeeded'})
+
+    def _reload_policy_result(self, identity, snapshot, patch, table_output=None):
         request, generation = snapshot
         if not self._reload_is_current(request, generation):
             self.operations.update(identity, "cancelled", error="policy/control state changed during reload command")
@@ -177,6 +181,10 @@ class PolicyCommandSupport(PolicyCapabilities):
             else:
                 self._start_member_reload(proposed, member, identity, in_place=effect == 'reinitialize_policy',
                                           origin=request.origin)
+            if table_output is not None:
+                # Owned by this lifecycle job only. A failed/cancelled/replaced
+                # job drops its display metadata without a separate pending map.
+                self._operation['command_table_output'] = table_output
             self.operations.update(identity, "running")
         except Exception as exc:
             self.operations.update(identity, "failed", error=exc)
@@ -313,14 +321,25 @@ class PolicyCommandSupport(PolicyCapabilities):
                     continue
                 self._policy_calls.pop(identity)
                 snapshot = self._policy_reloads.pop(identity, None)
+                table_output = None
+                if kind == 'command_result' and 'table_document' in message:
+                    from .table_output import public_table_fields
+                    try:
+                        table_output = (public_table_fields(message.get('result'), message['table_document']),
+                                        message.get('table_log_context', {}))
+                    except (TypeError, ValueError, RecursionError):
+                        pass  # Optional presentation never changes a business result/effect.
                 if snapshot is not None and kind == "command_result":
-                    self._reload_policy_result(identity, snapshot, message.get("result"))
+                    self._reload_policy_result(identity, snapshot, message.get("result"), table_output)
                     continue
                 status = {"command_result": "succeeded", "command_error": "failed",
                           "command_cancelled": "cancelled", "command_timeout": "failed"}[kind]
                 self.operations.update(identity, status, result=message.get("result"), error=message.get("error"))
                 value = json.dumps(message.get("result"), ensure_ascii=False) if kind == "command_result" else message.get("error", "cancelled")
-                self._emit_command(f"policy command [{identity}] {status}: {value}", "error" if status == "failed" else "info")
+                if table_output is not None:
+                    self._emit_command_table(identity, *table_output)
+                else:
+                    self._emit_command(f"policy command [{identity}] {status}: {value}", "error" if status == "failed" else "info")
                 if kind == "command_timeout" or message.get("fatal"):
                     self._command_faults.add(worker)
                     for other, owner in list(self._policy_calls.items()):
@@ -340,6 +359,7 @@ class PolicyCommandSupport(PolicyCapabilities):
                                 if self._operation.get("public_id") == self._return_operation:
                                     self._return_requested = False
                                     self._return_operation = None
+                                self._operation.pop('command_table_output', None)
                                 self._operation = None
                     break
             if not worker.alive and not getattr(worker, "has_command_results", False):

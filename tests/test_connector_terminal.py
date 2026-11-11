@@ -16,7 +16,7 @@ def test_connector_list_prints_profile_details_and_validation_errors(example_rc)
     events = lambda: rc.read_events(cursor)['events']
     until(lambda: any('second' in row['message'] for row in events()))
     output = '\n'.join(row['message'] for row in events())
-    assert all(field in output for field in ('name', 'source', 'instance', 'config', 'valid'))
+    assert all(field in output for field in ('名称', '来源', '实例', '配置路径', '有效'))
     assert all(value in output for value in ('second', 'mock', 'body', 'second-device.json', 'true'))
     assert 'broken' in output and 'false' in output and 'requires connector' in output
 

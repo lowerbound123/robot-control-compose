@@ -19,7 +19,7 @@ import uuid
 
 from .lifecycle import become_subreaper, descendant_snapshot, process_birth
 from .supervisor import _cleanup
-from .outbox import PriorityOutbox
+from .outbox import PriorityOutbox, log_gap_factory, log_loss_weight
 from .monitor import MONITOR_IDENTITY
 from .wire import encode_message, receive_message, send_message
 from .argument_hints import path_parameter
@@ -40,15 +40,14 @@ class Peer:
         threading.Thread(target=self._write, daemon=True).start()
 
     def send(self, message):
-        if message.get('type') == 'log':
+        structured_log = (message.get('type') == 'policy_event'
+                          and message.get('event', {}).get('type') == 'log')
+        if message.get('type') == 'log' or structured_log:
             packet = encode_message(message)
-            identity = {key: value for key, value in message.items() if key != 'message'}
-            def gap_factory(count, saturated):
-                event = {'event': 'sdk.log_gap', 'count': count}
-                if saturated:
-                    event['count_saturated'] = True
-                return encode_message({**identity, 'message': json.dumps(event, separators=(',', ':'))})
-            return self.outbox.put_log(packet, size=len(packet), gap_factory=gap_factory)
+            count, saturated = log_loss_weight(message) if structured_log else (1, False)
+            return self.outbox.put_log(packet, size=len(packet),
+                gap_factory=log_gap_factory(message, stage='host', structured=structured_log),
+                loss_count=count, loss_saturated=saturated)
         if message.get('event', {}).get('type') in ('monitor_result', 'monitor_error'):
             return self.outbox.put_monitor(message['session_id'], encode_message(message))
         try: self.outbox.put_nowait(encode_message(message))
@@ -339,7 +338,7 @@ class PolicyHost:
                     'python': sys.version.split()[0], 'policy_id': self.host_id,
                     'deployment_id': self.deployment_id, 'run_id': self.run_id, 'generation': self.generation,
                     'healthy': not (self.closing or self.shutting_down or self.cleanup_failed), 'reinitialize_policy': True,
-                    'configure': True, 'list_paths': True, 'connector_switch_v1': True}
+                    'configure': True, 'list_paths': True, 'connector_switch_v1': True, 'table_output_v1': True}
         if not peer.owner: raise ValueError('hello required')
         if kind == 'ping':
             if self.owner == peer.owner:

@@ -9,6 +9,123 @@ from rc_policy_sdk.outbox import PriorityOutbox
 from rc_policy_sdk.wire import receive_message, send_message
 
 
+@pytest.mark.parametrize('hop', ['worker', 'runtime', 'host'])
+def test_structured_table_logs_stay_bounded_at_each_blocked_hop(hop):
+    import threading
+    import time
+    from rc_policy_sdk.outbox import PrioritySender
+    from rc_policy_sdk import host_runtime
+
+    class BlockedConnection:
+        def __init__(self):
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.packets = []
+        def sendall(self, packet):
+            self.entered.set()
+            assert self.release.wait(3)
+            self.packets.append(json.loads(packet[4:]))
+        def shutdown(self, how):
+            self.release.set()
+
+    connection = BlockedConnection()
+    sender = Peer(connection) if hop == 'host' else PrioritySender(connection)
+    sender.outbox.log_maxsize = 2
+    sender.outbox.log_maxbytes = 2048
+    def emit(event):
+        if hop == 'worker':
+            return sender.send_log(event, stage='worker')
+        if hop == 'runtime':
+            return host_runtime.emit(sender, 'session', event)
+        return sender.send({'type': 'policy_event', 'runtime_id': 'runtime', 'session_id': 'session', 'event': event})
+    event = {'type': 'log', 'context_id': 'ctx', 'config_version': 1,
+             'message': 'table', 'result': {'payload': 'x' * 300},
+             'table_document': {'schema_version': 1, 'tables': [{'title': '', 'columns': ['x'], 'rows': [[0]]}]}}
+    try:
+        assert emit(event)
+        assert connection.entered.wait(1)
+        start = time.monotonic()
+        accepted = sum(emit(event) is True for _ in range(100))
+        assert time.monotonic() - start < 1
+        assert accepted == 2
+        assert sender.outbox.qsize() == 3
+        assert sender.outbox._log_bytes <= 2048
+        control = {'type': 'command_result', 'result': 0, 'table_document': event['table_document']}
+        if hop == 'host':
+            send_control = lambda: sender.send({'type': 'policy_event', 'session_id': 'session', 'event': control})
+            assert sender.send({'type': 'policy_event', 'session_id': 'session', 'event': {'type': 'monitor_result'}})
+        else:
+            send_control = lambda: sender.send(control)
+            assert sender.send_monitor({'type': 'monitor_result'})
+        thread = threading.Thread(target=send_control)
+        thread.start()
+        deadline = time.monotonic() + 1
+        while not sender.outbox._normal and time.monotonic() < deadline:
+            time.sleep(.001)
+        assert sender.outbox._normal
+        connection.release.set()
+        thread.join(1)
+        deadline = time.monotonic() + 1
+        while len(connection.packets) < 6 and time.monotonic() < deadline:
+            time.sleep(.001)
+        packets = [packet.get('event', packet) for packet in connection.packets]
+        assert [p['type'] for p in packets] == ['log', 'command_result', 'monitor_result', 'log', 'log', 'log']
+        gap = packets[-1]
+        assert gap['log_event'] == 'sdk.log_gap'
+        assert gap['count'] == 98
+        assert gap['stage'] == hop
+        assert gap['context_id'] == 'ctx'
+        assert 'table_document' not in gap and 'result' not in gap and 'copy_json' not in gap
+    finally:
+        connection.release.set()
+        sender.close()
+
+
+def test_host_gap_drops_all_untrusted_payload_fields_from_closure():
+    import gc
+    import weakref
+    class Payload(dict): pass
+    peer = Peer.__new__(Peer)
+    peer.outbox = PriorityOutbox(1, log_maxsize=1, log_maxbytes=1)
+    payload = Payload(large='x' * 10000)
+    reference = weakref.ref(payload)
+    peer.send({'type': 'log', 'runtime_id': 'runtime', 'message': 'x',
+               'table_document': payload, 'result': payload, 'copy_json': payload,
+               'unrecognized': payload})
+    del payload
+    gc.collect()
+    assert reference() is None
+    gap = json.loads(peer.outbox.get_nowait()[4:])
+    assert set(gap) == {'type', 'runtime_id', 'message'}
+
+
+def test_downstream_gap_accounts_for_an_upstream_aggregated_loss():
+    peer = Peer.__new__(Peer)
+    peer.outbox = PriorityOutbox(1, log_maxsize=1, log_maxbytes=1)
+    for event in ({'type':'log','message':'data'},
+                  {'type':'log','message':'upstream gap','log_event':'sdk.log_gap','count':700,'stage':'worker'}):
+        peer.send({'type':'policy_event','session_id':'s','event':event})
+    gap = json.loads(peer.outbox.get_nowait()[4:])['event']
+    assert gap['count'] == 701
+    assert gap['stage'] == 'host'
+
+
+@pytest.mark.parametrize('already_saturated', [False, True])
+def test_downstream_weighted_gap_keeps_saturated_lower_bound(monkeypatch, already_saturated):
+    from rc_policy_sdk import outbox
+    monkeypatch.setattr(outbox, 'MAX_LOG_GAP_COUNT', 5)
+    peer = Peer.__new__(Peer)
+    peer.outbox = PriorityOutbox(1, log_maxsize=1, log_maxbytes=1)
+    peer.send({'type':'policy_event','session_id':'s','event':{
+        'type':'log','message':'upstream gap','log_event':'sdk.log_gap','count':5,
+        'count_saturated':already_saturated,'stage':'worker'}})
+    if not already_saturated:
+        peer.send({'type':'policy_event','session_id':'s','event':{'type':'log','message':'another'}})
+    gap = json.loads(peer.outbox.get_nowait()[4:])['event']
+    assert gap['count'] == 5 and gap['count_saturated'] is True
+    assert gap['stage'] == 'host'
+
+
 def gap(count, saturated):
     return ("gap", count, saturated)
 
@@ -169,7 +286,8 @@ def test_real_socket_log_flood_keeps_control_and_monitor_connected():
         downstream.close()
 
 
-def test_real_host_stdout_flood_keeps_ready_monitor_commands_and_stop(tmp_path):
+@pytest.mark.parametrize('structured', [False, True])
+def test_real_host_log_flood_keeps_ready_monitor_commands_and_stop(tmp_path, structured):
     from test_host_transport import Host, wait_for
 
     folder = tmp_path / "flood"
@@ -177,14 +295,19 @@ def test_real_host_stdout_flood_keeps_ready_monitor_commands_and_stop(tmp_path):
     marker = tmp_path / "finished"
     (folder / "main.py").write_text('''
 from pathlib import Path
-def initialize(config): return config['params']
+from rc_policy_sdk import Table, TableOutput
+def initialize(config, runtime): return {**config['params'], 'runtime':runtime}
 def policy(context, state, action_chunk, images, config): return [[0] * 14]
 def reset_context(context): pass
 def release(context): pass
 def monitor(context): return {'alive': 1}
 def flood(context):
     for number in range(5000):
-        print(str(number) + ':' + 'x' * 1024, flush=True)
+        if context['structured']:
+            context['runtime'].log_table(TableOutput(result=number,
+                tables=[Table(columns=['value'], rows=[[str(number) + ':' + 'x' * 1024]])]))
+        else:
+            print(str(number) + ':' + 'x' * 1024, flush=True)
     Path(context['marker']).write_text('finished')
     return 'finished'
 ''')
@@ -196,12 +319,13 @@ def flood(context):
         send_message(connection, dict(type="hello", rpc_id=1, owner_id="log-test",
                                      protocol_version=1, image_protocol_version=1))
         hello = receive_message(connection)["result"]
-        config = dict(schema_version=3, id="flood-0", params={"marker": str(marker)},
+        config = dict(schema_version=3, id="flood-0", params={"marker": str(marker), 'structured':structured},
                       execution=dict(mode="sync", call_every_actions=1, control_mode="qpos"),
                       tui_commands={"flood": {"handler": "flood", "args": []}})
         send_message(connection, dict(type="load", rpc_id=2, session_id="session", policy_id="flood-0",
             timeouts=dict(initialize=5, inference=5, release=1),
-            event=dict(type="initialize", config=config, config_version=1)))
+            event=dict(type="initialize", config=config, config_version=1,
+                       table_output_v1=True, context_id='context')))
         ready = loaded = None
         while ready is None or loaded is None:
             message = receive_message(connection)
@@ -232,13 +356,20 @@ def flood(context):
             if kind in ("command_result", "monitor_result"):
                 assert message["event"]["result"] == ("finished" if kind == "command_result" else {"alive": 1})
                 received.add(kind)
-            if message["type"] == "log":
+            if message["type"] == "log" or kind == 'log':
                 assert message["host_instance_id"] == hello["host_instance_id"]
-                assert message["host_id"] == message["policy_instance_id"] == "flood-0"
-                assert message["source_policy_id"] == "flood"
                 assert message["runtime_id"] == runtime
-                if message["message"].startswith("{"):
-                    event = json.loads(message["message"])
+                if kind == 'log':
+                    assert message['session_id'] == 'session'
+                    record = message['event']
+                    assert record['context_id'] == 'context'
+                    assert record['config_version'] == 1
+                else:
+                    assert message["host_id"] == message["policy_instance_id"] == "flood-0"
+                    assert message["source_policy_id"] == "flood"
+                    record = message
+                if record["message"].startswith("{"):
+                    event = json.loads(record["message"])
                     if event.get("event") == "sdk.log_gap":
                         lost_count += event["count"]
                 else:

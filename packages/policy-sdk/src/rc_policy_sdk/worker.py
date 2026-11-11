@@ -87,12 +87,14 @@ def run_session(connection, policy_dir, namespace):
         config = message["config"]
         validate_connector_switch_settings(config)
         channel.context_id = message.get("context_id")
+        channel.table_output_v1 = message.get('table_output_v1') is True
         if message.get('global_state') is not None:
             if channel.context_id is not None and message['global_state'].get('binding', {}).get('context_id') != channel.context_id:
                 raise ValueError('global state context binding mismatch')
             channel.attach_globals(message['global_state'])
         channel.runtime_tools = runtime_tools(message.get("runtime_tools", []))
         version = message["config_version"]
+        channel.config_version = version
         module = _load_policy(policy_dir, namespace)
         release_due = True
         specs = command_specs(config)
@@ -140,6 +142,7 @@ def run_session(connection, policy_dir, namespace):
             supported=supported and module.wants_observations(context)
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
                       "configure": configure_enabled, "context_id": channel.context_id,
+                      "table_output_v1": channel.table_output_v1,
                       "connector_switch_v1": message.get("connector_switch_v1") is True,
                       "tui_command_effects_v2": list(COMMAND_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
                       "global_state_version": 1 if channel.global_memory is not None else None})
@@ -202,6 +205,7 @@ def run_session(connection, policy_dir, namespace):
                         if prepared_config[1] == "reset":
                             module.reset_context(context)
                         version = message["new_config_version"]
+                        channel.config_version = version
                         configure_applied = True
                         configure_failed = False
                         channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version, "context_id": channel.context_id})
@@ -257,6 +261,7 @@ def run_session(connection, policy_dir, namespace):
                         validate_connector_switch_settings(message['config'])
                         config = message["config"]
                         version = message["config_version"]
+                        channel.config_version = version
                         channel.context_id = message["context_id"]
                         if message.get("global_state") is not None:
                             if message["global_state"].get("binding", {}).get("context_id") != channel.context_id:
@@ -321,6 +326,7 @@ def run_session(connection, policy_dir, namespace):
                         module.validate_config(proposed)
                     apply_patch(config, message["patch"])
                     version = message["config_version"]
+                    channel.config_version = version
                     commands.resume()
                     monitor.resume()
                     channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version})

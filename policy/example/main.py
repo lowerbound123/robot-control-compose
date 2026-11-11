@@ -9,6 +9,8 @@ import threading
 import time
 import uuid
 
+from rc_policy_sdk import Table, TableOutput
+
 
 _MODULE_ID = uuid.uuid4().hex
 
@@ -27,6 +29,8 @@ def validate_config(config):
     interval = params["log_every_n_calls"]
     if type(interval) is not int or interval <= 0:
         raise ValueError("params.log_every_n_calls 必须是正整数")
+    if type(params.get("table_logs", False)) is not bool:
+        raise ValueError("params.table_logs 必须是布尔值")
     token = params.get("reset_token", 0)
     if type(token) is not int or token < 0:
         raise ValueError("params.reset_token 必须是非负整数")
@@ -75,6 +79,8 @@ def initialize(config, *, runtime=None):
         from .remote_reader import RemoteReader
         context["reader"] = RemoteReader(config["params"]["reader_url"], runtime)
     print("example initialize：本地示例已就绪", flush=True)
+    if config["params"].get("table_logs", False) and runtime is not None:
+        runtime.log_table(_stats_table(monitor(context), "initialize"))
     return context
 
 
@@ -95,7 +101,8 @@ def _record(context, images, runtime, callback):
     image_summary = json.dumps(summaries, ensure_ascii=False)
     with context["lock"]:
         stats = context["stats"]
-        stats["calls" if callback == "policy" else "observations"] += 1
+        counter = "calls" if callback == "policy" else "observations"
+        stats[counter] += 1
         stats.update(
             last_callback=callback,
             observation_id=str(runtime.observation_id),
@@ -106,7 +113,10 @@ def _record(context, images, runtime, callback):
             images=image_summary,
         )
         params = context["config"]["params"]
-        return stats["calls"], params["message"], params["log_every_n_calls"]
+        count, interval = stats[counter], params["log_every_n_calls"]
+        snapshot = (_snapshot(context) if params.get("table_logs", False) and count % interval == 0
+                    else None)
+        return count, params["message"], interval, snapshot
 
 
 def policy(context, state, action_chunk, images, config, *, runtime):
@@ -115,9 +125,11 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     with context["lock"]:
         request = context["pending_result"]
         context["pending_result"] = None
-    calls, message, interval = _record(context, images, runtime, "policy")
+    calls, message, interval, snapshot = _record(context, images, runtime, "policy")
     if calls % interval == 0:
         print(f"example policy #{calls}：{message}", flush=True)
+    if snapshot is not None:
+        runtime.log_table(_stats_table(snapshot, "policy"))
 
     delay = config["params"].get("inference_delay_s", 0)
     if delay:
@@ -153,32 +165,62 @@ def wants_observations(context):
 
 def observe(context, state, images, config, *, runtime):
     """可与推理并发的观测回调；只记录摘要，不产生动作。"""
-    _record(context, images, runtime, "observe")
+    _, _, _, snapshot = _record(context, images, runtime, "observe")
+    if snapshot is not None:
+        runtime.log_table(_stats_table(snapshot, "observe"))
     # 回调返回前不得保留图片视图。SDK 关闭映射后才向 RC 确认释放，
     # observe 的返回值不用于动作输出，也不能在此调用 runtime.pause()。
+
+
+def _snapshot(context):
+    """调用者持有 context 锁；诊断副本不保留图像或可变统计引用。"""
+    params = context["config"]["params"]
+    return {
+        **context["stats"],
+        "message": params["message"],
+        "log_every_n_calls": params["log_every_n_calls"],
+        "chunk_size": params.get("chunk_size", 1),
+        "inference_delay_s": params.get("inference_delay_s", 0),
+        "instance": context["config"].get("id", "example"),
+        "python": context["python"],
+        "module_id": _MODULE_ID,
+        "context_id": context["context_id"],
+        "released": int(context["released"]),
+    }
 
 
 def monitor(context):
     """快速只读快照：无图像、网络、模型或控制 I/O，只返回内建标量。"""
     with context["lock"]:
-        params = context["config"]["params"]
-        return {
-            **context["stats"],
-            "message": params["message"],
-            "log_every_n_calls": params["log_every_n_calls"],
-            "chunk_size": params.get("chunk_size", 1),
-            "inference_delay_s": params.get("inference_delay_s", 0),
-            "instance": context["config"].get("id", "example"),
-            "python": context["python"],
-            "module_id": _MODULE_ID,
-            "context_id": context["context_id"],
-            "released": int(context["released"]),
-        }
+        return _snapshot(context)
 
 
 def example(context):
     """manifest 注册的同名无参数命令；返回值由框架作为 JSON 显示。"""
     return monitor(context)
+
+
+def _stats_table(snapshot, phase):
+    """原始 JSON 与展示表分开；图片行只来自已脱离共享映射的摘要。"""
+    cameras = json.loads(snapshot["images"])
+    return TableOutput(result=snapshot, tables=[
+        Table(title=f"{snapshot['instance']} {phase}",
+              columns=["实例", "Python", "推理次数", "观测次数", "已释放"],
+              rows=[[snapshot["instance"], snapshot["python"], snapshot["calls"],
+                     snapshot["observations"], bool(snapshot["released"])]]),
+        Table(title="观测与执行",
+              columns=["回调", "观测ID", "配置版本", "控制代次", "已消费动作", "图像数", "消息"],
+              rows=[[snapshot[key] for key in ("last_callback", "observation_id", "config_version",
+                     "control_epoch", "consumed_actions", "image_count", "message")]]),
+        Table(title="只读图像", columns=["相机", "尺寸", "类型", "时间戳", "只读", "采样"],
+              rows=[[name, item["shape"], item["dtype"], item["timestamp"], item["readonly"], item["sample"]]
+                    for name, item in cameras.items()]),
+    ])
+
+
+def table_stats(context):
+    """显式表格命令；业务返回值与 example() 的完整统计快照相同。"""
+    return _stats_table(monitor(context), "统计")
 
 
 def next_result(context, outcome, message):
@@ -256,7 +298,7 @@ def _configuration_value(raw):
 
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
-    allowed_params = {'message', 'log_every_n_calls', 'chunk_size', 'inference_delay_s', 'reader_url', 'reset_token'}
+    allowed_params = {'message', 'log_every_n_calls', 'table_logs', 'chunk_size', 'inference_delay_s', 'reader_url', 'reset_token'}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)

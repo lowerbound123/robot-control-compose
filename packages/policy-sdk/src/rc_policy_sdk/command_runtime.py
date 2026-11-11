@@ -6,6 +6,7 @@ from concurrent.futures import CancelledError, ThreadPoolExecutor, wait
 
 from .commands import validate_arguments
 from .wire import ProtocolError, encode_message
+from .tables import TableOutput, normalize_table_output
 
 
 def _json_object(pairs):
@@ -64,9 +65,15 @@ class CommandExecutor:
             self.channel.send({"type": "command_started", "command_id": message["command_id"],
                                "config_version": message["config_version"], "started_at": time.monotonic()})
         result = self.handlers[message["name"]](self.context, *message["args"])
+        table_fields = {}
+        if isinstance(result, TableOutput):
+            if not getattr(self.channel, 'table_output_v1', False):
+                raise RuntimeError('TableOutput is unsupported; upgrade robot-control and rc-policy-sdk')
+            result, document = normalize_table_output(result)
+            table_fields['table_document'] = document
         response = {"type": "command_result", "command_id": message["command_id"],
                     "config_version": message["config_version"], "result": result,
-                    "finished_at": time.monotonic()}
+                    "finished_at": time.monotonic(), **table_fields}
         # Match the receiver's duplicate-key rules and detach mutable user data.
         # Only this validated JSON snapshot reaches the completion callback.
         return json.loads(encode_message(response)[4:], object_pairs_hook=_json_object)

@@ -142,11 +142,13 @@ class HistoryPolicy:
             delta = count-self._consumed
             if delta < 0:
                 raise RuntimeError('consumed action counter moved backwards')
-            if delta > 1:
-                raise RuntimeError('missed consumed actions: requires sync callbacks every action')
             if delta:
                 if self.history_enabled:
-                    self.history.append(frame(images['head'], 'head'))
+                    self.history.append(frame(images['head'], 'head'), count=delta)
+                    if delta > 1:
+                        logging.getLogger(__name__).warning(
+                            'consumed actions jumped from %d to %d; filling %d intermediate history '
+                            'frames with current head observation', self._consumed, count, delta - 1)
                 self.canonical = self.canonical[delta:]
                 self._consumed = count
             old = np.asarray(action_chunk, dtype=np.float32)
