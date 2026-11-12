@@ -48,7 +48,7 @@ def policy(context, state, action_chunk, images, config, *, runtime):
 ''')
     shutil.copyfile(ROOT / 'tests/fixtures/history_test_backend.py', root / 'test_backend.py')
     (root / 'controls.json').write_text(json.dumps({'value': .1}))
-    package = str(ROOT / 'packages/qwen35-history-policy/src')
+    package = str(ROOT / 'policy/qwen35_history/src')
     monkeypatch.setenv('PYTHONPATH', package+os.pathsep+os.environ.get('PYTHONPATH',''))
     class CameraRobot(MockRobot):
         def read_images(self):

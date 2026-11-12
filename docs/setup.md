@@ -49,7 +49,7 @@ build 按单个目标查找 Compose 构建声明。裸目录名表示 policy 来
 
 ## YAML 主配置与手动迁移
 
-RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。每个 LLM 策略目录中的 `provider.yaml` 和 `providers/*.yaml` 由 setup 从同名 `.example` 首次生成，权限为 `0600`。再次运行 setup 会保留已有文件。凭证填写在所选供应商文件中。llm_failure 的任务和提示词按供应商填写。旧 Decisions 题型须手工更新，清单中的旧任务与提示再按[失败检测策略的升级步骤](llm-failure-policy.md#升级与切换)迁入 provider。llm_direction 的任务仍在策略主配置中。
+RC 主配置使用 `rc.yaml` 或 `configs/rc.<profile>.yaml`，策略和原生链固定使用 `policy/<id>/policy.yaml`；模板对应 `.yaml.example`。RC 显式路径也接受 `.yml`：已有唯一 `.yml` 时原地使用，同名 `.yaml/.yml` 并存时报错。每个 LLM 策略目录中的 `provider.yaml` 和 `providers/*.yaml` 由 setup 从同名 `.example` 首次生成，权限为 `0600`。再次运行 setup 会保留已有文件。凭证填写在所选供应商文件中。llm_failure 的任务和提示词按供应商填写。旧 Decisions 题型须手工更新，清单中的旧任务与提示再按[失败检测策略的升级步骤](../policy/llm_failure/README.md#升级与切换)迁入 provider。llm_direction 的任务仍在策略主配置中。
 
 `model.json`、checkpoint 元数据、机器运行记录、状态快照、`global.env` 和部署 env 保持原格式。
 

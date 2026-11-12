@@ -39,7 +39,7 @@ def test_base_and_simulator_mount_source_readonly():
     assert any(m['target'] == '/workspace/ros_ws/src/robot_control_test_sim' and m['read_only'] for m in sim['volumes'])
 
 
-@pytest.mark.parametrize('identity,module', [('qwen35_single','rc_qwen35_policy'), ('qwen35_twostage','rc_qwen35_policy'),
+@pytest.mark.parametrize('identity,module', [('qwen35_single','rc_qwen35_policy'), ('qwen35_twostage','rc_qwen35_twostage'),
     ('llm_direction','rc_llm_direction'), ('llm_failure','rc_llm_failure'), ('pi05','rc_pi05_policy')])
 def test_policy_declares_own_source_paths(identity, module):
     service = read_compose(ROOT / 'policy' / identity / 'compose.yaml')['services']['policy']
@@ -49,12 +49,12 @@ def test_policy_declares_own_source_paths(identity, module):
     assert mounts[origins[module]]['read_only']
     assert origins[module] in service['environment']['PYTHONPATH'].split(':')
     if identity.startswith('qwen35_'):
-        assert origins['lerobot'] == '/workspace/vendor/qwen35'
+        assert origins['lerobot'] == '/workspace/policy/'+identity+'/vendor'
         patch = '/usr/local/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py'
         assert mounts[patch]['read_only'] and not mounts[patch]['bind'].get('create_host_path', False)
     else:
         assert 'lerobot' not in origins
-        assert '/workspace/vendor/qwen35' not in service['environment']['PYTHONPATH']
+        assert '/workspace/policy/qwen35_single/vendor' not in service['environment']['PYTHONPATH']
 
 
 def test_source_validation_rejects_missing_or_shadowed_module(tmp_path, monkeypatch):

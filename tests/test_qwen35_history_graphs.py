@@ -11,7 +11,7 @@ pytest.importorskip('transformers')
 
 @pytest.fixture(scope='module')
 def patch_module():
-    path = ROOT / 'vendor/qwen35_history/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py'
+    path = ROOT / 'policy/qwen35_history/vendor/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py'
     name = 'transformers.models.qwen3_5._rc_history_patch'
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)

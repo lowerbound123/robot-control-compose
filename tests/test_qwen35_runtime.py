@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-PACKAGE = Path(__file__).resolve().parents[1] / 'packages/qwen35-policy/src'
+PACKAGE = Path(__file__).resolve().parents[1] / 'policy/qwen35_single/src'
 sys.path.insert(0, str(PACKAGE))
 
 

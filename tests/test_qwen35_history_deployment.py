@@ -19,8 +19,8 @@ def test_independent_policy_is_discovered_and_container_binds_its_own_sources(tm
     service = model['services']['policy']
     assert service['image'] != 'robot-control-compose-qwen35:local'
     modules = json.loads(service['environment']['RC_SOURCE_MODULES'])
-    assert modules['lerobot'] == '/workspace/vendor/qwen35_history'
-    assert modules['rc_qwen35_history'] == '/workspace/packages/qwen35-history-policy/src'
+    assert modules['lerobot'] == '/workspace/policy/qwen35_history/vendor'
+    assert modules['rc_qwen35_history'] == '/workspace/policy/qwen35_history/src'
     assert service['restart'] == 'no'
     for mount in service['volumes']:
         if '/workspace/' in mount['target'] or '/site-packages/' in mount['target']:
@@ -29,7 +29,7 @@ def test_independent_policy_is_discovered_and_container_binds_its_own_sources(tm
 
 
 def test_vendor_hashes_and_dependency_locks_are_complete():
-    vendor = ROOT / 'vendor/qwen35_history'
+    vendor = ROOT / 'policy/qwen35_history/vendor'
     manifest = json.loads((vendor / 'SOURCE_MANIFEST.json').read_text())
     assert manifest['source_commit'].startswith('314c3fc')
     for record in manifest['files']:

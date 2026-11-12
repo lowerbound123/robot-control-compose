@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / 'packages/internvla-maas-policy/src'
+PACKAGE = ROOT / 'policy/internvla_maas/src'
 sys.path.insert(0, str(PACKAGE))
 
 

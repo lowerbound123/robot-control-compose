@@ -9,7 +9,7 @@ import pytest
 from pi05_helpers import checkpoint_fixture
 from test_qwen35_runtime import Model, images, metadata
 
-PACKAGE = Path(__file__).resolve().parents[1] / 'packages/pi05-policy/src'
+PACKAGE = Path(__file__).resolve().parents[1] / 'policy/pi05/src'
 if importlib.util.find_spec('rc_pi05_policy') is None:
     sys.path.insert(0, str(PACKAGE))
 

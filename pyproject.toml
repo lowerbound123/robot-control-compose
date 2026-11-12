@@ -33,5 +33,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "packages/policy-sdk/src", "packages/connector-sdk/src", "packages/llm-provider-config/src"]
+pythonpath = ["src", "packages/policy-sdk/src", "packages/connector-sdk/src"]
 asyncio_mode = "auto"

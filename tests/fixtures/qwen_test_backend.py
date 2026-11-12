@@ -6,7 +6,6 @@ import threading
 import time
 
 import numpy as np
-from rc_qwen35_policy.runtime import AsyncQwenPolicy as RealPolicy
 
 
 class Backend:
@@ -69,4 +68,8 @@ class Backend:
 
 
 def make_policy(config, **kwargs):
+    if config['model']['workflow']=='two_stage':
+        from rc_qwen35_twostage.runtime import AsyncQwenPolicy as RealPolicy
+    else:
+        from rc_qwen35_policy.runtime import AsyncQwenPolicy as RealPolicy
     return RealPolicy(config, backend=Backend(config), **kwargs)

@@ -68,22 +68,12 @@ def main():
     args = parser.parse_args()
     policies = set(args.policy)
     packages = {"policy-sdk", "connector-sdk"}
-    if args.interface:
-        packages.update(p.parent.name for p in (ROOT / "packages").glob("*/src"))
-    else:
-        if policies & QWEN:
-            packages.add("qwen35-policy")
-        if policies & HISTORY:
-            packages.add("qwen35-history-policy")
-        if "pi05" in policies:
-            packages.add("pi05-policy")
-        if "internvla_maas" in policies:
-            packages.add("internvla-maas-policy")
-        if policies & LLM:
-            packages.add("llm-provider-config")
-            packages.update(p.replace("_", "-") + "-policy" for p in policies & LLM)
+    policy_sources = (sorted((ROOT / "policy").glob("*/src")) if args.interface else
+                      [ROOT / "policy" / name / "src" for name in sorted(policies)
+                       if (ROOT / "policy" / name / "src").is_dir()])
     # pytest 的 pythonpath 只影响主进程；真正的 host/worker 和 ROS 仿真器也必须能导入本次源码。
     sources = [ROOT / "src", *(ROOT / "packages" / p / "src" for p in sorted(packages)),
+               *policy_sources,
                ROOT / "ros_ws/src/robot_control_test_sim"]
     env = os.environ.copy()
     roots = [str(path) for path in sources]

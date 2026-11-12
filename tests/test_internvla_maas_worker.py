@@ -25,7 +25,7 @@ def prepare(tmp_path, server, monkeypatch):
     directory = root / 'internvla_maas'
     copy_templates(ROOT / 'policy/internvla_maas', directory)
     (directory / 'model.json').write_text(json.dumps(settings(server.address)))
-    sources = [ROOT / 'src', ROOT / 'packages/policy-sdk/src', ROOT / 'packages/internvla-maas-policy/src']
+    sources = [ROOT / 'src', ROOT / 'packages/policy-sdk/src', ROOT / 'policy/internvla_maas/src']
     monkeypatch.setenv('PYTHONPATH', os.pathsep.join(map(str, sources)))
     return directory, read_config(directory / 'policy.yaml')
 

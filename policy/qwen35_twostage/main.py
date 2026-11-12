@@ -4,8 +4,8 @@ import shlex
 import json
 from pathlib import Path
 
-from rc_qwen35_policy.configuration import load_model_config, validate_manifest
-from rc_qwen35_policy.runtime import AsyncQwenPolicy
+from rc_qwen35_twostage.configuration import load_model_config, validate_manifest
+from rc_qwen35_twostage.runtime import AsyncQwenPolicy
 
 POLICY_ROOT = Path(__file__).resolve().parent
 

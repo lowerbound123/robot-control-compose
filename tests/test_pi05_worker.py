@@ -47,7 +47,7 @@ def test_shipped_pi05_entrypoint_releases_images_and_resets_in_real_worker(tmp_p
     # validation, shared scheduler, SDK workers and image transport remain real.
     (directory / 'main.py').write_text((source / 'main.py').read_text() + MODEL_BOUNDARY)
     python_paths = [str(ROOT / 'src'), str(ROOT / 'packages/policy-sdk/src'),
-                    str(ROOT / 'packages/pi05-policy/src')]
+                    str(ROOT / 'policy/pi05/src')]
     if os.environ.get('PYTHONPATH'): python_paths.append(os.environ['PYTHONPATH'])
     monkeypatch.setenv('PYTHONPATH', os.pathsep.join(python_paths))
     worker = LocalPolicyProcess(directory, config, init_timeout_s=10, inference_timeout_s=5, release_timeout_s=3)

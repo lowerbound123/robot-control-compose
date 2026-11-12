@@ -8,7 +8,7 @@ import pytest
 from test_controller import setup_controller as setup_controller, ready
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'packages/llm-direction-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/llm_direction/src'))
 
 
 def test_provider_uses_config_key_even_when_parent_environment_conflicts(monkeypatch):

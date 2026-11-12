@@ -10,8 +10,8 @@ services:
     restart: "no"
     platform: linux/amd64
     environment:
-      PYTHONPATH: /workspace/packages/qwen35-history-policy/src:/workspace/vendor/qwen35_history
-      RC_SOURCE_MODULES: '{"rc_qwen35_history":"/workspace/packages/qwen35-history-policy/src","lerobot":"/workspace/vendor/qwen35_history"}'
+      PYTHONPATH: /workspace/policy/qwen35_history/src:/workspace/policy/qwen35_history/vendor
+      RC_SOURCE_MODULES: '{"rc_qwen35_history":"/workspace/policy/qwen35_history/src","lerobot":"/workspace/policy/qwen35_history/vendor"}'
       USER: robot-control
       LOGNAME: robot-control
       HF_HOME: /data/huggingface
@@ -19,17 +19,17 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/packages/qwen35-history-policy/src
-        target: /workspace/packages/qwen35-history-policy/src
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history/src
+        target: /workspace/policy/qwen35_history/src
         read_only: true
         bind: {create_host_path: false}
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/vendor/qwen35_history
-        target: /workspace/vendor/qwen35_history
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history/vendor
+        target: /workspace/policy/qwen35_history/vendor
         read_only: true
         bind: {create_host_path: false}
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/vendor/qwen35_history/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history/vendor/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
         target: /usr/local/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py
         read_only: true
         bind: {create_host_path: false}

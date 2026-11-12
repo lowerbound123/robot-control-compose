@@ -10,8 +10,8 @@ services:
     restart: "no"
     platform: linux/amd64
     environment:
-      PYTHONPATH: /workspace/packages/pi05-policy/src
-      RC_SOURCE_MODULES: '{"rc_pi05_policy":"/workspace/packages/pi05-policy/src"}'
+      PYTHONPATH: /workspace/policy/pi05/src
+      RC_SOURCE_MODULES: '{"rc_pi05_policy":"/workspace/policy/pi05/src"}'
       USER: robot-control
       LOGNAME: robot-control
       HF_HOME: /data/huggingface
@@ -21,8 +21,8 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/packages/pi05-policy/src
-        target: /workspace/packages/pi05-policy/src
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/pi05/src
+        target: /workspace/policy/pi05/src
         read_only: true
         bind: {create_host_path: false}
       - type: bind

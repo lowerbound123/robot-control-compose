@@ -14,7 +14,7 @@ pytest.importorskip('lerobot.policies.pi05.configuration_pi05')
 
 from pi05_helpers import CAMERAS, native_checkpoint_fixture, tiny_pi05_architecture, write_json
 
-PACKAGE = Path(__file__).resolve().parents[1] / 'packages/pi05-policy/src'
+PACKAGE = Path(__file__).resolve().parents[1] / 'policy/pi05/src'
 if importlib.util.find_spec('rc_pi05_policy') is None:
     sys.path.insert(0, str(PACKAGE))
 

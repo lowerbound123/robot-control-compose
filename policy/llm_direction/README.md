@@ -1,0 +1,134 @@
+# 三路图像 LLM 离散动作策略
+
+`llm_direction` 把同一轮的 `head`、`left_wrist`、`right_wrist` RGB 图像和 task 交给视觉 LLM，再生成普通 `(T,14)` 绝对 `epos` 动作块。它可以独立运行，也可以作为原生链成员。网络请求发生在 policy worker 内，机器人指令仍由 RC 控制线程发送。
+
+## 执行规则
+
+每只手选一个动作，两只手同时执行：
+
+| 动作 | 含义 |
+| --- | --- |
+| `forward` / `backward` | 基座坐标系 +X / -X 平移 |
+| `left` / `right` | 基座坐标系 +Y / -Y 平移 |
+| `up` / `down` | 基座坐标系 +Z / -Z 平移 |
+| `twist-clockwise` / `twist-counterclockwise` | 工具局部 X 轴正向 / 反向旋转 |
+| `tilt-down-toward-table` / `tilt-up-away-from-table` | 工具局部 Y 轴正向 / 反向旋转 |
+| `turn-left-across-table` / `turn-right-across-table` | 工具局部 Z 轴正向 / 反向旋转 |
+| `open` / `close` | 仅改变对应夹爪目标 |
+| `noop` | 保持该手基准位姿和夹爪值 |
+
+这些名字、方向和旋转组合与 MCP 一致。LLM 不能指定距离、角度或任意机器人指令。默认每次移动 0.05 m 或旋转 0.1 rad，夹爪打开 -3.4、关闭 0；修改这些值应在 policy 配置中进行。
+
+当输入剩余长度 **大于** `request_when_remaining` 时直接透传，不发送 API 请求；小于等于时同步请求 LLM。新动作从输入最后一个目标继续插值；输入为空则从 `state.eef` 开始。保留输入并追加 `chunk_size` 行，位置与夹爪线性插值，旋转走最短球面插值。左右手都为 `noop` 时也生成保持动作块，之后继续观察与决策。
+
+默认 `sync`、`call_every_actions=1`、阈值 0、追加 30 行。只按照动作块剩余长度触发，**不等待实际到位反馈**。限速可能使一行目标需要多个控制周期才能发完，因此动作块长度并不承诺固定执行时长。框架在异步模式下仍按实际消费数量裁剪返回结果。
+
+模型报告 `done=true` 后，请求现有 `runtime.pause()`。独立 policy 或整链最终成功返回后，RC 丢弃该轮输出、清空缓存并暂停。再次 `resume` 会重新观察与决策；`done` 不是永久完成锁。
+
+## 配置 task、prompt 和供应商
+
+编辑 `policy/llm_direction/policy.yaml` 的 `params`。出厂 `task` 为空，必须填写后才能加载该策略；基础 hold 启动不受影响。
+
+| 字段 | 默认值 / 要求 |
+| --- | --- |
+| `task` | 必填任务文本 |
+| `prompt` | 可编辑的决策提示词；程序另行附加动作和输出契约 |
+| `request_when_remaining` | 0，非负且小于 `chunk_size` |
+| `chunk_size` | 30，每次追加数量，1–4096 |
+| `translation_m` / `rotation_rad` | 0.05 / 0.1，有限正数 |
+| `gripper_open` / `gripper_close` | -3.4 / 0，有限数值 |
+| `image_max_side` / `jpeg_quality` | 1024 / 85；保持比例、不放大小图 |
+| `provider_config_path` | 默认 `provider.yaml`，相对本策略来源目录，也可用容器内可见的绝对路径 |
+
+模型不接收历史图像或历史对话。图像以 JPEG data URL 直接通过 HTTPS/HTTP 发给配置的供应商，三张分别携带相机名称；不会上传到另一个图床。编码总长度上限 16 MiB。共享内存视图只在回调期间借用，lease 要等回调释放确认或进程树退出证明才能回收。
+
+运行 `setup` 后，在本策略目录的供应商文件中填写 `api_key`。每份 YAML 配置一个后端，顶层字段为 `type`、`model`、`base_url`、`api_key`、`timeout_s` 和 `output_format`。网络超时默认 30 秒，整轮推理还受 RC 的 `timeouts.inference_s` 限制。初始化和切换预检只读本地文件。自建服务也需要填写其接受的凭证或占位值。
+
+| 文件 | `type` | 接口 | `output_format` |
+| --- | --- | --- | --- |
+| `provider.yaml` | `deepseek` | DeepSeek Chat Completions | `json_object` |
+| `providers/openai_compatible.yaml` | `openai_compatible` | 自定义 Chat Completions | `json_schema`、`json_object` 或 `text` |
+| `providers/openai_decisions.yaml` | `openai_decisions` | OpenAI Decisions | `choice` |
+| `providers/openai.yaml` | `openai` | OpenAI Responses | `json_schema` |
+
+自定义供应商需要修改 `base_url`、`model` 与 `output_format`。`base_url` 为 API 前缀，不是完整 `/chat/completions` 地址；不得含密钥、用户名、查询参数或 fragment。无论是否支持服务端 JSON Schema，返回值都会在本地严格检查：只有 `left`、`right`、布尔 `done`，拒绝未知动作、重复键、额外字段和不完整输出。拒答、超时、格式错误、HTTP 错误会暂停；不会自动重试、修复 JSON、切换模型或切换接口。
+
+Decisions 使用单题 226 个联合选项（左右手 15×15，再加完成），避免把有依赖的双手选择拆成独立问题。Responses 使用严格 Structured Outputs 并设置 `store=false`；其他接口遵循各供应商的数据保留规则。
+
+官方参考：[DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)、[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions)、[Decisions 接口](https://developers.openai.com/api/reference/resources/decisions/methods/create)、[Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)。模型名称和账号可用范围由供应商决定。
+
+## Docker 构建与启动
+
+独立 Python 3.11 CPU 镜像不需要 GPU，不依赖 Qwen 的 CUDA 环境。Linux amd64 镜像可以在 x86 Ubuntu 22.04 上本机构建；在其他架构构建时可显式添加 `--platform linux/amd64`。
+
+```bash
+./setup.sh --policies hold,llm_direction
+# 在 policy.yaml 中填写 params.task，在选中的供应商 YAML 中填写 api_key
+./scripts/compose.sh up -d
+./scripts/compose.sh attach robot-control
+```
+
+首次启动整个项目可在 `up` 增加 `--build`，同时构建主框架与 hold。启动仍为 mock + hold，保持暂停。TUI 中输入：
+
+```text
+policy switch llm_direction
+policy llm_direction config show
+resume
+pause
+```
+
+使用 默认 policy switch 保留切换时的当前位置。切换成功仍保持暂停。终端 detach 使用 Ctrl-P、Ctrl-Q；`exit` 会关闭控制器。
+
+ROS 模拟器组合：
+
+```bash
+./scripts/compose.sh --profile ros-sim -f compose.ros-sim.yaml up -d
+```
+
+真实 ACOne 的 Linux host-network 组合：
+
+```bash
+ROS_DOMAIN_ID=0 ./scripts/compose.sh -f compose.acone.yaml up -d
+```
+
+之后的 attach、logs、stop、down 使用同一组文件和环境参数。机器人网络配置沿用 [Ubuntu 部署教程](../../docs/ubuntu22-amd64-from-scratch.md)。自定义 API 在宿主机时可用 `http://host.docker.internal:端口/v1`，覆盖文件已提供 Linux host-gateway 映射；服务需要监听容器可访问的宿主地址。容器内的 `127.0.0.1` 指向容器自身。
+
+此服务共享现有 IPC namespace 和 UDS 卷，不共享 PID namespace。健康检查只检查 host，不验证密钥、账户额度或模型权限。
+
+## 配置保存、链与退出
+
+配置入口由策略 configure 校验，所有 params 修改请求原进程 reinitialize；成功后暂停，再显式恢复。独立运行时例如：
+
+```text
+pause
+policy llm_direction config set params.task "把物体向前移一次，然后停止"
+policy llm_direction config set params.prompt "根据三张图像选择小步动作，确定完成后停止。"
+policy llm_direction config set params.request_when_remaining 2
+policy llm_direction config save
+resume
+```
+
+先在候选文件中填写密钥，然后在 TUI 中切换。需要下次启动也使用这个文件时，显式保存该实例。
+
+```text
+policy llm_direction switch-provider providers/openai.yaml
+policy llm_direction config save
+resume
+```
+
+候选文件未通过校验时，当前实例继续使用已加载的配置。校验通过后，RC 替换目标实例并暂停整链。更新同一文件里的模型或密钥时，再次执行相同命令即可。RC 的命令回执和配置保存只涉及所选路径。
+
+原生链通过 `policy manage` 编排，所有成员须为 `epos`。同一策略出现多次时，每个环节各有实例，例如 `policy llm_direction-1 switch-provider provider.yaml`。只重建指定实例并采用新路径，其他成员的模型保持驻留。使用 `policy llm_direction-1 config save` 可将该实例的选择写回来源目录，作为以后加载时的默认值。
+
+暂停、MCP 接管、配置冷重载和退出都会使旧动作失效。HTTP 请求可能仍需等返回或超时，迟到结果不能恢复动作。用户 `resume` 才允许下一次模型决策；硬超时或 worker 故障后先重新加载 policy。
+
+```bash
+./scripts/compose.sh stop
+./scripts/compose.sh down
+```
+
+更新镜像依赖后，重新运行该策略的 setup 构建步骤。正常停止先让 RC 结束回调与释放 policy，host 负责必要的进程树清理。失去释放证明的帧不能提前复用；全栈停止后 IPC namespace 最终销毁。输出、配置和快照绑定目录继续保留。
+
+## 准备与验证
+
+部署入口为 `policy/llm_direction/compose.yaml`，依赖锁和 Dockerfile 位于同目录；运行 `./setup.sh --policies llm_direction` 准备镜像。基础 up 仅启动 RC/anchor，选择该策略时才创建容器。使用 `./scripts/compose.sh down` 收尾，验证范围见 [verification.md](../../docs/verification.md)。

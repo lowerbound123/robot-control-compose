@@ -12,15 +12,16 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "packages/qwen35-policy/src"
+PACKAGE = ROOT / "policy/qwen35_single/src"
 sys.path.insert(0, str(PACKAGE))
 
 
-def backend_module():
-    assert importlib.util.find_spec("rc_qwen35_policy.backend") is not None, (
+def backend_module(workflow="single"):
+    module = "rc_qwen35_twostage" if workflow == "two_stage" else "rc_qwen35_policy"
+    assert importlib.util.find_spec(module + ".backend") is not None, (
         "Qwen35 backend missing"
     )
-    return importlib.import_module("rc_qwen35_policy.backend")
+    return importlib.import_module(module + ".backend")
 
 
 def test_backend_import_does_not_import_model_stack():
@@ -34,7 +35,7 @@ def test_backend_import_does_not_import_model_stack():
 
 
 def make_backend(workflow="single"):
-    return backend_module().Qwen35Backend(
+    return backend_module(workflow).Qwen35Backend(
         {
             "model": {
                 "checkpoint": "/tmp/checkpoint",
@@ -87,9 +88,10 @@ def cpu_torch(monkeypatch):
     return torch
 
 
-def test_finalize_mapping_unnormalize_delta_grippers_and_no_mutation(cpu_torch):
+@pytest.mark.parametrize('workflow', ['single', 'two_stage'])
+def test_finalize_mapping_unnormalize_delta_grippers_and_no_mutation(cpu_torch, workflow):
     torch = cpu_torch
-    b = make_backend()
+    b = make_backend(workflow)
     b.unnormalize = lambda data: {"action": data["action"] * 2 + 0.5}
     qpos = np.arange(14, dtype=np.float32)
     original = qpos.copy()
@@ -190,7 +192,7 @@ def test_two_stage_generates_every_three_predictions_and_reset(cpu_torch, monkey
 
     # Exercise the hot-update path with the real two-stage cache/generation
     # logic, replacing only model loading and the expensive model boundary.
-    from rc_qwen35_policy.runtime import AsyncQwenPolicy
+    from rc_qwen35_twostage.runtime import AsyncQwenPolicy
     from test_qwen35_runtime import metadata, settings
     from rc_policy_sdk.configuration import apply_patch
     manifest = {'params': {'task': None}, 'hot_reloadable': ['params.task']}
@@ -213,10 +215,10 @@ def test_two_stage_generates_every_three_predictions_and_reset(cpu_torch, monkey
 
 
 def test_vendor_is_self_contained_and_patch_is_pinned():
-    vendor = ROOT / "vendor/qwen35"
+    vendor = ROOT / "policy/qwen35_single/vendor"
     assert (vendor / "pyproject.toml").is_file(), "installable vendor runtime missing"
     assert (vendor / "SOURCE_MANIFEST.json").is_file()
-    assert (ROOT / "scripts/install_qwen35_patches.py").is_file()
+    assert (ROOT / "policy/qwen35_single/scripts/check_patches.py").is_file()
 
 
 def test_patch_validation_is_read_only_and_requires_current_source(tmp_path, monkeypatch):
@@ -293,12 +295,28 @@ def test_empty_generated_subtask_and_fast_prompt_stripping(cpu_torch, monkeypatc
     assert not seen["fast_token_mask"].any()
 
 
+@pytest.fixture(params=['qwen35_single', 'qwen35_twostage'])
+def owned_vendor(request, monkeypatch):
+    saved = {name: module for name, module in sys.modules.items()
+             if name == 'lerobot' or name.startswith('lerobot.')}
+    for name in saved:
+        del sys.modules[name]
+    folder = ROOT / 'policy' / request.param / 'vendor'
+    monkeypatch.syspath_prepend(str(folder))
+    yield folder
+    for name in list(sys.modules):
+        if name == 'lerobot' or name.startswith('lerobot.'):
+            del sys.modules[name]
+    sys.modules.update(saved)
+
+
 def test_real_vendor_import_config_roundtrip_and_transforms(
-    cpu_torch, monkeypatch, tmp_path
+    cpu_torch, monkeypatch, tmp_path, owned_vendor
 ):
     torch = cpu_torch
     pytest.importorskip("transformers")
-    monkeypatch.syspath_prepend(str(ROOT / "vendor/qwen35"))
+    import lerobot
+    assert Path(lerobot.__file__).is_relative_to(owned_vendor)
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.dataset_schemas import get_schema
     from lerobot.policies.qwen3_5vla_ki import transform_qwen3_5vla_ki as chat
@@ -384,7 +402,7 @@ def test_load_warmup_uses_checkpoint_config_and_rejects_wrong_chunk(
 ):
     torch = cpu_torch
     pytest.importorskip("transformers")
-    monkeypatch.syspath_prepend(str(ROOT / "vendor/qwen35"))
+    monkeypatch.syspath_prepend(str(ROOT / "policy/qwen35_single/vendor"))
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.qwen3_5vla_ki.transform_qwen3_5vla_ki import (
         Qwen3_5KIChatProcessorTransformFn,

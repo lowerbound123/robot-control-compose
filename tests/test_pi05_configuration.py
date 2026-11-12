@@ -10,7 +10,7 @@ import pytest
 from pi05_helpers import CAMERAS, checkpoint_fixture, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / 'packages/pi05-policy/src'
+PACKAGE = ROOT / 'policy/pi05/src'
 if importlib.util.find_spec('rc_pi05_policy') is None:
     sys.path.insert(0, str(PACKAGE))
 

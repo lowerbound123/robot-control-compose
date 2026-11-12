@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from history_helpers import ROOT, model_file
 
-sys.path.insert(0, str(ROOT / 'packages/qwen35-history-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/qwen35_history/src'))
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +16,7 @@ def isolated_vendor(monkeypatch):
     saved = {k:v for k,v in sys.modules.items() if k=='lerobot' or k.startswith('lerobot.')}
     for name in saved:
         del sys.modules[name]
-    monkeypatch.syspath_prepend(str(ROOT / 'vendor/qwen35_history'))
+    monkeypatch.syspath_prepend(str(ROOT / 'policy/qwen35_history/vendor'))
     yield
     for name in list(sys.modules):
         if name=='lerobot' or name.startswith('lerobot.'):
@@ -25,7 +25,7 @@ def isolated_vendor(monkeypatch):
 
 
 def implementation():
-    assert (ROOT / 'packages/qwen35-history-policy/src/rc_qwen35_history/backend.py').is_file(), 'backend missing'
+    assert (ROOT / 'policy/qwen35_history/src/rc_qwen35_history/backend.py').is_file(), 'backend missing'
     pytest.importorskip('torch')
     return importlib.import_module('rc_qwen35_history.backend').HistoryBackend
 

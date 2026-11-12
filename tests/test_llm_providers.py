@@ -9,7 +9,7 @@ from PIL import Image
 import pytest
 
 pytest.importorskip('openai', reason='provider tests require the optional LLM policy environment')
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'packages/llm-direction-policy/src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'policy/llm_direction/src'))
 from rc_llm_direction.actions import Decision
 from rc_llm_direction.providers import ProviderClient
 from rc_llm_direction.errors import ProviderError

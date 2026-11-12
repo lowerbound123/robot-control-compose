@@ -3,15 +3,15 @@ services:
     image: robot-control-compose-qwen35-history:local
     build:
       context: ../..
-      dockerfile: policy/qwen35_history/Dockerfile
+      dockerfile: policy/qwen35_history_lift2/Dockerfile
       target: runtime
       additional_contexts:
-        policy-deps: ../qwen35_history/dependencies
+        policy-deps: ./dependencies
     restart: "no"
     platform: linux/amd64
     environment:
-      PYTHONPATH: /workspace/packages/qwen35-history-policy/src:/workspace/vendor/qwen35_history
-      RC_SOURCE_MODULES: '{"rc_qwen35_history":"/workspace/packages/qwen35-history-policy/src","lerobot":"/workspace/vendor/qwen35_history"}'
+      PYTHONPATH: /workspace/policy/qwen35_history_lift2/src:/workspace/policy/qwen35_history_lift2/vendor
+      RC_SOURCE_MODULES: '{"rc_qwen35_history_lift2":"/workspace/policy/qwen35_history_lift2/src","lerobot":"/workspace/policy/qwen35_history_lift2/vendor"}'
       USER: robot-control
       LOGNAME: robot-control
       HF_HOME: /data/huggingface
@@ -19,17 +19,17 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/packages/qwen35-history-policy/src
-        target: /workspace/packages/qwen35-history-policy/src
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history_lift2/src
+        target: /workspace/policy/qwen35_history_lift2/src
         read_only: true
         bind: {create_host_path: false}
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/vendor/qwen35_history
-        target: /workspace/vendor/qwen35_history
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history_lift2/vendor
+        target: /workspace/policy/qwen35_history_lift2/vendor
         read_only: true
         bind: {create_host_path: false}
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/vendor/qwen35_history/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history_lift2/vendor/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
         target: /usr/local/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py
         read_only: true
         bind: {create_host_path: false}

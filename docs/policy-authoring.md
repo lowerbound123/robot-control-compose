@@ -39,6 +39,8 @@ services:
 
 image 只包含策略的第三方依赖并提供 `python` 命令；SDK 由管理器只读挂载。可添加 build、环境、GPU 和 bind mounts；部署配置归本目录。管理器注入唯一实例 host ID、socket、run/generation、用户身份、共享 rpc 卷、IPC anchor、只读 SDK 及本策略目录。host 的 `--source-policy-id` 固定来源目录，默认与 host ID 相同；实例 `a-0`、`a-1` 都从 `/workspace/policy/a` 加载，实现代码与相对资源路径保持原样。不要声明 sidecar、host PID、Docker socket 或 privileged。
 
+业务模块放在 `policy/<来源>/src/`，专用模型源码放在本目录 `vendor/`，构建输入、校验/迁移脚本和文档也归本来源。每个来源独立持有自己的实现，不从仓库级业务包或兄弟 policy 目录导入；公共 SDK 是基础接口，继续由管理器提供。实际权重和下载缓存可外部挂载。复制策略时使用独立的业务模块命名空间，避免同一验收进程导入两个来源时串用模块。
+
 相对 bind source 以策略目录为基准，由框架转换到宿主路径。Compose env 为本目录的 `deployment.env`。需要外部目录时写清宿主路径并提前创建。发现只读声明与文件是否存在，不 import main.py；新 Python 语法只由目标容器预检。
 
 非 external 网络由管理器按运行实例项目重命名并独立清理，包括 Compose 自动生成及显式 `name` 的网络；其余网络选项保留。需要跨实例共用的已有网络应声明 `external: true`，其名称保持原配置，管理器不负责创建或清理。
@@ -47,12 +49,12 @@ image 只包含策略的第三方依赖并提供 `python` 命令；SDK 由管理
 
 ```yaml
     environment:
-      PYTHONPATH: /workspace/packages/my-policy/src
-      RC_SOURCE_MODULES: '{"my_policy":"/workspace/packages/my-policy/src"}'
+      PYTHONPATH: /workspace/policy/my_policy/src
+      RC_SOURCE_MODULES: '{"my_policy":"/workspace/policy/my_policy/src"}'
     volumes:
       - type: bind
-        source: ${RC_HOST_PROJECT_ROOT}/packages/my-policy/src
-        target: /workspace/packages/my-policy/src
+        source: ${RC_HOST_PROJECT_ROOT}/policy/my_policy/src
+        target: /workspace/policy/my_policy/src
         read_only: true
         bind: {create_host_path: false}
 ```

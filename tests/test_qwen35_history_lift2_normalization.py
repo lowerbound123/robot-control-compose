@@ -19,6 +19,11 @@ ACTION_STD = np.arange(14, dtype=np.float32) / 10 + .5
 MODEL_COLUMNS = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 15]
 
 
+@pytest.fixture(autouse=True)
+def lift2_vendor(isolated_vendor, monkeypatch):
+    monkeypatch.syspath_prepend(str(SOURCE / 'vendor'))
+
+
 @pytest.fixture
 def mixed_checkpoint(tmp_path):
     path = model_file(tmp_path)
@@ -37,7 +42,7 @@ def mixed_checkpoint(tmp_path):
 
 
 def test_checkpoint_selects_lift2_statistics_and_keeps_acone_default(mixed_checkpoint):
-    from rc_qwen35_history.configuration import checkpoint_assets
+    from rc_qwen35_history_lift2.configuration import checkpoint_assets
     directory = mixed_checkpoint.parent / 'weights'
     _, _, lift2 = checkpoint_assets(directory, robot_type='arx_lift2')
     _, _, acone = checkpoint_assets(directory)
@@ -51,7 +56,7 @@ def test_checkpoint_selects_lift2_statistics_and_keeps_acone_default(mixed_check
 
 @pytest.mark.parametrize('broken', ['missing', 'shape', 'negative_std', 'nonfinite', 'unknown_robot'])
 def test_invalid_lift2_statistics_never_fall_back_to_valid_acone(mixed_checkpoint, broken):
-    from rc_qwen35_history.configuration import checkpoint_assets
+    from rc_qwen35_history_lift2.configuration import checkpoint_assets
     stats_path = mixed_checkpoint.parent / 'weights/stats.json'
     data = json.loads(stats_path.read_text())
     if broken == 'missing':
@@ -70,7 +75,7 @@ def test_invalid_lift2_statistics_never_fall_back_to_valid_acone(mixed_checkpoin
 
 @pytest.mark.parametrize('has_lift2', [True, False])
 def test_initialize_configure_and_switch_model_bind_lift2_preflight(tmp_path, monkeypatch, has_lift2):
-    from rc_qwen35_history import backend as shared_backend
+    from rc_qwen35_history_lift2 import backend as shared_backend
     module = entry()
     path = model_file(tmp_path, robot_type='arx_lift2' if has_lift2 else 'arx_acone')
     manifest = read_config(SOURCE / 'policy.yaml.example')
@@ -112,7 +117,7 @@ def test_initialize_configure_and_switch_model_bind_lift2_preflight(tmp_path, mo
 @pytest.mark.parametrize('action_mode', ['delta', 'abs'])
 def test_real_transforms_use_lift2_state_and_action_stats_and_preserve_layout(mixed_checkpoint, action_mode):
     torch = pytest.importorskip('torch')
-    from rc_qwen35_history.backend import HistoryBackend
+    from rc_qwen35_history_lift2.backend import HistoryBackend
     module = entry()
     train_path = mixed_checkpoint.parent / 'weights/train_config.json'
     train = json.loads(train_path.read_text())

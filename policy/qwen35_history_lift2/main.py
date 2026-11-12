@@ -6,8 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
-from rc_qwen35_history.configuration import load_model_config as _load_model_config, validate_manifest
-from rc_qwen35_history.runtime import HistoryPolicy as BaseHistoryPolicy
+from rc_qwen35_history_lift2.configuration import load_model_config as _load_model_config, validate_manifest
+from rc_qwen35_history_lift2.runtime import HistoryPolicy as BaseHistoryPolicy
 
 POLICY_ROOT = Path(__file__).resolve().parent
 ROBOT_TYPE = 'arx_lift2'

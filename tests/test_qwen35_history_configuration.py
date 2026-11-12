@@ -5,11 +5,11 @@ import sys
 import pytest
 from history_helpers import ROOT, model_file
 
-sys.path.insert(0, str(ROOT / 'packages/qwen35-history-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/qwen35_history/src'))
 
 
 def implementation():
-    assert (ROOT / 'packages/qwen35-history-policy/src/rc_qwen35_history/configuration.py').is_file(), 'configuration missing'
+    assert (ROOT / 'policy/qwen35_history/src/rc_qwen35_history/configuration.py').is_file(), 'configuration missing'
     return importlib.import_module('rc_qwen35_history.configuration')
 
 

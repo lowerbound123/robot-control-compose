@@ -9,12 +9,12 @@ from config_helpers import read_config
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ('example', 'hold', 'llm_direction', 'llm_failure', 'pi05',
-           'qwen35_single', 'qwen35_twostage', 'qwen35_history', 'internvla_maas')
+           'qwen35_single', 'qwen35_twostage', 'qwen35_history', 'qwen35_history_lift2', 'internvla_maas')
 
 
 @pytest.fixture
 def entry(monkeypatch):
-    for directory in (ROOT / 'packages').glob('*/src'):
+    for directory in [*(ROOT/'packages').glob('*/src'), *(ROOT/'policy').glob('*/src')]:
         monkeypatch.syspath_prepend(str(directory))
 
     def load(source):

@@ -7,7 +7,7 @@ import sys
 import pytest
 from project_templates import template_path
 
-PACKAGE = Path(__file__).resolve().parents[1] / 'packages/qwen35-policy/src'
+PACKAGE = Path(__file__).resolve().parents[1] / 'policy/qwen35_single/src'
 sys.path.insert(0, str(PACKAGE))
 
 
@@ -135,7 +135,7 @@ def test_supported_source_dual_arm_schema_still_loads(model_config):
 
 def test_preflight_schema_choices_match_bundled_three_camera_dual_arm_layout(monkeypatch):
     pytest.importorskip('torch')
-    monkeypatch.syspath_prepend(str(PACKAGE.parents[2] / 'vendor/qwen35'))
+    monkeypatch.syspath_prepend(str(PACKAGE.parents[2] / 'policy/qwen35_single/vendor'))
     from lerobot.dataset_schemas import get_registry, get_schema
     from rc_qwen35_policy.statistics import SUPPORTED_SCHEMAS
     for name in SUPPORTED_SCHEMAS:

@@ -1,0 +1,15 @@
+--index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# The local version suffix prevents accidentally resolving a CPU/CUDA 13 build.
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+transformers==5.2.0
+numpy==2.2.6
+posix-ipc==1.3.2
+draccus>=0.10,<0.11
+safetensors>=0.4.3
+huggingface-hub>=1.3,<2
+packaging>=23
+PyYAML>=6
+typing-extensions>=4.12

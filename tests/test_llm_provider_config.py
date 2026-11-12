@@ -38,7 +38,7 @@ def prepare(tmp_path, policy, relative, monkeypatch):
         docker_socket='/tmp/test.sock', docker_gid=1000))
     (tmp_path / '.env.example').touch()
     setup(tmp_path, [], config_only=True)
-    monkeypatch.syspath_prepend(str(ROOT / 'packages' / (policy.replace('_', '-') + '-policy') / 'src'))
+    monkeypatch.syspath_prepend(str(ROOT / 'policy' / policy / 'src'))
     spec = importlib.util.spec_from_file_location(policy + '_entry', folder / 'main.py')
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)

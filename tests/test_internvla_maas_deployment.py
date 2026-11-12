@@ -53,9 +53,9 @@ def test_compose_needs_no_gpu_weights_or_extra_base_services():
     service = model['services']['policy']
     assert service['image'] == 'robot-control-compose-internvla-maas:local'
     assert service.get('deploy', {}).get('resources', {}).get('reservations', {}).get('devices') is None
-    assert {v['target'] for v in service['volumes']} == {'/workspace/packages/internvla-maas-policy/src'}
+    assert {v['target'] for v in service['volumes']} == {'/workspace/policy/internvla_maas/src'}
     assert json.loads(service['environment']['RC_SOURCE_MODULES']) == {
-        'rc_internvla_maas': '/workspace/packages/internvla-maas-policy/src'}
+        'rc_internvla_maas': '/workspace/policy/internvla_maas/src'}
 
 
 def test_selected_scope_includes_new_policy_and_example_only():

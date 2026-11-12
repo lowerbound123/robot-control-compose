@@ -35,7 +35,7 @@ def folder(tmp_path):
 
 def migrate(root, *options):
     return subprocess.run(
-        [sys.executable, str(ROOT / 'scripts/migrate_llm_failure_prompts.py'), '--root', str(root), *options],
+        [sys.executable, str(ROOT / 'policy/llm_failure/scripts/migrate_prompts.py'), '--root', str(root), *options],
         capture_output=True, text=True, check=False)
 
 
@@ -216,7 +216,8 @@ def test_external_and_symlink_locations_require_manual_migration(tmp_path, folde
 def test_retry_after_write_failure_keeps_legacy_fields_until_every_profile_is_ready(tmp_path, folder, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / 'scripts'))
     import config_files
-    import migrate_llm_failure_prompts
+    monkeypatch.syspath_prepend(str(ROOT / 'policy/llm_failure/scripts'))
+    import migrate_prompts as migrate_llm_failure_prompts
 
     write = config_files.atomic_bytes
 
@@ -239,7 +240,8 @@ def test_retry_after_write_failure_keeps_legacy_fields_until_every_profile_is_re
 def test_file_created_during_migration_keeps_its_private_edits_for_retry(tmp_path, folder, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / 'scripts'))
     import config_files
-    import migrate_llm_failure_prompts
+    monkeypatch.syspath_prepend(str(ROOT / 'policy/llm_failure/scripts'))
+    import migrate_prompts as migrate_llm_failure_prompts
 
     new_profile = folder / DEEPSEEK
     before = (folder / 'policy.yaml').read_bytes()
@@ -263,7 +265,8 @@ def test_file_created_during_migration_keeps_its_private_edits_for_retry(tmp_pat
 
 def test_concurrent_edit_before_commit_keeps_the_new_credential(tmp_path, folder, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / 'scripts'))
-    import migrate_llm_failure_prompts
+    monkeypatch.syspath_prepend(str(ROOT / 'policy/llm_failure/scripts'))
+    import migrate_prompts as migrate_llm_failure_prompts
 
     profile, manifest = folder / DEEPSEEK, folder / 'policy.yaml'
     profile.write_text(OLD)

@@ -112,7 +112,7 @@ def host(evidence):
     policy_image = os.environ.get('RC_TEST_MAAS_IMAGE', 'robot-control-compose-internvla-maas:local')
     with tempfile.TemporaryDirectory(prefix='rc-maas-smoke-') as temporary:
         directory = Path(temporary)
-        for name in ('src', 'packages/policy-sdk', 'packages/connector-sdk', 'packages/internvla-maas-policy', 'docker'):
+        for name in ('src', 'packages/policy-sdk', 'packages/connector-sdk', 'docker'):
             shutil.copytree(ROOT / name, directory / name, ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
         (directory / 'configs').mkdir()
         shutil.copyfile(ROOT / '.env.example', directory / '.env.example')

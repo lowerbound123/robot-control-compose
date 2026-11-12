@@ -1,6 +1,6 @@
 # qwen35_history_lift2
 
-正式的独立 policy 来源，使用 LIFT2 的状态/动作统计量和夹爪输出规则。复用 `qwen35_history` 的历史视觉、模型后端、推理调度和依赖镜像；本目录拥有独立入口、manifest、模型配置与部署配置。每个运行实例仍独占容器、host、执行进程和 context。
+正式的独立 policy 来源，使用 LIFT2 的状态/动作统计量和夹爪输出规则。本目录独立持有入口、`src/rc_qwen35_history_lift2/` 业务实现、`vendor/` 模型源码、manifest、模型配置与部署配置；历史和调度行为与原 history 保持一致。每个运行实例仍独占容器、host、执行进程和 context。
 
 ## 归一化与夹爪
 
@@ -25,9 +25,9 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 ./setup.sh --policies qwen35_history_lift2 --connectors mock
 ```
 
-核对本目录自己的 `deployment.env` 与 `model.json`。依赖使用已有的 `robot-control-compose-qwen35-history:local` 镜像，构建声明复用原 history 的 Dockerfile 和依赖锁文件；仅修改本策略入口不需要重新构建依赖镜像。
+核对本目录自己的 `deployment.env` 与 `model.json`。依赖使用已有的 `robot-control-compose-qwen35-history:local` 镜像，本目录自带 Dockerfile 和依赖锁文件，构建输入与原 history 相同；仅修改本策略入口不需要重新构建依赖镜像。
 
-本策略仍要求 `qwen3_5_context_video_ki` 类型的 history 模型，且其 `stats.json` 必须含 `arx_lift2`。历史采样和任务文本约定沿用原 history，不会自动更换模型或适配参考仓库中的旧 `qwen3_5vla_ki` 权重。原 history 的依赖镜像与源码挂载方式可继续复用，无需为归一化切换安装新依赖。
+本策略仍要求 `qwen3_5_context_video_ki` 类型的 history 模型，且其 `stats.json` 必须含 `arx_lift2`。历史采样和任务文本约定沿用原 history，不会自动更换模型或适配参考仓库中的旧 `qwen3_5vla_ki` 权重。依赖镜像可继续共用；源码仅挂载本目录的 `src/` 和 `vendor/`，无需为归一化切换安装新依赖。
 
 RC 中可独立选择和配置：
 
@@ -39,7 +39,7 @@ policy qwen35_history_lift2 config set params.task "新的任务"
 
 切换完成后保持暂停；确认设备、模型和任务后再显式 `resume`。`switch-task`、`switch-model`、monitor、重初始化和重载接口与原 history 相同，也可将本来源放入原生 chain。切换 connector 不会自动替换 policy。
 
-用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。指标与原 history 共用，详见[策略监控说明](../../docs/qwen35-history-policy.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
+用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。指标与原 history 一致，详见[策略监控说明](docs/runtime.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
 
 ## 定向验证
 

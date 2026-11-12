@@ -33,7 +33,7 @@ def test_independent_entries_bind_workflow_and_use_registered_reload(identity, w
     value['model']['workflow'] = workflow
     path.write_text(json.dumps(value))
     config['params']['model_config_path'] = str(path)
-    from rc_qwen35_policy.runtime import AsyncQwenPolicy
+    AsyncQwenPolicy = module.AsyncQwenPolicy
     backend = Model()
     monkeypatch.setattr(module, 'AsyncQwenPolicy', lambda value, **kwargs: AsyncQwenPolicy(value, backend=backend, **kwargs))
     context = module.initialize(config, runtime=metadata(0))
@@ -97,7 +97,8 @@ def test_entry_discovery_does_not_import_model_framework(tmp_path, identity):
     registry = PolicyRegistry(tmp_path / 'policy')
     assert registry.get(identity).config['id'] == identity
     assert 'conda_env' not in registry.get(identity).config
-    script = 'import sys; import rc_qwen35_policy; assert not ({"torch", "transformers", "rclpy"} & sys.modules.keys())'
+    package = 'rc_qwen35_twostage' if identity=='qwen35_twostage' else 'rc_qwen35_policy'
+    script = 'import sys; import '+package+'; assert not ({"torch", "transformers", "rclpy"} & sys.modules.keys())'
     result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
-                            env={'PYTHONPATH': str(ROOT / 'packages/qwen35-policy/src')})
+                            env={'PYTHONPATH': str(ROOT / 'policy' / identity / 'src')})
     assert result.returncode == 0, result.stderr

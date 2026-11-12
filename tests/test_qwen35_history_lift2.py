@@ -14,7 +14,7 @@ from test_qwen35_history_runtime import Backend, config as runtime_config, frame
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'policy/qwen35_history_lift2'
-sys.path.insert(0, str(ROOT / 'packages/qwen35-history-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/qwen35_history/src'))
 ARM_COLUMNS = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
 
 
@@ -87,10 +87,10 @@ def test_independent_configuration_and_shared_dependency_image_are_discoverable(
     assert (SOURCE / 'model.json.example').read_bytes() == (ROOT / 'policy/qwen35_history/model.json.example').read_bytes()
     service = load_yaml_config(SOURCE / 'compose.yaml')['services']['policy']
     assert service['image'] == 'robot-control-compose-qwen35-history:local'
-    assert service['build']['dockerfile'] == 'policy/qwen35_history/Dockerfile'
-    assert (SOURCE / service['build']['additional_contexts']['policy-deps']).resolve() == ROOT / 'policy/qwen35_history/dependencies'
+    assert service['build']['dockerfile'] == 'policy/qwen35_history_lift2/Dockerfile'
+    assert (SOURCE / service['build']['additional_contexts']['policy-deps']).resolve() == SOURCE / 'dependencies'
     assert service['restart'] == 'no'
-    assert json.loads(service['environment']['RC_SOURCE_MODULES'])['rc_qwen35_history'] == '/workspace/packages/qwen35-history-policy/src'
+    assert json.loads(service['environment']['RC_SOURCE_MODULES'])['rc_qwen35_history_lift2'] == '/workspace/policy/qwen35_history_lift2/src'
     assert all(mount['read_only'] for mount in service['volumes'] if mount['target'] != '/data/huggingface')
 
 
@@ -150,7 +150,7 @@ def HistoryPolicy(config, *, policy_config, project_root):
 ''')
     shutil.copyfile(ROOT / 'tests/fixtures/history_test_backend.py', directory / 'test_backend.py')
     (directory / 'controls.json').write_text(json.dumps({'value': .1}))
-    monkeypatch.setenv('PYTHONPATH', str(ROOT / 'packages/qwen35-history-policy/src') + os.pathsep + os.environ.get('PYTHONPATH', ''))
+    monkeypatch.setenv('PYTHONPATH', str(SOURCE / 'src') + os.pathsep + os.environ.get('PYTHONPATH', ''))
     config = read_config(ROOT / 'configs/rc.mock.yaml.example')
     config['safety']['enabled'] = False
     config.update(policy_directory=str(directory.parent), startup_policy='qwen35_history_lift2',

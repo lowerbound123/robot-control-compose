@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def copy_runtime_sources(destination):
     # No configs, credentials, output files or host bytecode enter the fixture.
-    for name in ('src', 'packages', 'docker', 'vendor/qwen35', 'ros_ws/src/robot_control_test_sim'):
+    for name in ('src', 'packages', 'docker', 'ros_ws/src/robot_control_test_sim'):
         shutil.copytree(ROOT / name, Path(destination) / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.egg-info', '.DS_Store'))
     copy_connectors(destination)

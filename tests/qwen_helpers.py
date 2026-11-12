@@ -16,6 +16,9 @@ def prepare_policies(root, identities=IDENTITIES):
         if identity not in identities:
             continue
         directory = root / identity
+        for name in ('src','vendor'):
+            shutil.copytree(ROOT/'policy'/identity/name,directory/name,
+                            ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         checkpoint = directory / 'weights'
         checkpoint.mkdir(parents=True, exist_ok=True)
         manifest = read_config(template_path(ROOT / 'policy' / identity / 'policy.yaml'))

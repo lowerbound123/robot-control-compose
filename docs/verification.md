@@ -201,7 +201,7 @@ RC/SDK 0.14，manifest 保持 schema 3。覆盖命名连接、默认原进程重
 
 ## Qwen3.5 视觉历史策略（2026-11-06）
 
-新增独立 `qwen35_history`，使用现有每动作回调、消费计数和生命周期，不修改RC/SDK接口或旧Qwen。实现及部署边界见 [策略说明](qwen35-history-policy.md)。
+新增独立 `qwen35_history`，使用现有每动作回调、消费计数和生命周期，不修改RC/SDK接口或旧Qwen。实现及部署边界见 [策略说明](../policy/qwen35_history/README.md)。
 
 - 完整所选范围 `python3 scripts/test_scope.py --policy qwen35_history`：**120 passed、13 skipped**，55.88秒。包含example基线、同步/异步X步调度、历史、正式入口、真实本地host/worker与POSIX图像租约、任务热改和实例冷重载。宿主没有Torch/Transformers，11个CPU后端用例和1个图测试模块在这里跳过；另1项需要ROS。
 - 独立Python3.11 / Torch2.10 / torchvision0.25 / Transformers5.2 CPU环境：后端、图回退、调度、配置和部署静态套件 **53 passed、1 skipped**，2.43秒。覆盖实际张量处理、三路输入、历史量化、32↔14维映射、delta/abs与quantile归一化、FP32专家投影、Euler更新、非有限图差异回退及源补丁delta-rule数值。唯一跳过项为真实NVIDIA CUDA捕获回放。
@@ -257,8 +257,8 @@ Linux / OrbStack arm64、三路 640×480、开启录制时，各测量约 30 秒
 | 改动 | 命令 | 验证范围 |
 | --- | --- | --- |
 | RC 内部、TUI、录制等改动，策略看到的契约不变；或只改 example | `python3 scripts/test_scope.py` | 运行完整 example 基线；具体模块改动另补对应 RC 单测。链只启动两个 example，其他业务策略不参与。 |
-| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage、qwen35_history、internvla_maas；可同时列多个来源。 |
-| 两个策略共用的实现或依赖变化 | 例如 `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage` | 单选 Qwen 测该入口、部署和 worker；两个都选时再加共享配置、调度、后端和 CUDA 用例。变更 llm-provider-config 时选 llm_direction 和 llm_failure。 |
+| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、qwen35_single、qwen35_twostage、qwen35_history、qwen35_history_lift2、internvla_maas；可同时列多个来源。 |
+| 同时修改多个策略的实现或依赖 | 例如 `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage` | 单选 Qwen 测该入口、部署和 worker；两个都选时再加配置、调度、后端和 CUDA 用例。每个策略独立持有业务实现；若同时修改两个 LLM 的 provider 读取逻辑，选 llm_direction 和 llm_failure。 |
 | RC↔policy/SDK 公共契约改变 | `python3 scripts/test_scope.py --interface` | 整个 pytest 套件，含 RC、SDK、example、业务策略和跨策略对照；按所需环境追加 Docker/模型兼容性验证。 |
 
 所有命令都可加 `--collect-only` 先看范围。无参数的 `python3 -m pytest` 仍表示全套。新增策略时，将该来源的专属测试登记在 [test_scope.py](../scripts/test_scope.py)。仅改 RC 实现并不自动升级范围；如果回调签名、action/state/images 形状、命令/manifest、热改确认、退出/租约证明或 MCP 等待 policy 结果的语义变了，即使函数名没变，也属于接口变更。策略专属模型输出、权重、CUDA 和供应商协议由对应策略验证，不能用 example 推断。
@@ -344,7 +344,7 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 ## InternVLA MaaS 网络策略（2026-11-04）
 
-实现与配置见 [网络策略说明](internvla-maas-policy.md)。本轮没有修改 RC↔SDK 公共契约，也没有修改 Qwen 实现；服务地址、身份和凭据由用户提供。
+实现与配置见 [网络策略说明](../policy/internvla_maas/README.md)。本轮没有修改 RC↔SDK 公共契约，也没有修改 Qwen 实现；服务地址、身份和凭据由用户提供。
 
 - 最终 `python3 scripts/test_scope.py --policy internvla_maas`：**127 passed、1 skipped**，33.01 秒。覆盖 example 基线及配置、msgpack-numpy 安全解码、真实 WebSocket、异步补块、夹爪开关、取消/故障、部署发现与真实 host/worker 冷切换。宿主缺少 ROS 的跳过不计通过。
 - Python 3.11.17 / Linux 策略测试镜像：**71 passed**，0.70 秒；单独 Humble / Python 3.10 example ROS 仿真：**1 passed**，2.80 秒。
@@ -380,7 +380,7 @@ docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
 
 ## Qwen 任务热更新第一阶段（2026-11-04）
 
-本节记录首次通过 `set policy.params.task` 接入热参数时的验证：两个 Qwen 复用既有白名单热补丁与配置版本确认，当时未改 RC/SDK 公共协议；后续注册命令的契约扩展见上一节。使用与旧配置迁移见 [Qwen 策略说明](qwen35-policy.md#任务文本热更新)。
+本节记录首次通过 `set policy.params.task` 接入热参数时的验证：两个 Qwen 复用既有白名单热补丁与配置版本确认，当时未改 RC/SDK 公共协议；后续注册命令的契约扩展见上一节。使用与旧配置迁移见 [Qwen 策略说明](../policy/qwen35_single/README.md#任务文本热更新)。
 
 - `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage`：**109 passed、9 skipped**，36.12 秒。包含 example 基线、两个正式入口和真实 RC/host/worker、热补丁版本同步、保存与 null 回退；宿主缺少模型依赖和 ROS 的跳过不计通过。
 - Linux / Python 3.11.17 的 Qwen 配置、入口、调度、CPU 后端和 CUDA 回退套件：**67 passed、4 skipped**，11.99 秒。实际两阶段缓存测试确认任务变化后立即重新生成子任务、模型对象保持不变；4 项跳过均需要 NVIDIA CUDA 设备。
@@ -450,7 +450,7 @@ docker run --rm --shm-size=512m \
   --mount "type=bind,source=$PWD,target=/workspace,readonly" \
   -e HOME=/tmp \
   -e RC_SOURCE_MODULES='{"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}' \
-  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/qwen35-policy/src:/workspace/packages/llm-direction-policy/src:/workspace/packages/llm-failure-policy/src:/workspace/packages/llm-provider-config/src:/workspace/packages/pi05-policy/src:/workspace/ros_ws/src/robot_control_test_sim \
+  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src:/workspace/ros_ws/src/robot_control_test_sim \
   -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   robot-control-compose-dynamic-tests:local \
   python3 -m pytest -p pytest_asyncio.plugin -q -p no:cacheprovider
@@ -489,7 +489,7 @@ python3 tests/global_state_docker_smoke.py
 python3 tests/dynamic_docker_smoke.py
 ```
 
-Qwen 导入探针 `tests/qwen_image_probe.py` 必须使用与策略 Compose 相同的 SDK、实现包、vendor 和直接补丁挂载；它核对第三方版本、源码位置和当前源文件哈希，不要求本项目包的已安装发行元数据。Pi05 的 PYTHONPATH 不包含 Qwen vendor，使用镜像中锁定的官方 LeRobot。GPU 和真机测试仍需在目标设备另行执行。
+Qwen 导入探针 `tests/qwen_image_probe.py` 必须使用与策略 Compose 相同的 SDK、实现包、vendor 和直接补丁挂载；默认检查 qwen35_single，使用 `--policy qwen35_twostage` 检查双阶段策略自己的目录。它核对第三方版本、源码位置和当前源文件哈希，不要求本项目包的已安装发行元数据。Pi05 的 PYTHONPATH 不包含 Qwen vendor，使用镜像中锁定的官方 LeRobot。GPU 和真机测试仍需在目标设备另行执行。
 
 ## 链按环节独立实例验收（2026-10-30）
 
@@ -535,7 +535,7 @@ Mock 核对 5394 个唯一采样 PNG 的无损像素、四份 CSV 和实际 poli
 
 ## llm_failure GPT Decisions 后端（2026-10-30）
 
-新增默认关闭的 `params.decision_api` 配置组，启用后使用独立模型、地址、密钥和超时；关闭或省略时保持 DeepSeek。请求为单个二选一 choice 问题，严格解析为失败布尔值，不重试或回退。详见 [配置与协议说明](llm-failure-policy.md)。
+新增默认关闭的 `params.decision_api` 配置组，启用后使用独立模型、地址、密钥和超时；关闭或省略时保持 DeepSeek。请求为单个二选一 choice 问题，严格解析为失败布尔值，不重试或回退。详见 [配置与协议说明](../policy/llm_failure/README.md)。
 
 - 锁定 OpenAI SDK 3.37.0 的完整主机套件：1131 passed，29 skipped，363.78 秒。
 - 完整 Linux/ROS 套件：1032 passed，31 skipped，412.74 秒。两套均有 13 条已有 Pillow 弃用警告。

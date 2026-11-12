@@ -5,7 +5,6 @@ import threading
 import time
 
 import numpy as np
-from rc_qwen35_history.runtime import HistoryPolicy as RealPolicy
 
 
 class Model:
@@ -43,6 +42,7 @@ class Model:
 
 
 def factory(config, *, policy_config, project_root):
+    from rc_qwen35_history.runtime import HistoryPolicy as RealPolicy
     # LocalPolicyProcess copies code into its host root. Keep test observations
     # beside the explicitly configured model file, outside that temporary copy.
     root = Path(policy_config['params']['model_config_path']).parent

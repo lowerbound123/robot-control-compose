@@ -10,7 +10,7 @@ import numpy as np
 from config_helpers import read_config
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'packages/llm-failure-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/llm_failure/src'))
 
 
 def provider_settings(*, profile='provider.yaml.example', **changes):

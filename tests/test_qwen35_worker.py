@@ -22,7 +22,7 @@ class ThreeCameraRobot(MockRobot):
 
 @pytest.fixture(params=('qwen35_single', 'qwen35_twostage'))
 def qwen_controller(tmp_path, monkeypatch, request):
-    package = str(ROOT / 'packages/qwen35-policy/src')
+    package = str(ROOT / 'policy' / request.param / 'src')
     monkeypatch.setenv('PYTHONPATH', package + os.pathsep + os.environ.get('PYTHONPATH', ''))
     identity = request.param
     root = prepare_policies(tmp_path / 'policy', (identity,))

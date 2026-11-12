@@ -9,11 +9,11 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'packages/qwen35-history-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/qwen35_history/src'))
 
 
 def implementation():
-    assert (ROOT / 'packages/qwen35-history-policy/src/rc_qwen35_history/runtime.py').is_file(), 'history policy runtime missing'
+    assert (ROOT / 'policy/qwen35_history/src/rc_qwen35_history/runtime.py').is_file(), 'history policy runtime missing'
     return importlib.import_module('rc_qwen35_history.runtime').HistoryPolicy
 
 

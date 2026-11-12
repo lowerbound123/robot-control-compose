@@ -71,6 +71,10 @@ exit
 policy/my_policy/
   policy.yaml
   main.py
+  src/my_policy/      # 本策略独立持有的业务实现
+  vendor/             # 可选，本策略专用的模型源码与来源记录
+  scripts/            # 可选，本策略专用工具
+  docs/               # 可选，本策略专用资料
   compose.yaml        # 恰好一个服务 policy，明确 image
   deployment.env      # 可选，本机部署参数
   Dockerfile          # 可选，准备镜像时使用
@@ -79,6 +83,8 @@ policy/my_policy/
 目录名是策略来源身份，格式 `[a-z0-9][a-z0-9_-]{0,47}`；manifest 的 `id` 可省略，存在时必须同名。运行实例的 socket 自动派生为 `/run/robot-control/<instance_id>.sock`，实例名最长 64 字符。正式 manifest 没有 `.example` 也能发现；发现和帮助不会导入策略 Python。
 
 新增目录后运行 `./setup.sh --policies my_policy` 准备镜像，再 `policy switch my_policy`。无须修改 RC、setup 名单或基础 Compose。部署、模型和供应商配置都在策略目录内；运行切换不构建镜像、不安装依赖、不下载模型。
+
+每个 policy 的业务代码、模型源码、依赖锁文件、构建文件和专用资料都放在自己的目录中。`packages/` 仅保留公共 `policy-sdk` 和 `connector-sdk`；策略之间不互相导入业务实现，也不通过软链接共用源码。相同依赖镜像仍可复用；实际模型权重和下载缓存继续通过外部目录挂载。项目级验收集中在 `tests/`。
 
 原生 chain 只是成员列表，自身不增加容器；`[a,b,a]` 展开为 `a-0 → b → a-1`，创建三个独立容器、host、执行进程和 context。只有重复策略编号，单例保持原名；编号按同一策略在当前链中的出现顺序从 0 开始。多个实例使用原策略目录和同一镜像，容器内源码路径保持 `/workspace/policy/a`。生成的实例名冲突时，在停止旧组前拒绝应用。SDK 内部 `PolicyChain` 仍是单 worker 内模块组合。
 
@@ -129,11 +135,11 @@ mcp get_policy_result {"operation_id":"<operation_id>"}
 - [Ubuntu 22.04 从零部署](docs/ubuntu22-amd64-from-scratch.md)
 - [策略作者规范](docs/policy-authoring.md)
 - [Python 3.14 本地范例策略](policy/example/README.md)
-- [Qwen 策略](docs/qwen35-policy.md)
-- [Qwen 视觉历史策略](docs/qwen35-history-policy.md)
-- [InternVLA MaaS 网络策略](docs/internvla-maas-policy.md)：独立 Python 3.11 轻量容器，复用 Qwen 单阶段动作处理，通过 WebSocket 获取 action chunk。
-- [LLM 离散动作策略](docs/llm-direction-policy.md)
-- [LLM 异步失败检测策略](docs/llm-failure-policy.md)：原样透传动作，每 60 个实际执行步用当前与历史图像检查失败，通过 MCP 等待回执返回。
+- [Qwen 策略](policy/qwen35_single/README.md)
+- [Qwen 视觉历史策略](policy/qwen35_history/README.md)
+- [InternVLA MaaS 网络策略](policy/internvla_maas/README.md)：独立 Python 3.11 轻量容器，复用 Qwen 单阶段动作处理，通过 WebSocket 获取 action chunk。
+- [LLM 离散动作策略](policy/llm_direction/README.md)
+- [LLM 异步失败检测策略](policy/llm_failure/README.md)：原样透传动作，每 60 个实际执行步用当前与历史图像检查失败，通过 MCP 等待回执返回。
 - [策略监控](docs/policy-monitor.md)
 - [连续录制与推理追踪](docs/recording.md)：`record start/stop/status`、三路 30 Hz RGB、状态和成功发布动作、逐实例推理与独立压测。
 - [测试与验收边界](docs/verification.md)

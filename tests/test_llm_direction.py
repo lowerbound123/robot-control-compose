@@ -9,7 +9,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'packages/llm-direction-policy/src'))
+sys.path.insert(0, str(ROOT / 'policy/llm_direction/src'))
 from rc_llm_direction.actions import Decision, make_chunk, parse_decision
 from rc_llm_direction.configuration import DEFAULT_PARAMS, validate_config
 from rc_llm_direction.runtime import DirectionPolicy
