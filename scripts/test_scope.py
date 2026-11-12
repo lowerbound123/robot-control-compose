@@ -7,8 +7,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 QWEN = {"qwen35_single", "qwen35_twostage"}
+HISTORY = {"qwen35_history", "qwen35_history_lift2"}
 LLM = {"llm_direction", "llm_failure"}
-POLICIES = {"example", "hold", "pi05", "internvla_maas", "qwen35_history"} | QWEN | LLM
+POLICIES = {"example", "hold", "pi05", "internvla_maas"} | QWEN | HISTORY | LLM
 
 
 def suite(policies, interface):
@@ -20,10 +21,11 @@ def suite(policies, interface):
         if not matches:
             raise ValueError(f"未找到回归用例：{pattern}")
         paths.update("tests/" + path.name for path in matches
-                     if "qwen35_history" in policies or not path.name.startswith("test_qwen35_history_"))
+                     if (policies & HISTORY or not path.name.startswith("test_qwen35_history_"))
+                     and ("qwen35_history_lift2" in policies or not path.name.startswith("test_qwen35_history_lift2")))
 
     add("test_example_*.py")
-    if "qwen35_history" in policies:
+    if policies & HISTORY:
         add("test_qwen35_history_*.py")
     if "hold" in policies:
         paths.add("tests/test_end_to_end.py::test_real_hold_example_consumes_absolute_targets")
@@ -71,7 +73,7 @@ def main():
     else:
         if policies & QWEN:
             packages.add("qwen35-policy")
-        if "qwen35_history" in policies:
+        if policies & HISTORY:
             packages.add("qwen35-history-policy")
         if "pi05" in policies:
             packages.add("pi05-policy")

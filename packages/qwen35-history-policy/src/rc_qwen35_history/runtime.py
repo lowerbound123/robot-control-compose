@@ -22,6 +22,8 @@ def frame(value, name):
 
 
 class HistoryPolicy:
+    robot_type = 'arx_acone'
+
     def __init__(self, config, *, policy_config=None, backend=None, project_root=None):
         self.config = copy.deepcopy(config)
         self.policy_config = policy_config if policy_config is not None else {}
@@ -42,7 +44,7 @@ class HistoryPolicy:
                              pending=0, last_trim=0, cached_actions=0)
         if backend is None:
             from .backend import HistoryBackend
-            backend = HistoryBackend(config)
+            backend = HistoryBackend(config, robot_type=self.robot_type)
         self.backend = backend
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='history-inference')
         try:
@@ -215,5 +217,5 @@ class HistoryPolicy:
     def switch_model(self, path):
         from .configuration import load_model_config, resolve_path
         path = resolve_path(path, self.project_root)
-        load_model_config(path, project_root=self.project_root)
+        load_model_config(path, project_root=self.project_root, robot_type=self.robot_type)
         return {'params.model_config_path': str(path)}

@@ -1,0 +1,77 @@
+schema_version: 3
+id: qwen35_history_lift2
+help: 使用 LIFT2 归一化与夹爪规则的 Qwen 历史视觉策略
+help_details:
+  group: 模型策略
+  description: >-
+    独立的正常策略实例，复用 qwen35_history 的模型、历史和调度实现。
+    固定使用所选模型的 arx_lift2 状态和动作统计量进行归一化及反归一化。
+    输出夹爪第 6、13 维大于 2.5 时输出 4.9，否则输出 0。
+  sections:
+    - title: 模型配置
+      body: 使用本目录独立的 model.json 和 deployment.env，要求 history 模型格式和 stats.json 中的 arx_lift2 统计量；不会自动替换模型或连接机器人。
+  examples:
+    - title: 加载策略
+      command: policy switch qwen35_history_lift2
+    - title: 查看配置
+      command: policy <实例> config show
+execution:
+  mode: sync # RC回调边界；模型流水线由model.json execution.pipelined选择
+  call_every_actions: 1
+  control_mode: qpos
+  on_connector_switch: reinitialize_policy
+params:
+  model_config_path: model.json
+  task:
+hot_reloadable:
+- params.task
+- execution.on_connector_switch
+tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [{name: task, type: str, help: 新的任务文本}]
+    help: 热更新任务并清空历史和旧动作，保留已加载模型
+    effect: update_config
+    timeout_s: 5
+  switch-model:
+    handler: switch_model
+    args: [{name: config_path, type: path, help: 模型配置文件, root: ., kind: file,
+          suffixes: [.json]}]
+    help: 验证配置后冷重载当前实例；完成后等待resume
+    effect: reload_policy
+    timeout_s: 30
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.model_config_path:
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
+    params.task:
+      type: str
+      help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数；此策略固定为 1
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停
+    execution.on_connector_switch:
+      type: enum
+      choices:
+      - reset
+      - reinitialize_policy
+      help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换

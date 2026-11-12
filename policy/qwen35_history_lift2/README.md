@@ -1,0 +1,46 @@
+# qwen35_history_lift2
+
+正式的独立 policy 来源，使用 LIFT2 的状态/动作统计量和夹爪输出规则。复用 `qwen35_history` 的历史视觉、模型后端、推理调度和依赖镜像；本目录拥有独立入口、manifest、模型配置与部署配置。每个运行实例仍独占容器、host、执行进程和 context。
+
+## 归一化与夹爪
+
+固定读取本策略所选 checkpoint 的 `stats.json["arx_lift2"]`，按左臂 6 维、左夹爪 1 维、右臂 6 维、右夹爪 1 维拼接：
+
+- 输入状态使用 `states.*.position` 的统计量归一化。
+- 模型输出逆重排后，使用 `actions.*.position` 的统计量反归一化。统计量不与状态混用。
+- 归一化方式遵循该 checkpoint 的 `train_config.json`；`mean_std` 时分别执行 `(state - mean) / (std + 1e-6)` 和 `action * (std + 1e-6) + mean`。仍支持训练配置的 `q01_q99`。
+
+LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7、15 维。恢复原生 14 维后，delta 模式只对 12 个手臂关节加回当前状态；夹爪保持绝对值。初始化、修改模型配置和 `switch-model` 都检查 LIFT2 统计量，缺少或不合法时直接报错，不回退到 `arx_acone`，也不从其他 checkpoint 借用统计量。
+
+随后处理输出副本的两个夹爪列（从 0 开始的第 6、13 维）：
+
+- 原始预测值严格大于 `2.5`：输出 `4.9`。
+- 小于或等于 `2.5`：输出 `0`。
+
+不调用原 history 的 `> -0.8 → 0.04` 处理。这个夹爪步骤不修改已反归一化的 12 个手臂关节，canonical 预测缓存不被阈值化；同步和流水线模式使用相同的输出规则。原 `qwen35_history` 继续使用 ACOne 统计量和夹爪规则。RC 的设备限速仍在后续发送阶段执行。
+
+## 配置与使用
+
+```bash
+./setup.sh --policies qwen35_history_lift2 --connectors mock
+```
+
+核对本目录自己的 `deployment.env` 与 `model.json`。依赖使用已有的 `robot-control-compose-qwen35-history:local` 镜像，构建声明复用原 history 的 Dockerfile 和依赖锁文件；仅修改本策略入口不需要重新构建依赖镜像。
+
+本策略仍要求 `qwen3_5_context_video_ki` 类型的 history 模型，且其 `stats.json` 必须含 `arx_lift2`。历史采样和任务文本约定沿用原 history，不会自动更换模型或适配参考仓库中的旧 `qwen3_5vla_ki` 权重。原 history 的依赖镜像与源码挂载方式可继续复用，无需为归一化切换安装新依赖。
+
+RC 中可独立选择和配置：
+
+```text
+policy switch qwen35_history_lift2
+policy qwen35_history_lift2 config show
+policy qwen35_history_lift2 config set params.task "新的任务"
+```
+
+切换完成后保持暂停；确认设备、模型和任务后再显式 `resume`。`switch-task`、`switch-model`、monitor、重初始化和重载接口与原 history 相同，也可将本来源放入原生 chain。切换 connector 不会自动替换 policy。
+
+## 定向验证
+
+`tests/test_qwen35_history_lift2.py` 覆盖阈值边界、手臂值保留、输入与 canonical 缓存不变、原策略隔离、同步/流水线调用、独立配置和镜像复用，以及替换 GPU 后端的真实 RC/worker/example 自链。
+
+`tests/test_qwen35_history_lift2_normalization.py` 使用刻意不同的 ACOne/LIFT2 状态与动作统计量，验证数据组选择、错误预检、模型切换以及真实 CPU 变换的归一化/逆重排/反归一化/delta 还原。测试不加载真实模型或连接硬件。

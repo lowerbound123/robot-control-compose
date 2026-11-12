@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def checkpoint(directory):
+def checkpoint(directory, *, robot_type='arx_acone'):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     config = {'type': 'qwen3_5_context_video_ki', 'chunk_size': 50, 'max_state_dim': 32,
@@ -25,15 +25,15 @@ def checkpoint(directory):
         for name, size in [('left_joint', 6), ('left_gripper', 1), ('right_joint', 6), ('right_gripper', 1)]:
             stats[f'{prefix}.{name}.position'] = {'mean': [1.]*size, 'std': [2.]*size,
                                                  'q01': [-1.]*size, 'q99': [3.]*size}
-    for name, data in [('config', config), ('train_config', train), ('stats', {'arx_acone': stats})]:
+    for name, data in [('config', config), ('train_config', train), ('stats', {robot_type: stats})]:
         (directory / f'{name}.json').write_text(json.dumps(data))
     (directory / 'model.safetensors').write_bytes(b'test replaces only model weight loading')
     return directory
 
 
-def model_file(directory, *, x=25, pipelined=False):
+def model_file(directory, *, x=25, pipelined=False, robot_type='arx_acone'):
     directory = Path(directory)
-    checkpoint(directory / 'weights')
+    checkpoint(directory / 'weights', robot_type=robot_type)
     path = directory / 'model.json'
     path.write_text(json.dumps({'model': {'checkpoint': 'weights'}, 'runtime': {'instruction': 'untangle'},
                                'execution': {'replan_every_actions': x, 'pipelined': pipelined}}))

@@ -57,6 +57,8 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 
 前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后夹爪大于−0.8时置为0.04。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
 
+另有正式来源 [`qwen35_history_lift2`](../policy/qwen35_history_lift2/README.md)：独立配置和执行实例，复用同一 history 实现与镜像，固定使用所选 checkpoint 的 `stats.json["arx_lift2"]` 分别做状态归一化、动作反归一化，并按 LIFT2 schema 重排和还原。输出夹爪严格大于 2.5 时输出 4.9、否则输出 0；该夹爪步骤保留手臂值和原始预测缓存。缺少 LIFT2 统计量会在初始化或模型切换预检时报错。本来源仍使用 ACOne 统计量与原夹爪规则；两者都要求 history 模型格式。
+
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
 
 首版不提供人类演示、语言段生成、FAST动作解码、IBQ未来图生成或历史拼图落盘。monitor可查看历史时钟、帧数、使用槽数、累计推理次数、在途状态、动作裁剪及阶段毫秒耗时；逐轮详情走TRACE。

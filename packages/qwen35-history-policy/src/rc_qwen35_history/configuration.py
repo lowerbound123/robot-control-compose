@@ -44,7 +44,9 @@ def positive(value, name, *, integer=False):
         raise ValueError(f'{name} must be positive and finite')
 
 
-def checkpoint_assets(directory):
+def checkpoint_assets(directory, *, robot_type='arx_acone'):
+    if robot_type not in ('arx_acone', 'arx_lift2'):
+        raise ValueError(f'unsupported history robot_type: {robot_type}')
     directory = Path(directory)
     config = read_json(directory / 'config.json')
     if config.get('type') != 'qwen3_5_context_video_ki':
@@ -54,7 +56,7 @@ def checkpoint_assets(directory):
         raise ValueError('this source model requires checkpoint.chunk_size=50')
     for name in ('max_state_dim', 'max_action_dim'):
         if type(config.get(name)) is not int or config[name] != 32:
-            raise ValueError(f'{name} must be 32 for the supported arx_acone checkpoint')
+            raise ValueError(f'{name} must be 32 for the supported {robot_type} checkpoint')
     for name in ('context_slot_count', 'context_slot_stride', 'num_inference_steps'):
         positive(config.get(name), name, integer=True)
     positive(config.get('context_fps'), 'context_fps')
@@ -76,16 +78,16 @@ def checkpoint_assets(directory):
     transforms = dataset.get('data_transforms', {}).get('inputs', [])
     if not transforms or transforms[-1].get('type') != 'qwen3_5_context_video_ki_processor':
         raise ValueError('train_config must end with the KI video processor')
-    stats = read_json(directory / 'stats.json').get('arx_acone')
+    stats = read_json(directory / 'stats.json').get(robot_type)
     if not isinstance(stats, dict):
-        raise ValueError('stats.json requires arx_acone')
+        raise ValueError(f'stats.json requires {robot_type}')
     mode = dataset.get('norm_mode', 'mean_std')
     fields = ('mean', 'std') if mode == 'mean_std' else ('q01', 'q99')
     composed = {}
     all_keys = {f'{prefix}.{part}.position' for prefix in ('states', 'actions') for part in PARTS}
     pad_keys = dataset.get('pad_keys') or []
     if not isinstance(pad_keys, list) or any(key not in all_keys for key in pad_keys):
-        raise ValueError('unsupported pad_keys for arx_acone')
+        raise ValueError(f'unsupported pad_keys for {robot_type}')
     for prefix in ('states', 'actions'):
         values = {key: [] for key in fields}
         for part, width in zip(PARTS, WIDTHS):
@@ -93,7 +95,7 @@ def checkpoint_assets(directory):
             for key in fields:
                 array = np.atleast_1d(np.asarray(sub.get(key), dtype=np.float32))
                 if array.shape != (width,) or not np.isfinite(array).all():
-                    raise ValueError(f'invalid {prefix}.{part}.{key} statistics')
+                    raise ValueError(f'invalid {robot_type} {prefix}.{part}.{key} statistics')
                 values[key].append(array)
         composed[prefix] = {key: np.concatenate(value) for key, value in values.items()}
         if mode == 'mean_std' and (composed[prefix]['std'] < 0).any():
@@ -105,7 +107,7 @@ def checkpoint_assets(directory):
     return config, dataset, composed
 
 
-def load_model_config(path, *, project_root):
+def load_model_config(path, *, project_root, robot_type='arx_acone'):
     path = resolve_path(path, project_root)
     raw = read_json(path)
     config = copy.deepcopy(DEFAULTS)
@@ -120,7 +122,7 @@ def load_model_config(path, *, project_root):
     if base.startswith(('.', '/', '~')):
         base = str(resolve_path(base, path.parent))
     config['model']['vlm_model_name_or_path'] = base
-    checkpoint, _, _ = checkpoint_assets(config['model']['checkpoint'])
+    checkpoint, _, _ = checkpoint_assets(config['model']['checkpoint'], robot_type=robot_type)
     x = config['execution']['replan_every_actions']
     if type(x) is not int or not 1 <= x <= checkpoint['chunk_size']:
         raise ValueError('replan_every_actions must be in [1, checkpoint.chunk_size]')

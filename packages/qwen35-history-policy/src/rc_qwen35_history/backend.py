@@ -13,8 +13,9 @@ LOG = logging.getLogger(__name__)
 
 
 class HistoryBackend:
-    def __init__(self, config):
+    def __init__(self, config, *, robot_type='arx_acone'):
         self.config = config
+        self.robot_type = robot_type
         self.checkpoint = Path(config['model']['checkpoint'])
         self.policy = self.model = self.processor = None
         self.sampler = self.prefix_graph = None
@@ -29,12 +30,12 @@ class HistoryBackend:
             ReorderStateActionTransform, compose)
         from lerobot.transforms.utils import resize_to_long_side, resize_with_pad
 
-        raw, self.dataset, self.stats = checkpoint_assets(self.checkpoint)
+        raw, self.dataset, self.stats = checkpoint_assets(self.checkpoint, robot_type=self.robot_type)
         self.geometry = SimpleNamespace(**raw)
         self.chunk_size = raw['chunk_size']
         self.history_slot_count = raw['context_slot_count']
         self.history_slot_stride = raw['context_slot_stride']
-        self.schema = get_schema('arx_acone')
+        self.schema = get_schema(self.robot_type)
         self.norm_mode = self.dataset.get('norm_mode', 'mean_std')
         self.action_mode = self.dataset['action_mode']
         mapping = self.schema.image_mapping
