@@ -18,6 +18,7 @@ from rc_connector_sdk.actions import arm_targets
 from rc_connector_sdk.client import ConnectorClient
 from rc_connector_sdk.images import map_images
 from .yaml_config import load_yaml_config
+from .safety_config import safety_settings
 
 
 class ImagesPending(RuntimeError):
@@ -34,6 +35,7 @@ class ConnectorRobot:
         self.directory = (self.root / config['connector_directory'] / self.spec['source']).resolve()
         self.config_path = self.directory / self.spec['config']
         self.config = None
+        self.safety = None
         self.runtime = self.handle = self.client = self.process = None
         self.closed = False
         self._prepared_spec = None
@@ -81,6 +83,7 @@ class ConnectorRobot:
         config = load_yaml_config(self.config_path)
         if not isinstance(config, dict):
             raise ValueError('connector device config must be an object')
+        safety = safety_settings(config.get('safety', {}), fallback=self.rc_config.get('safety', {}))
         for key in ('connect_timeout_s', 'close_timeout_s', 'feedback_timeout_s', 'camera_timeout_s'):
             value = config.get(key, 10 if key == 'connect_timeout_s' else 2)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -104,6 +107,7 @@ class ConnectorRobot:
             self._prepared_spec = self.runtime.prepare_connector_spec(
                 self.instance_id, self.directory, config, cancel_event, deadline)
         self.config = copy.deepcopy(config)
+        self.safety = safety
         self._prepared = True
 
     def connect(self, cancel_event=None, *, deadline=None):

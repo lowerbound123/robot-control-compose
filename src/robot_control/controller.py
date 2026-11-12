@@ -80,6 +80,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self.buffer = ActionBuffer()
         self._last_action_request = None
         self.limiter = ModeLimiter(self.config["safety"], self.config["frequency_hz"])
+        self._effective_safety = copy.deepcopy(self.config['safety'])
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -1121,8 +1122,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self.operations.update(job.get('public_id'), 'succeeded', result=result.get('editor', result.get('saved_path')))
                 continue
             if result.get("connected"):
+                limiter, safety = self._connection_limiter(self.robot.raw, self.robot.read_state())
+                self.limiter, self._effective_safety = limiter, safety
                 self._connected = True
-                self.limiter.reset(self.robot.read_state()["qpos"])
                 self._hold = self.limiter.previous.copy()
             if job["kind"] == "shutdown":
                 if result.get("error"):

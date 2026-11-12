@@ -5,7 +5,7 @@ from test_controller import setup_controller as setup_controller, ready, until
 
 def test_metadata_counts_full_targets_only_during_slew(setup_controller):
     controller,robot,_=setup_controller
-    controller.limiter.enabled=True
+    robot.config['safety'] = {'enabled': True}
     worker=ready(controller)
     controller.registry.get('first').config['execution']['call_every_actions']=1
     controller.submit('resume')

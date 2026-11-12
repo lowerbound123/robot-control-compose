@@ -6,7 +6,7 @@ RC/SDK 0.17 支持在原 RC 进程中更换机器人连接。TUI、MCP、基础�
 
 运行 `./setup.sh --config-only` 创建缺失的 `configs/robots/*.yaml` 并增补各 policy 的公共配置。已有连接文件原样保留；本机配置不提交，模板使用 `.yaml.example`。RC 和 SDK 需同步升级，并重新创建一次原运行组以协商 `connector_switch_v1`；旧能力在破坏原状态前被拒绝。
 
-每个命名 YAML 引用一个独立 connector 实例及设备配置。提供 mock、acone、ros-test 三份模板，也可复制 acone 模板建立多台同型机器人的连接。profile 不包含控制频率、限幅或复位目标；话题、消息类型、超时和 `ros_domain_id` 属于设备 YAML。
+每个命名 YAML 引用一个独立 connector 实例及设备配置。提供 mock、acone、ros-test 三份模板，也可复制 acone 模板建立多台同型机器人的连接。profile 不包含控制频率、限幅或复位目标；话题、消息类型、超时、`ros_domain_id` 和设备 `safety` 属于设备 YAML。设备 `safety` 覆盖 RC 默认限速，缺省字段使用 RC 回退值，具体规则见 [限速配置归属](connectors.md#限速配置归属)。
 
 ```yaml
 # configs/robots/acone.yaml
@@ -67,7 +67,7 @@ MCP使用只读 `connector_profiles` 查询。先 `take`，再调用 `switch_con
 
 `connector list` 在终端显示名称、来源、实例、配置路径和有效性；无效配置逐行显示错误，查询失败也输出错误。MCP profile 行使用 `connector` 表示实例，`source` 表示来源。
 
-切换先预检查，再暂停推理与手动动作，收齐全链本地及外部图像读者确认。旧 connector 先排空已提交动作，再确认进程树、容器和 reader 退出；确认前不创建新 connector，关闭期间不发送新目标；新双臂反馈与三路图像就绪后，从新机器人实际位置建立保持目标，再逐实例处理policy。旧动作、图像和迟到预览结果不得进入新连接。
+切换先预检查设备参数（包括限速），再暂停推理与手动动作，收齐全链本地及外部图像读者确认。旧 connector 先排空已提交动作，再确认进程树、容器和 reader 退出；确认前不创建新 connector，关闭期间不发送新目标；新双臂反馈与三路图像就绪后，同步安装新设备的有效限速并从新机器人实际位置建立保持目标，再逐实例处理policy。旧动作、图像、限速起点和迟到预览结果不得进入新连接。
 
 `status.connector` 与 `props.connector` 显示当前/目标profile、连接代次、阶段、错误和逐实例结果。状态观测与图像使用 `connector_generation` 标记连接代次。MCP操作保留控制权；所有成功路径都保持暂停，不自动复位或恢复运动。
 

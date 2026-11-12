@@ -82,11 +82,13 @@ def _validate_rc(config):
     from .connector_config import validate_connectors
     validate_connectors(config)
     from .safety import finite_qpos, ModeLimiter
+    from .safety_config import safety_settings
     from .direct import control_settings
     from .mcp_config import mcp_settings
     from .tui_config import tui_settings
     from .log_format import logging_settings
     finite_qpos(config["reset_qpos"])
+    config['safety'] = safety_settings(config.get('safety', {}))
     ModeLimiter(config["safety"], hz)
     config["direct_control"] = control_settings(config.get("direct_control"))
     config["mcp"] = mcp_settings(config.get("mcp"))

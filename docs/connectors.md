@@ -33,7 +33,17 @@ setup 只初始化缺失的 `connector/*/devices/*.yaml`，不覆盖已有设备
 
 旧部署通过 RC 环境变量设置的 ROS 域，需要写入设备配置的 `ros_domain_id`。ROS 模拟器的 `ROS_DOMAIN_ID` 仍需与 `ros-test.yaml` 一致，默认均为 83。RMW 和 ROS 网络设置由 `connector/acone/compose.yaml` 管理，不再通过 RC 容器环境传递。
 
-旧 `robot.backend` 配置会明确报迁移错误。迁移时将旧 `robot` 中除 `backend` 外的设备字段移入对应来源的设备 YAML，再用上面的 `connectors` 与 `robot.connector` 引用替换。也可用 `robot: {profile: acone}` 选择命名连接，具体结构与手动重试规则见 [connector 热切换](connector-switching.md)。RC 的控制频率、限速、reset 和策略配置保留在 RC YAML。不要把私有 YAML 或运行产物提交到版本库。
+旧 `robot.backend` 配置会明确报迁移错误。迁移时将旧 `robot` 中除 `backend` 外的设备字段移入对应来源的设备 YAML，再用上面的 `connectors` 与 `robot.connector` 引用替换。也可用 `robot: {profile: acone}` 选择命名连接，具体结构与手动重试规则见 [connector 热切换](connector-switching.md)。设备限速写入设备 YAML 的 `safety`；RC YAML 保留默认限速、控制频率、reset 和策略配置。不要把私有 YAML 或运行产物提交到版本库。
+
+### 限速配置归属
+
+限速仍由 RC 控制线程执行，connector 不增加插值或控制循环。有效配置按“内置默认 → RC `safety` → 当前设备 `safety`”覆盖；`epos` 按叶字段覆盖，14 维 `max_delta_per_step` 整体覆盖。`enabled` 同样遵循覆盖顺序。RC 提供回退值，不与设备配置叠加成第二层限速。
+
+RC 内置值和新配置模板保持 `enabled: true`、`reference_frequency_hz: 50`，14 维 `max_delta_per_step` 与三个 `epos` 速率都为有限值 `1000000.0`，使常规目标默认不触发限速。mock、ACOne 和 ros-test 的设备模板保存原有设备限速。未提供设备 `safety` 的 connector 使用 RC 回退值；省略 RC `safety` 时使用内置值。`frequency_hz` 仍归 RC，qpos 单步限值仍按 `max_delta_per_step × reference_frequency_hz / frequency_hz` 换算。
+
+首次连接、显式切换（包括同名切换）和故障重试会读取并冻结设备参数。非法限速在预检查阶段报错，切换预检查失败不会影响旧连接。旧命令排空、新连接就绪后，由控制线程同步安装新限速器，以新设备反馈为起点。运行期间编辑文件不会改变已生效参数；下次重新连接生效，普通 policy 重载不重新读取设备文件。
+
+`config rc show` 显示 RC 回退配置；MCP `props.safety` 和录制元数据顶层 `safety` 显示当前绑定的有效配置。setup 校验设备限速但不覆盖已有私有设备文件；已有 RC 自定义限速继续作为回退。升级现有部署时，可将设备专用的旧 `safety` 放入对应设备文件，再按需要将 RC 回退调整为大值；不会自动改写私有参数。
 
 基础 Compose 仍只有 RC 和 ipc-anchor。RC 的生命周期线程动态创建 connector，加入 anchor 的 IPC，并使用独立的 connector RPC 卷；policy 不挂载这个调用端点。只有 ACOne connector 使用 ROS 所需的 host network，RC 保持基础网络配置。
 

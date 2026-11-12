@@ -1,3 +1,26 @@
 image_size:
 - 64
 - 96
+# Device limits; RC applies these at its configured control frequency.
+safety:
+  enabled: true
+  reference_frequency_hz: 50
+  max_delta_per_step:
+    - 0.006072
+    - 0.018664
+    - 0.014556
+    - 0.009768
+    - 0.007063
+    - 0.008024
+    - 0.05
+    - 0.007601
+    - 0.012064
+    - 0.014512
+    - 0.011047
+    - 0.013188
+    - 0.009549
+    - 0.05
+  epos:
+    translation_m_s: 0.15
+    rotation_rad_s: 0.75
+    gripper_units_s: 2.5

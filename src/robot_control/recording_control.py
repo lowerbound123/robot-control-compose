@@ -1,4 +1,5 @@
 """Local recording commands and bounded controller producers."""
+import copy
 import time
 
 from .recording import RecordingService
@@ -44,6 +45,7 @@ class RecordingControl:
             members = record.members if record and record.is_chain else (record,) if record else ()
             data = {'run_id':self.run_id, 'timestamp_ns':time.time_ns(),
                     'connector': self.connector_status(),
+                    'safety': copy.deepcopy(self._effective_safety),
                     'rc':self.config, 'policy':self._identity,
                     'generation':self.buffer.generation, 'control_epoch':self._control_epoch,
                     'control_owner':self.control_owner,

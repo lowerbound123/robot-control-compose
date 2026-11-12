@@ -37,18 +37,7 @@ def validate_rc(config):
     load('src/robot_control/connector_config.py').validate_connectors(config)
     positive(config.get('frequency_hz', 30), 'frequency_hz')
     vector(config.get('reset_qpos'), 'reset_qpos')
-    safety = config.get('safety')
-    if not isinstance(safety, dict):
-        raise ValueError('safety must be an object')
-    positive(safety.get('reference_frequency_hz', 50), 'safety.reference_frequency_hz')
-    limits = vector(safety.get('max_delta_per_step', [-1] * 14), 'safety.max_delta_per_step')
-    if any(item <= 0 and item != -1 for item in limits):
-        raise ValueError('safety limits must be positive or -1')
-    epos = safety.get('epos', {})
-    if not isinstance(epos, dict) or set(epos) - {'translation_m_s', 'rotation_rad_s', 'gripper_units_s'}:
-        raise ValueError('invalid safety.epos settings')
-    for key, value in epos.items():
-        positive(value, 'safety.epos.' + key)
+    load('src/robot_control/safety_config.py').safety_settings(config.get('safety', {}))
     timeouts = config.get('timeouts', {})
     if not isinstance(timeouts, dict):
         raise ValueError('timeouts must be an object')
@@ -80,5 +69,8 @@ def validate_documents(documents):
                 validate_policy(value, location.parent.name)
             elif location.parent == Path('configs/robots') and location.suffix == '.yaml':
                 load('src/robot_control/connector_config.py').validate_connector_profile(value)
+            elif (location.parts[0] == 'connector' and 'devices' in location.parts and
+                    location.suffix in ('.yaml', '.yml')):
+                load('src/robot_control/safety_config.py').safety_settings(value.get('safety', {}))
         except (ValueError, TypeError, KeyError):
             raise ValueError(f'{path}: invalid main configuration schema') from None

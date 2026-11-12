@@ -269,7 +269,7 @@ def create_server(controller):
         connection = (controller.connector_properties() if hasattr(controller, 'connector_properties')
                       else {'robot': config.get('robot', {})})
         return result({**connection, "frequency_hz": config.get("frequency_hz"),
-                       "direct_control": direct, "safety": config.get("safety", {}),
+                       "direct_control": direct, "safety": connection.get('safety', config.get("safety", {})),
                        "policy_modes": ["qpos", "epos", "mixed"], "control_owner": controller.status()["control_owner"],
                        "units": {"epos": "absolute xyz (meters), XYZ RPY (radians), raw gripper", "qpos": "six radians plus raw gripper per arm"},
                        "motions": MOTIONS, "grammar": "left|right|both:motion[&motion][:value][@slow|medium|fast]",

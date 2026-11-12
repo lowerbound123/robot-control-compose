@@ -12,27 +12,28 @@ startup_policy: hold
 robot:
   connector: body
 safety:
+  # Fallback only; the active connector device config overrides these fields.
   enabled: true
   reference_frequency_hz: 50
   max_delta_per_step:
-    - 0.006072
-    - 0.018664
-    - 0.014556
-    - 0.009768
-    - 0.007063
-    - 0.008024
-    - 0.05
-    - 0.007601
-    - 0.012064
-    - 0.014512
-    - 0.011047
-    - 0.013188
-    - 0.009549
-    - 0.05
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
+    - 1000000.0
   epos:
-    translation_m_s: 0.15
-    rotation_rad_s: 0.75
-    gripper_units_s: 2.5
+    translation_m_s: 1000000.0
+    rotation_rad_s: 1000000.0
+    gripper_units_s: 1000000.0
 reset_qpos:
   - 0
   - 0
