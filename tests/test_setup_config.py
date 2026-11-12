@@ -63,6 +63,37 @@ def test_merge_backs_up_and_is_idempotent(tmp_path):
     assert path.stat().st_mtime_ns == before
 
 
+def test_setup_adds_folded_help_to_legacy_json_style_policy_without_changing_values(tmp_path):
+    module = helpers()
+    folder = tmp_path/'policy/example'
+    folder.mkdir(parents=True)
+    (folder/'policy.yaml.example').write_text('''schema_version: 3
+execution: {mode: sync, call_every_actions: 1, control_mode: qpos}
+params: {message: default}
+help_details:
+  description: >-
+    空输入生成保持目标。
+    非空输入逐帧透传。
+''')
+    path = folder/'policy.yaml'
+    original = json.dumps({'schema_version': 3,
+                           'execution': {'mode': 'sync', 'call_every_actions': 1, 'control_mode': 'qpos'},
+                           'params': {'message': 'local message'}})
+    path.write_text(original)
+    changes, docs = module.configuration_updates(tmp_path)
+    assert path.read_text() == original
+    module.write_updates(tmp_path, changes)
+    result = read_config(path)
+    assert result['params']['message'] == 'local message'
+    assert result['help_details']['description'] == '空输入生成保持目标。 非空输入逐帧透传。'
+    assert result == docs['policy/example/policy.yaml']
+    assert result['execution']['on_connector_switch'] == 'reinitialize_policy'
+    assert next((tmp_path/'.setup/backups').rglob('policy.yaml')).read_text() == original
+    before = path.read_bytes()
+    changes, _ = module.configuration_updates(tmp_path)
+    assert changes == [] and path.read_bytes() == before
+
+
 @pytest.mark.parametrize('data', ['{"api_key":"secret",', '{"x":1,"x":2}', '{"x":NaN}'])
 def test_bad_json_does_not_reveal_values(data, tmp_path):
     module = helpers()

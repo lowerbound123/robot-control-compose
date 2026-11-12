@@ -127,6 +127,50 @@ def test_template_comments_added_and_noop_save_is_byte_identical(tmp_path):
     assert codec().render_yaml_config(path, {'a':3,'b':False}) == output
 
 
+@pytest.mark.parametrize('existing', [
+    '{"params": {"message": "local"}}\n',
+    'params: {message: local}\nhelp_details: {} # local help\n',
+    'params: {message: local}\nhelp_details: {group: local} # local help\n',
+])
+def test_template_folded_text_keeps_exact_value_in_flow_mappings(tmp_path, existing):
+    path, template = tmp_path/'policy.yaml', tmp_path/'policy.yaml.example'
+    path.write_text(existing)
+    template_text = '''params: {message: default}
+help_details:
+  group: local
+  description: >-
+    第一行含有 example 与 context。
+    第二行保留空格、中文和标点。
+'''
+    template.write_text(template_text)
+    expected = {'params': {'message': 'local'}, 'help_details': {'group': 'local',
+        'description': '第一行含有 example 与 context。 第二行保留空格、中文和标点。'}}
+    output = codec().render_yaml_config(path, expected, template=template)
+    path.write_bytes(output)
+    assert codec().load_yaml_config(path) == expected
+    assert '\\a' not in output.decode() and '\x07' not in output.decode()
+    if '# local help' in existing:
+        assert '# local help' in output.decode()
+    assert codec().render_yaml_config(path, expected, template=template) == output
+    assert template.read_text() == template_text
+
+
+def test_template_folded_text_retains_block_style_and_comments(tmp_path):
+    path, template = tmp_path/'policy.yaml', tmp_path/'policy.yaml.example'
+    path.write_text('params: {} # local\n')
+    template.write_text('''params: {}
+description: >- # help note
+  第一段。
+  第二段。
+''')
+    expected = {'params': {}, 'description': '第一段。 第二段。'}
+    output = codec().render_yaml_config(path, expected, template=template)
+    path.write_bytes(output)
+    assert codec().load_yaml_config(path) == expected
+    assert 'description: >- # help note' in output.decode()
+    assert '# local' in output.decode()
+
+
 def test_save_failure_keeps_original_and_removes_temporary(tmp_path, monkeypatch):
     path = tmp_path/'rc.yaml'
     path.write_text('a: 1\n')

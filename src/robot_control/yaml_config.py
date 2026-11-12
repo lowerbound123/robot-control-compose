@@ -131,33 +131,36 @@ def _detach_anchor(value):
     return value
 
 
-def _reconcile(old, value, template=None):
+def _reconcile(old, value, template=None, *, flow_style=False):
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString, FoldedScalarString
     if old is not None and strict_equal(_plain(old), value):
         return old
     if isinstance(value, dict):
         existing = old if isinstance(old, dict) else {}
         result = _detach_anchor(copy.deepcopy(old)) if isinstance(old, CommentedMap) else CommentedMap()
+        flow_style = flow_style or result.fa.flow_style() is True
         for key in list(result):
             if key not in value:
                 del result[key]
                 result.ca.items.pop(key, None)
         for key, item in value.items():
             example = template.get(key) if isinstance(template, dict) else None
-            result[key] = _reconcile(existing.get(key), item, example)
+            result[key] = _reconcile(existing.get(key), item, example, flow_style=flow_style)
             if key not in existing and hasattr(template, 'ca') and key in template.ca.items:
                 result.ca.items[key] = copy.deepcopy(template.ca.items[key])
         return result
     if isinstance(value, list):
         existing = old if isinstance(old, list) else []
         result = _detach_anchor(copy.deepcopy(old)) if isinstance(old, CommentedSeq) else CommentedSeq()
+        flow_style = flow_style or result.fa.flow_style() is True
         # Assign comments by stable occurrence, including duplicate chain members.
         unused = list(range(len(existing)))
         items, comments = [], {}
         for index, item in enumerate(value):
             match = next((n for n in unused if strict_equal(_plain(existing[n]), item)), None)
             if match is None:
-                items.append(_reconcile(None, item))
+                items.append(_reconcile(None, item, flow_style=flow_style))
             else:
                 unused.remove(match)
                 items.append(existing[match])
@@ -168,6 +171,10 @@ def _reconcile(old, value, template=None):
         result.ca.items.update(comments)
         return result
     if old is None and template is not None and strict_equal(_plain(template), value):
+        if flow_style and isinstance(template, FoldedScalarString):
+            # A flow collection cannot emit block scalars. Copying fold_pos here
+            # makes ruamel quote its internal fold markers as actual text.
+            return DoubleQuotedScalarString(value)
         return _detach_anchor(copy.deepcopy(template))
     if isinstance(value, str) and isinstance(old, str):
         return _detach_anchor(type(old)(value))
