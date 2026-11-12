@@ -1,0 +1,3 @@
+connector: body
+source: lift2
+config: devices/robot-main.yaml

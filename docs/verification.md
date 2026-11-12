@@ -2,6 +2,35 @@
 
 当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前默认只做改动相关的定向验收；完整接口回归、整套 Docker smoke 等全量验收须获得用户对本轮的明确允许，不能因公共契约变化或阶段结束自动执行。跳过不计通过。
 
+## LIFT2 独立 connector（2026-11-12）
+
+新增 ROS 1 Noetic / CPython 3.10 的 `lift2` 来源，支持双臂及夹爪 qpos、关节/末端状态和三路 RGB。
+包含 epos 的整条请求在发布前失败，使用现有 RC 发布故障路径，不增加消费计数。
+RC、policy 和两个 SDK 的既有实现文件与基线 `fdc29f1` 字节一致；现有生产代码仅扩展 setup connector 来源白名单。
+配置与限制见 [LIFT2 使用说明](lift2.md)。
+
+| 验证范围 | 最终结果 | 证据 |
+| --- | --- | --- |
+| 新适配器/setup 及直接相关 connector 定向回归 | **75 passed，5.81 秒**，退出码 0 | `/tmp/rc-lift2-targeted.log` |
+| Linux amd64 独立 runtime / simulator 镜像构建 | 两个 target 构建成功；runtime Python **3.10.22**，约 **280 MB** | `/tmp/rc-lift2-evidence/build.log` |
+| 真实 ROS 1 原始与压缩图像传输 | **2 组通过**：消息 MD5、状态、逐像素 RGB、只读租约、FIFO、epos 零发布、反馈/图像过期、正常退出 | `/tmp/rc-lift2-evidence/evidence/transport.json` |
+| RC example、自链与 epos 故障 | **3 组通过**：qpos、policy 只读图像、预览数据、录制、mock↔lift2 切换保留 policy 容器/PID、epos 不消费且停止新增动作 | `/tmp/rc-lift2-evidence/evidence/controller.json` |
+| 清理与来源核对 | RC 正常退出、policy 图像池归零；专用容器/卷已移除；三份厂商消息 SHA256 与原镜像一致 | `/tmp/rc-lift2-evidence/evidence/cleanup.json`、`/tmp/rc-lift2-evidence/source-check.json` |
+
+Docker 验收由 `tests/lift2_docker_acceptance.py` 在 `pjlab@10.6.3.69` 的专用临时目录执行，
+ROS master 和模拟器使用 `--network none`，仅测试 connector 加入其网络命名空间。
+RC 保持无 ROS 的镜像，example 在独立 Python 3.14 容器运行。实际连接器源码和本地最终源码核对哈希，
+镜像依赖/体积证据为 `/tmp/rc-lift2-evidence/image-source.jsonl`。
+
+定向测试先后覆盖并修复：初始化阻塞未受期限约束、末端回调改写历史、注销失败中断清理、
+命令 TCPROS 握手晚于状态反馈、网络配置类型和 float32 序列化范围。
+构建阶段补齐纯 Python ROS 依赖，并排除 macOS 传输附带的 AppleDouble 文件。
+测试脚本中图像视图残留、单实例/链 worker 访问差异及累计 consumed 断言均已修正，
+上述结果为修正后最终完整执行该定向选择的结果，早期失败不计通过。
+
+本轮按用户要求单智能体实施与自审，没有运行完整接口回归、整套 Docker smoke、真实模型或硬件验收，
+没有启动厂商驱动或向真机发送动作。新镜像保留在远端供后续部署；原推理项目和原镜像未修改，未自动提交或推送。
+
 ## 输入框上方状态栏表格化（2026-11-12）
 
 固定状态栏改为非聚焦的字段/值表格，保留原 13 项白名单、行优先顺序、空值占位、False/0、请求摘要和完整错误/连接路径。实际内容宽度达到 114/76 格时分别显示三组/两组，其余显示一组；小于 12 格时去掉装饰框线与内边距。字段和值完整折行，未增加 SDK、协议或控制器状态接口。

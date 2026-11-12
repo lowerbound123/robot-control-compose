@@ -1,0 +1,19 @@
+# Required: enter the actual robot master URI and the connector host's reachable IP.
+# setup copies this template without replacing existing private configuration.
+ros_master_uri: null
+ros_ip: null
+feedback_left_topic: /joint_information
+feedback_right_topic: /joint_information2
+eef_left_topic: /follow1_pos_back
+eef_right_topic: /follow2_pos_back
+command_left_topic: /joint_control
+command_right_topic: /joint_control2
+camera_transport: raw
+camera_topics:
+  head: /camera_h/color/image_raw
+  left_wrist: /camera_l/color/image_raw
+  right_wrist: /camera_r/color/image_raw
+feedback_timeout_s: 2
+camera_timeout_s: 2
+connect_timeout_s: 10
+close_timeout_s: 2

@@ -117,7 +117,7 @@ def prepare_images(root, policies, context, connectors=('mock',)):
     from compose_project import compose_command
     run_command(compose_command(root,['build','ipc-anchor','robot-control']),root)
     for source in connectors:
-        if source not in ('mock', 'acone'):
+        if source not in ('mock', 'acone', 'lift2'):
             raise ValueError(f'unknown connector source: {source}')
         path = root / 'connector' / source / 'compose.yaml'
         if path.exists():

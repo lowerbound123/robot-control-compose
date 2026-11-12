@@ -1,0 +1,9 @@
+services:
+  connector:
+    image: robot-control-compose-lift2-connector:local
+    build:
+      context: ../..
+      dockerfile: connector/lift2/Dockerfile
+      target: runtime
+    network_mode: host
+    restart: "no"

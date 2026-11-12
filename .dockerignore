@@ -1,4 +1,4 @@
-# Build contexts contain dependencies and the two compiled ROS message packages only.
+# Build contexts contain dependencies and explicitly selected ROS message packages only.
 **
 !requirements/
 !requirements/*.lock
@@ -19,5 +19,9 @@
 !ros_ws/src/arx5_arm_msg/**
 !ros_ws/src/robot_control_test_msgs/
 !ros_ws/src/robot_control_test_msgs/**
+!ros_ws/lift2/
+!ros_ws/lift2/arm_control/
+!ros_ws/lift2/arm_control/**
 **/__pycache__/
 **/*.pyc
+**/._*

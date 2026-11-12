@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>arm_control</name>
+  <version>0.0.0</version>
+  <description>Original ARX R5 ROS 1 messages, isolated from all hardware drivers.</description>
+  <maintainer email="maintainers@example.invalid">Robot Control maintainers</maintainer>
+  <license>See SOURCE.md for upstream provenance; upstream messages declare no license.</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+</package>

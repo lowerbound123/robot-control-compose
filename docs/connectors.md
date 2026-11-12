@@ -2,6 +2,8 @@
 
 RC 通过独立 connector 容器读取设备状态、请求图像和发送目标。`acone` 封装原有 ROS 2 接口，`mock` 提供同一接口的模拟设备。RC 与 mock 镜像不包含 ROS；ACOne 使用 Humble / Python 3.10。厂商驱动仍由现场独立启动。
 
+`lift2` 使用独立 ROS 1 Noetic Python 通信包 / CPython 3.10 镜像，支持双臂关节控制、末端状态查询与三路 RGB。包含 `epos` 的请求整条失败；配置、消息单位与定向验收见 [LIFT2 connector](lift2.md)。
+
 ## 配置和启动
 
 RC schema 3 的连接配置为：
@@ -45,7 +47,7 @@ RC 内置值和新配置模板保持 `enabled: true`、`reference_frequency_hz: 
 
 `config rc show` 显示 RC 回退配置；MCP `props.safety` 和录制元数据顶层 `safety` 显示当前绑定的有效配置。setup 校验设备限速但不覆盖已有私有设备文件；已有 RC 自定义限速继续作为回退。升级现有部署时，可将设备专用的旧 `safety` 放入对应设备文件，再按需要将 RC 回退调整为大值；不会自动改写私有参数。
 
-基础 Compose 仍只有 RC 和 ipc-anchor。RC 的生命周期线程动态创建 connector，加入 anchor 的 IPC，并使用独立的 connector RPC 卷；policy 不挂载这个调用端点。只有 ACOne connector 使用 ROS 所需的 host network，RC 保持基础网络配置。
+基础 Compose 仍只有 RC 和 ipc-anchor。RC 的生命周期线程动态创建 connector，加入 anchor 的 IPC，并使用独立的 connector RPC 卷；policy 不挂载这个调用端点。ACOne 和 LIFT2 connector 使用 ROS 所需的 host network，RC 保持基础网络配置。
 
 ACOne 部署的 MCP 也通过基础 Compose 的本地端口映射访问。若旧部署为 WebUI 配置过 `RC_WEBUI_UPSTREAM=host.docker.internal:4000`，迁移时移除这个旧覆盖，使用默认的 `robot-control:4000`。
 

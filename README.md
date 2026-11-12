@@ -6,6 +6,8 @@
 
 connector 只查询状态和 FIFO 发送设备消息；RC 管理频率、限速和控制权，收到完整发布确认后消费目标。图像按 RC 请求写入 POSIX 共享内存，通信通道只传描述符。配置迁移和部署方式见 [connector 公约与使用说明](docs/connectors.md)。
 
+[LIFT2 connector](docs/lift2.md) 使用独立 ROS 1 Noetic / CPython 3.10 镜像，支持双臂及夹爪关节控制、末端状态查询、三路 RGB 和现有预览/录制；`epos` 控制明确拒绝。可通过 `./setup.sh --policies example --connectors mock,lift2` 构建，填写实际 ROS 网络参数后用 `connector switch lift2` 切换。
+
 ## 准备与运行
 
 本版配置为 **schema 3**，不兼容旧 host/socket 表与根级策略 Compose。支持范围是本地 Linux Docker 部署；其他环境的测试证据单独记录。
