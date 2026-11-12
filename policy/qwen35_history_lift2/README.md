@@ -39,6 +39,8 @@ policy qwen35_history_lift2 config set params.task "新的任务"
 
 切换完成后保持暂停；确认设备、模型和任务后再显式 `resume`。`switch-task`、`switch-model`、monitor、重初始化和重载接口与原 history 相同，也可将本来源放入原生 chain。切换 connector 不会自动替换 policy。
 
+用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。指标与原 history 共用，详见[策略监控说明](../../docs/qwen35-history-policy.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
+
 ## 定向验证
 
 `tests/test_qwen35_history_lift2.py` 覆盖阈值边界、手臂值保留、输入与 canonical 缓存不变、原策略隔离、同步/流水线调用、独立配置和镜像复用，以及替换 GPU 后端的真实 RC/worker/example 自链。

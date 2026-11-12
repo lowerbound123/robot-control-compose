@@ -61,7 +61,36 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
 
-首版不提供人类演示、语言段生成、FAST动作解码、IBQ未来图生成或历史拼图落盘。monitor可查看历史时钟、帧数、使用槽数、累计推理次数、在途状态、动作裁剪及阶段毫秒耗时；逐轮详情走TRACE。
+首版不提供人类演示、语言段生成、FAST动作解码、IBQ未来图生成或历史拼图落盘。逐轮详情走 TRACE。
+
+## 策略监控
+
+两个 history 来源共用同一套执行指标。在策略加载成功后，用当前实例名打开面板：
+
+```text
+monitor qwen35_history
+monitor qwen35_history_lift2
+```
+
+同一命令再次执行会关闭面板；链中重复来源使用对应实例名，例如 `qwen35_history-0`。监控只读取加锁的标量快照，不调用模型、Torch/CUDA、网络或动作接口，也不采集显存、内存、CPU 等资源信息。
+
+| 类别 | 指标 |
+| --- | --- |
+| 模型与任务 | `robot_type`、`checkpoint`、`task`、`normalization`、`action_mode`、`model_dtype`、`num_inference_steps`、`max_prompt_tokens` |
+| 执行状态 | `context_state`、`model_stage`、`model_stage_age_ms`、`context_uptime_s`、`pipelined`、`replan_every_actions`、`inference_timeout_s` |
+| 推理计数 | `inference_count`（已提交）、`inference_completed`（模型成功返回）、`inference_errors`、`inference_busy`、`reset_count` |
+| 请求等待 | `pending`、`pending_age_ms`、`pending_remaining_ms`、`last_submission_actions`、`last_prediction_age_s` |
+| 耗时 | `load_ms`、`warmup_ms`、`processor_ms`、`prefix_ms`、`denoise_ms`、`post_ms`、`predict_ms`、`predict_avg_ms`、`predict_max_ms` |
+| 历史与图像 | `history_enabled`、`history_tick`、`history_frames`、`history_capacity_frames`、`history_slot_count`、`history_slot_stride`、`context_slots`，以及三路 `*_image_shape` 和图像缩放配置 |
+| 动作缓存 | `chunk_size`、`cached_actions`、`consumed_actions`、`control_epoch`、`last_trim`、`trimmed_actions_total` |
+| 加速路径 | `denoise_graph_requested`、`prefix_graph_requested`、`denoise_graph_ready`、`prefix_graph_layouts`、`prediction_path`、`prefix_tokens`、`max_prefix_tokens`、`graph_error` |
+| 故障 | `last_error`；后台监控读取自身出错时显示 `backend_monitor_error`，不影响推理结果 |
+
+`context_state=ready` 表示策略 context 已就绪，不代表 RC 已恢复发送；RC 的暂停/控制权仍看主状态栏。`model_stage` 显示预处理、prefix、去噪、后处理等当前阶段，空闲时为 `idle`。`inference_busy=0` 且 `pending=1` 表示请求仍待 RC 回调收取，不能仅凭 pending 判断模型仍在计算。
+
+耗时为最近一次成功预测的墙钟耗时；平均/最大耗时、推理次数和裁剪累计值覆盖当前 context 生命周期，普通 reset 不清零，冷重载或重新初始化 context 后重新统计。历史与动作缓存指标随 reset 清零。毫秒字段以 `_ms` 结尾，秒字段以 `_s` 结尾；时间年龄为 `-1` 表示尚无成功预测。任务和错误文本最多显示 512 个字符。
+
+初始化完成前 SDK 尚未创建 monitor，初始化失败应查看日志；日志会补充失败的模型阶段。监控不触发初始化、重载或恢复运动。
 
 ## 验证与部署边界
 

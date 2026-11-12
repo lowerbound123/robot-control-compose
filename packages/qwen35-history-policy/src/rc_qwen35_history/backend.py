@@ -2,6 +2,7 @@
 import dataclasses
 import logging
 from pathlib import Path
+import threading
 import time
 from types import SimpleNamespace
 
@@ -21,6 +22,27 @@ class HistoryBackend:
         self.sampler = self.prefix_graph = None
         self.device = None
         self._closed = False
+        inference = config.get('inference', {})
+        self._monitor_lock = threading.Lock()
+        self._stage_started = time.monotonic()
+        self._monitor_data = dict(model_stage='not_loaded', robot_type=robot_type,
+                                  denoise_graph_requested=int(inference.get('use_cuda_graph', True)),
+                                  prefix_graph_requested=int(inference.get('use_prefix_graph', True)),
+                                  denoise_graph_ready=0, prefix_graph_layouts=0,
+                                  prediction_path='not_run', prefix_tokens=0, max_prefix_tokens=0,
+                                  graph_error='')
+
+    def _monitor_update(self, **values):
+        with self._monitor_lock:
+            if 'model_stage' in values and values['model_stage'] != self._monitor_data['model_stage']:
+                self._stage_started = time.monotonic()
+            self._monitor_data.update(values)
+
+    def monitor(self):
+        """Read cached scalars only, including while the model executor is busy."""
+        with self._monitor_lock:
+            return {**self._monitor_data,
+                    'model_stage_age_ms': max(0., (time.monotonic()-self._stage_started)*1000)}
 
     def prepare_transforms(self):
         import torch
@@ -38,6 +60,13 @@ class HistoryBackend:
         self.schema = get_schema(self.robot_type)
         self.norm_mode = self.dataset.get('norm_mode', 'mean_std')
         self.action_mode = self.dataset['action_mode']
+        self._monitor_update(normalization=self.norm_mode, action_mode=self.action_mode,
+                             max_prompt_tokens=raw['max_prompt_tokens']
+                             if type(raw.get('max_prompt_tokens')) is int else 'unavailable',
+                             current_image_resize=str(raw['image_resize_mode']),
+                             current_image_long_side=int(raw['image_resize_long_side'])
+                             if raw['image_resize_mode'] == 'long_side' else 0,
+                             history_image_long_side=int(raw.get('context_resize_long_side') or 0))
         mapping = self.schema.image_mapping
         if raw['image_resize_mode'] == 'long_side':
             resize = ResizeImagesToLongSideFn(long_side=raw['image_resize_long_side'], mapping=mapping)
@@ -95,6 +124,7 @@ class HistoryBackend:
             contexts=slots, include_task=True, inference_order='action_first', view_indices=(0,), language={}, generate=())
 
     def load(self):
+        self._monitor_update(model_stage='loading_config')
         from .patches import check
         check()
         import torch
@@ -123,9 +153,14 @@ class HistoryBackend:
         config.vlm_model_name_or_path = self.config['model']['vlm_model_name_or_path']
         if self.config['inference']['num_inference_steps'] is not None:
             config.num_inference_steps = self.config['inference']['num_inference_steps']
+        self._monitor_update(model_stage='loading_checkpoint', model_dtype=config.dtype,
+                             num_inference_steps=int(config.num_inference_steps),
+                             max_prompt_tokens=int(config.max_prompt_tokens))
         self.policy = Qwen3_5ContextVideoKIPolicy.from_pretrained(self.checkpoint, config=config, local_files_only=True)
+        self._monitor_update(model_stage='moving_model_to_device')
         self.policy.to(device=self.device).eval().requires_grad_(False)
         self.model, self.model_config = self.policy.model, config
+        self._monitor_update(model_stage='loading_processor')
         saved = self.dataset['data_transforms']['inputs'][-1]
         fields = {f.name for f in dataclasses.fields(Qwen3_5ContextVideoKIProcessorTransformFn) if f.init}
         unknown = set(saved) - fields - {'type'}
@@ -136,6 +171,7 @@ class HistoryBackend:
                     future_first_probability=0., inference_order='action_first', generate_subtask=False)
         self.processor = Qwen3_5ContextVideoKIProcessorTransformFn(**args)
         self.processor._ensure_loaded()
+        self._monitor_update(model_stage='loaded')
 
     def eager_prefix(self, model_input):
         import torch
@@ -177,15 +213,22 @@ class HistoryBackend:
             raise RuntimeError('backend is not loaded')
         timings = {}
         with torch.no_grad():
+            self._monitor_update(model_stage='preprocess')
             started = time.perf_counter()
             model_input = self.build_input(qpos, images, instruction, contexts)
             timings['processor_ms'] = (time.perf_counter()-started)*1000
+            self._monitor_update(model_stage='prefix')
             started = time.perf_counter()
-            graphed = self.prefix_graph is not None and self.prefix_graph.run(self.prefix_graph.prepare(model_input))
+            prepared = self.prefix_graph.prepare(model_input) if self.prefix_graph is not None else None
+            graphed = prepared is not None and self.prefix_graph.run(prepared)
             if not graphed:
                 kv, mask, anchor, state = self.eager_prefix(model_input)
+            self._monitor_update(prefix_tokens=int(prepared['prefix_len'] if graphed else mask.shape[1]))
             torch.cuda.synchronize(self.device)
             timings['prefix_ms'] = (time.perf_counter()-started)*1000
+            self._monitor_update(model_stage='denoise', prediction_path=(
+                'prefix_graph+denoise_graph' if graphed else
+                'eager_prefix+denoise_graph' if self.sampler is not None else 'eager'))
             started = time.perf_counter()
             if graphed:
                 self.sampler.noise.normal_()
@@ -197,12 +240,15 @@ class HistoryBackend:
                 normalized = euler_reference(self.model, self.model_config.num_inference_steps, kv, mask, anchor, state, noise)
             torch.cuda.synchronize(self.device)
             timings['denoise_ms'] = (time.perf_counter()-started)*1000
+            self._monitor_update(model_stage='postprocess')
             started = time.perf_counter()
             result = self.finalize_actions(normalized, qpos)
             timings['post_ms'] = (time.perf_counter()-started)*1000
+        self._monitor_update(model_stage='idle')
         return result, timings
 
     def warmup(self):
+        self._monitor_update(model_stage='warmup')
         import torch
         from .graphs import FlowSampler, GRAPH_TOLERANCE, capture_prefix_graphs, euler_reference
         from .history import HistoryFrame
@@ -224,9 +270,11 @@ class HistoryBackend:
                     euler_reference(self.model, self.model_config.num_inference_steps, kv, mask, anchor, state, noise)
                 longest = max(longest, mask.shape[1])
             if not self.config['inference']['use_cuda_graph']:
+                self._monitor_update(model_stage='idle')
                 return
             candidate = None
             try:
+                self._monitor_update(model_stage='capturing_denoise_graph')
                 candidate = FlowSampler(self.model, num_steps=self.model_config.num_inference_steps,
                     max_prefix_len=max(longest, self.model_config.max_prompt_tokens)+64, attn_implementation='sdpa')
                 if not candidate.load(kv, mask, anchor, state):
@@ -238,15 +286,21 @@ class HistoryBackend:
                 if not np.isfinite(difference) or difference > GRAPH_TOLERANCE:
                     raise RuntimeError(f'denoise graph difference {difference} exceeds tolerance')
                 self.sampler = candidate
-            except Exception:
+            except Exception as exc:
+                self._monitor_update(graph_error=f'denoise: {type(exc).__name__}: {exc}'[:512])
                 LOG.exception('denoise CUDA graph unavailable; retaining eager inference')
             if self.sampler is not None and self.config['inference']['use_prefix_graph']:
                 try:
+                    self._monitor_update(model_stage='capturing_prefix_graphs')
                     self.prefix_graph = capture_prefix_graphs(self.model, self.sampler,
                         (self.build_input(qpos,images,task,slots[:depth]) for depth in
                          range(len(slots)+1 if self.config['history']['enabled'] else 1)), eager_prefix=self.eager_prefix)
-                except Exception:
+                except Exception as exc:
+                    self._monitor_update(graph_error=f'prefix: {type(exc).__name__}: {exc}'[:512])
                     LOG.exception('prefix CUDA graphs unavailable; retaining eager prefix')
+        self._monitor_update(model_stage='idle', denoise_graph_ready=int(self.sampler is not None),
+                             prefix_graph_layouts=0 if self.prefix_graph is None else len(self.prefix_graph.graphs),
+                             max_prefix_tokens=0 if self.sampler is None else getattr(self.sampler, 'max_prefix_len', 0))
         LOG.info('history inference ready: denoise_graph=%s prefix_layouts=%d', self.sampler is not None,
                  0 if self.prefix_graph is None else len(self.prefix_graph.graphs))
 
@@ -258,6 +312,7 @@ class HistoryBackend:
         if self._closed:
             return
         self._closed = True
+        self._monitor_update(model_stage='closed', denoise_graph_ready=0, prefix_graph_layouts=0)
         self.prefix_graph = self.sampler = self.processor = self.model = self.policy = None
         import torch
         if torch.cuda.is_available():

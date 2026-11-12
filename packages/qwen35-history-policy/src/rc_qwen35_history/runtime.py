@@ -40,8 +40,18 @@ class HistoryPolicy:
         self._closed = False
         self.canonical = np.empty((0, 14), np.float32)
         self._metrics_lock = threading.Lock()
-        self._metrics = dict(history_tick=0, history_frames=0, context_slots=0, inference_count=0,
-                             pending=0, last_trim=0, cached_actions=0)
+        self._created_at = time.monotonic()
+        self._metrics = dict(context_state='initializing', robot_type=self.robot_type,
+                             checkpoint=str(config.get('model', {}).get('checkpoint', 'injected backend')),
+                             pipelined=int(self.pipelined), history_enabled=int(self.history_enabled),
+                             replan_every_actions=self.x, inference_timeout_s=self.timeout,
+                             history_tick=0, history_frames=0, context_slots=0,
+                             inference_count=0, inference_completed=0, inference_errors=0, inference_busy=0,
+                             reset_count=0, pending=0, last_trim=0, trimmed_actions_total=0, cached_actions=0,
+                             consumed_actions=0, control_epoch=-1, last_submission_actions=-1,
+                             load_ms=0., warmup_ms=0., predict_ms=0., predict_avg_ms=0., predict_max_ms=0.,
+                             last_error='', _pending_at=0., _deadline=0.,
+                             _last_prediction_at=0.)
         if backend is None:
             from .backend import HistoryBackend
             backend = HistoryBackend(config, robot_type=self.robot_type)
@@ -53,13 +63,37 @@ class HistoryPolicy:
                 raise ValueError('replan_every_actions must be in [1, checkpoint.chunk_size]')
             self.history = HistoryBuffer(backend.history_slot_count, backend.history_slot_stride,
                                          backend.resize_history)
+            self._record(context_state='ready', chunk_size=backend.chunk_size,
+                         history_slot_count=backend.history_slot_count,
+                         history_slot_stride=backend.history_slot_stride,
+                         history_capacity_frames=self.history.frames.maxlen)
         except BaseException:
             self.close()
             raise
 
     def _load(self):
-        self.backend.load()
-        self.backend.warmup()
+        try:
+            started = time.perf_counter()
+            self.backend.load()
+            self._record(load_ms=(time.perf_counter() - started) * 1000)
+            started = time.perf_counter()
+            self.backend.warmup()
+            self._record(warmup_ms=(time.perf_counter() - started) * 1000)
+        except Exception:
+            snapshot = self._backend_snapshot()
+            logging.getLogger(__name__).error(
+                'history initialization failed: stage=%s', snapshot.get('model_stage', 'unavailable'))
+            raise
+
+    def _backend_snapshot(self):
+        result = {}
+        try:
+            callback = getattr(self.backend, 'monitor', None)
+            if callable(callback):
+                result.update(callback())
+        except Exception as exc:
+            result['backend_monitor_error'] = f'{type(exc).__name__}: {exc}'[:256]
+        return result
 
     def _instruction(self):
         override = self.policy_config.get('params', {}).get('task')
@@ -70,20 +104,45 @@ class HistoryPolicy:
             self._metrics.update(values)
 
     def monitor(self):
+        now = time.monotonic()
         with self._metrics_lock:
-            return dict(self._metrics)
+            snapshot = dict(self._metrics)
+        pending_at, deadline = snapshot.pop('_pending_at'), snapshot.pop('_deadline')
+        finished = snapshot.pop('_last_prediction_at')
+        snapshot.update(context_uptime_s=max(0., now-self._created_at), task=self._instruction()[:512],
+                        pending_age_ms=max(0., (now-pending_at)*1000) if pending_at else 0.,
+                        pending_remaining_ms=max(0., (deadline-now)*1000) if deadline else 0.,
+                        last_prediction_age_s=max(0., now-finished) if finished else -1.)
+        return {**self._backend_snapshot(), **snapshot}
 
     def _predict(self, qpos, images, instruction, contexts):
         started = time.monotonic()
-        actions, timings = self.backend.predict(qpos, images, instruction, contexts)
-        actions = np.asarray(actions, dtype=np.float32)
-        if actions.shape != (self.backend.chunk_size, 14) or not np.isfinite(actions).all():
-            raise ValueError('model must return a finite [chunk_size,14] action chunk')
-        timings = {str(k): float(v) for k, v in timings.items()}
-        if not all(np.isfinite(v) and v >= 0 for v in timings.values()):
-            raise ValueError('model stage timings must be finite and nonnegative')
-        self._record(**timings, predict_ms=(time.monotonic()-started)*1000)
-        return actions.copy(), time.monotonic()
+        self._record(inference_busy=1)
+        try:
+            actions, timings = self.backend.predict(qpos, images, instruction, contexts)
+            actions = np.asarray(actions, dtype=np.float32)
+            if actions.shape != (self.backend.chunk_size, 14) or not np.isfinite(actions).all():
+                raise ValueError('model must return a finite [chunk_size,14] action chunk')
+            timings = {str(k): float(v) for k, v in timings.items()}
+            if not all(np.isfinite(v) and v >= 0 for v in timings.values()):
+                raise ValueError('model stage timings must be finite and nonnegative')
+            finished = time.monotonic()
+            elapsed = (finished-started)*1000
+            with self._metrics_lock:
+                count = self._metrics['inference_completed'] + 1
+                average = self._metrics['predict_avg_ms']
+                self._metrics.update(timings, inference_completed=count, predict_ms=elapsed,
+                                     predict_avg_ms=average+(elapsed-average)/count,
+                                     predict_max_ms=max(elapsed,self._metrics['predict_max_ms']),
+                                     _last_prediction_at=finished)
+            return actions.copy(), time.monotonic()
+        except Exception as exc:
+            with self._metrics_lock:
+                self._metrics['inference_errors'] += 1
+                self._metrics['last_error'] = f'{type(exc).__name__}: {exc}'[:512]
+            raise
+        finally:
+            self._record(inference_busy=0)
 
     def _launch(self, state, images, count, epoch):
         qpos = np.asarray(state['qpos'], dtype=np.float32)
@@ -91,10 +150,16 @@ class HistoryPolicy:
             raise ValueError('state.qpos must be finite with shape (14,)')
         snapshot = {name: frame(images[name], name).copy() for name in CAMERAS}
         contexts = self.history.snapshot() if self.history_enabled else ()
-        self._request = (count, epoch, time.monotonic() + self.timeout)
+        now = time.monotonic()
+        self._request = (count, epoch, now + self.timeout)
         self._last_submission = count
+        with self._metrics_lock:
+            self._metrics.update(pending=1, context_slots=len(contexts), _pending_at=now,
+                                 _deadline=now+self.timeout, last_submission_actions=count,
+                                 inference_count=self._metrics['inference_count']+1,
+                                 **{name+'_image_shape': 'x'.join(map(str, image.shape))
+                                    for name,image in snapshot.items()})
         self.pending = self._executor.submit(self._predict, qpos.copy(), snapshot, self.instruction, contexts)
-        self._record(pending=1, context_slots=len(contexts), inference_count=self.monitor()['inference_count']+1)
 
     def _collect(self, count, epoch):
         submitted, request_epoch, deadline = self._request
@@ -114,7 +179,9 @@ class HistoryPolicy:
             self.canonical = self.transition.apply(self.canonical, new[stale:])
         else:
             self.canonical = new[:self.x].copy()
-        self._record(pending=0, last_trim=stale)
+        with self._metrics_lock:
+            self._metrics.update(pending=0, last_trim=stale, _pending_at=0., _deadline=0.,
+                                 trimmed_actions_total=self._metrics['trimmed_actions_total']+stale)
         logging.getLogger(__name__).log(5, 'history prediction: consumed=%d trimmed=%d remaining=%d',
                                        count, stale, len(self.canonical))
 
@@ -170,10 +237,11 @@ class HistoryPolicy:
                     if not len(self.canonical):
                         self._collect(count, epoch)
             self._record(history_tick=self.history.tick, history_frames=len(self.history.frames),
-                         cached_actions=len(self.canonical))
+                         cached_actions=len(self.canonical), consumed_actions=count, control_epoch=epoch)
             return self._process(self.canonical)
         except Exception as exc:
             self._failure = exc
+            self._record(context_state='failed', last_error=f'{type(exc).__name__}: {exc}'[:512])
             raise
 
     def _drain(self):
@@ -194,12 +262,17 @@ class HistoryPolicy:
         self.history.reset()
         self.canonical = np.empty((0, 14), np.float32)
         self._epoch = self._consumed = self._last_submission = None
-        self._record(history_tick=0, history_frames=0, context_slots=0, pending=0, last_trim=0, cached_actions=0)
+        with self._metrics_lock:
+            self._metrics.update(history_tick=0, history_frames=0, context_slots=0,
+                                 pending=0, last_trim=0, cached_actions=0, consumed_actions=0, control_epoch=-1,
+                                 last_submission_actions=-1, _pending_at=0., _deadline=0.,
+                                 reset_count=self._metrics['reset_count']+1)
 
     def close(self):
         if self._closed:
             return
         self._closed = True
+        self._record(context_state='closed')
         try:
             self._drain()
             self._executor.submit(self.backend.close).result()

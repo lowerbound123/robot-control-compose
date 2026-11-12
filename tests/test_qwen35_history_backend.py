@@ -36,6 +36,9 @@ def test_real_input_normalization_reorder_three_views_and_history_quantization(t
     model_file(tmp_path)
     backend = cls(load_model_config('model.json', project_root=tmp_path))
     backend.prepare_transforms()
+    snapshot = backend.monitor()
+    assert snapshot['normalization'] == 'mean_std' and snapshot['action_mode'] == 'delta'
+    assert snapshot['current_image_long_side'] == 256 and snapshot['history_image_long_side'] == 192
     image = np.zeros((480, 640, 3), np.uint8)
     image[..., 0] = 255
     images = {n: image for n in ('head', 'left_wrist', 'right_wrist')}
@@ -200,6 +203,11 @@ def test_graph_warmup_accepts_only_finite_reference_agreement(tmp_path, monkeypa
     backend.warmup()
     assert (backend.sampler is not None) == (difference==.01)
     assert backend.prefix_graph is None
+    from rc_policy_sdk.monitor import normalize_snapshot
+    snapshot = normalize_snapshot(backend.monitor())
+    assert snapshot['model_stage'] == 'idle'
+    assert snapshot['denoise_graph_ready'] == int(difference==.01)
+    assert snapshot['prefix_graph_layouts'] == 0 and snapshot['graph_error']
 
 
 def test_checkpoint_loader_accepts_deferred_device_move(tmp_path):
@@ -215,6 +223,44 @@ def test_checkpoint_loader_accepts_deferred_device_move(tmp_path):
     restored = PreTrainedPolicy._load_as_safetensor(target,str(path),None,True)
     torch.testing.assert_close(restored.weight,source.weight)
     assert restored.weight.device.type == 'cpu'
+
+
+@pytest.mark.parametrize('path', ['eager', 'denoise_graph', 'prefix_graph'])
+def test_predict_monitor_reports_actual_stage_path_and_prefix_tokens(tmp_path, monkeypatch, path):
+    cls = implementation()
+    import torch
+    from types import SimpleNamespace
+    from rc_qwen35_history.configuration import load_model_config
+    from rc_qwen35_history import graphs
+    from rc_policy_sdk.monitor import normalize_snapshot
+    model_file(tmp_path)
+    backend = cls(load_model_config('model.json', project_root=tmp_path))
+    backend.prepare_transforms()
+    backend.device = torch.device('cpu')
+    backend.model_config = SimpleNamespace(num_inference_steps=10)
+    backend.model = SimpleNamespace(sample_noise=lambda shape, device: torch.zeros(shape))
+    monkeypatch.setattr(backend, 'build_input', lambda *args: {})
+    def prefix(data):
+        assert backend.monitor()['model_stage'] == 'prefix'
+        return None, torch.ones(1, 17), None, None
+    monkeypatch.setattr(backend, 'eager_prefix', prefix)
+    def denoise(*args):
+        assert backend.monitor()['model_stage'] == 'denoise'
+        return torch.zeros(1, 50, 32)
+    monkeypatch.setattr(graphs, 'euler_reference', denoise)
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda *args: None)
+    if path != 'eager':
+        backend.sampler = SimpleNamespace(noise=torch.zeros(1,50,32), sample=denoise, replay=denoise)
+    if path == 'prefix_graph':
+        backend.prefix_graph = SimpleNamespace(prepare=lambda _: {'prefix_len': 23}, run=lambda _: True)
+    actions, timings = backend.predict(np.zeros(14, np.float32), {}, 'task', ())
+    np.testing.assert_array_equal(actions, np.ones((50,14), np.float32))
+    assert set(timings) == {'processor_ms', 'prefix_ms', 'denoise_ms', 'post_ms'}
+    snapshot = normalize_snapshot(backend.monitor())
+    assert snapshot['model_stage'] == 'idle'
+    assert snapshot['prefix_tokens'] == (23 if path == 'prefix_graph' else 17)
+    assert snapshot['prediction_path'] == {'eager': 'eager', 'denoise_graph': 'eager_prefix+denoise_graph',
+                                           'prefix_graph': 'prefix_graph+denoise_graph'}[path]
 
 
 def test_prefix_graph_rejects_nonfinite_reference_difference(monkeypatch):
