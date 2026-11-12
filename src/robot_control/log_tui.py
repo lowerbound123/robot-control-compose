@@ -444,6 +444,8 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         if button:
             text.pad_right(max(0, width - COPY_WIDTH - text.cell_len))
             text.append(COPY_LABEL, style='cyan')
+        if not text:
+            return Strip.blank(width, self.rich_style)
         # Rich's direct render omits the base style when there are no spans;
         # blank help separators still need a style for Textual's color filters.
         text.stylize_before(self.rich_style)

@@ -130,7 +130,8 @@ async def test_exit_command_and_events_remain_visible_until_done():
         assert app.is_running
         assert controller.events.empty()
         assert app.query_one(StructuredLog).records
-        assert "hold" in str(app.query_one("#status", Static).content)
+        assert any(cell.plain == 'hold' for column in app.query_one('#status', Static).content.columns
+                   for cell in column.cells)
         controller.done.set()
         await pilot.pause(0.08)
 

@@ -64,7 +64,7 @@ mcp return
 mcp state {"include_images":false}
 ```
 
-TUI 常驻状态栏依次显示 `state`、`policy`、`control_owner`、`in_flight`、`consumed`、`请求 N：裁剪 X，缓存 Y`、`runtime`、`target`、`runtime_error`、`recording_state`、`recording_error`、`connector_source` 和 `connector_config`。各项始终保留，缺失、空字符串或 `None` 显示为 `—`，`False` 和 `0` 正常显示。没有当前代次的动作请求摘要时显示 `请求 —：裁剪 —，缓存 —`。内容按终端宽度自然换行，完整保留路径与错误；错误中的换行合并为空格，合并后没有可见内容时显示 `—`。极小终端或很长的状态内容会让状态栏内部出现纵向滚动，可在状态栏上滚动查看全部文字；输入框与候选菜单保持可见，恢复足够尺寸后自动完整展开。
+TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每行并排三组，变窄时依次改为两组或一组。字段按从左到右、从上到下的顺序显示 `state`、`policy`、`control_owner`、`in_flight`、`consumed`、`last_action_request`（值为 `请求 N：裁剪 X，缓存 Y`）、`runtime`、`target`、`runtime_error`、`recording_state`、`recording_error`、`connector_source` 和 `connector_config`。各项始终保留，缺失、空字符串或 `None` 显示为 `—`，`False` 和 `0` 正常显示。没有当前代次的动作请求摘要时显示 `请求 —：裁剪 —，缓存 —`。字段和值均可换行，完整保留路径与错误，并按原文显示方括号等字符；错误中的换行合并为空格，合并后没有可见内容时显示 `—`。状态区域最多使用约三分之一窗口高度；打开补全、monitor 或 camera 时会继续为这些区域和日志保留空间。超出高度的表格在状态栏内部纵向滚动，可滚到最后一项查看全文；点击和滚动状态栏不改变命令输入焦点，输入框与候选菜单保持可见，恢复足够尺寸后自动完整展开。极窄窗口会去掉表格框线与内边距，保留字段和值。
 
 `connector_source` 与 `connector_config` 来自当前生效连接的来源目录名和原始配置路径字符串。切换前仍显示旧连接；旧连接断开后两项显示 `—`，新连接提交后一起更新。新连接失败时保持 `—`；新连接已成功但策略适配失败时仍显示新连接。编辑磁盘上的 profile 或设备配置不会改写当前连接显示的元数据。
 

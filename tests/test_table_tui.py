@@ -212,6 +212,12 @@ async def test_narrow_table_header_never_loses_source_to_copy_decoration():
         assert first.header and first.text.plain
         assert first.text.plain in log.render_line(0).text
         assert '[复制]' not in log.render_line(0).text
+        blank = next(index for index, row in enumerate(record.formatted.rows) if not row.text.plain)
+        log.scroll_to(y=blank, animate=False, immediate=True)
+        await pilot.pause()
+        strip = log.render_line(blank - log.scroll_offset.y)
+        assert not strip.text.strip()
+        assert all(segment.style is not None for segment in strip)
 
 
 @pytest.mark.asyncio

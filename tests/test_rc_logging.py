@@ -224,10 +224,12 @@ async def test_tui_status_shows_last_result_counts_without_action_log(rc):
     app = RobotControlApp(rc, start_controller=False)
     async with app.run_test() as pilot:
         await pilot.pause(.08)
-        text = str(app.query_one('#status', Static).content)
+        bar = app.query_one('#status', Static)
+        text = ' '.join(cell.plain for column in bar.content.columns for cell in column.cells)
         assert '请求 21：裁剪 0，缓存 4' in text
         assert 'queue_remaining=' not in text
         rc.buffer.invalidate()
         app.refresh_controller()
-        assert '请求 21' not in str(app.query_one('#status', Static).content)
-        assert '请求 —：裁剪 —，缓存 —' in str(app.query_one('#status', Static).content)
+        text = ' '.join(cell.plain for column in bar.content.columns for cell in column.cells)
+        assert '请求 21' not in text
+        assert '请求 —：裁剪 —，缓存 —' in text

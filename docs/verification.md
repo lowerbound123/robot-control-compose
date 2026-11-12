@@ -2,6 +2,18 @@
 
 当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前默认只做改动相关的定向验收；完整接口回归、整套 Docker smoke 等全量验收须获得用户对本轮的明确允许，不能因公共契约变化或阶段结束自动执行。跳过不计通过。
 
+## 输入框上方状态栏表格化（2026-11-12）
+
+固定状态栏改为非聚焦的字段/值表格，保留原 13 项白名单、行优先顺序、空值占位、False/0、请求摘要和完整错误/连接路径。实际内容宽度达到 114/76 格时分别显示三组/两组，其余显示一组；小于 12 格时去掉装饰框线与内边距。字段和值完整折行，未增加 SDK、协议或控制器状态接口。
+
+状态区高度最多约为窗口的三分之一，并扣除输入、候选、policy manager、monitor 和 camera 的必要空间；超出内容内部滚动。日志外框至少保留四行，含两行实际内容。格式化后的可见行和宽度不变时不重建表格，窗口缩放后重排，状态变化保持滚动位置和输入焦点。另以两行分支修复极窄日志空分隔行缺少样式导致的 Textual 过滤异常，原日志选择、复制和命中语义不变。
+
+- 状态栏、输入辅助、请求摘要、日志表格和相机/监控的定向回归：**59 passed，45.84 秒**，退出码 0；9 条告警均为既有 Pillow/Sixel `getdata()` 弃用提示。确切命令见 `/private/tmp/rc019-statusbar-table-report.md`，日志 `/private/tmp/rc019-statusbar-table-final-tests.log`。
+- 独立审查：**Spec / Quality PASS**，无新增 actionable finding；另复核八个宽度边界、刷新后的滚动位置，并重跑三个直接相关用例，**3 passed，2.12 秒**。报告 `/private/tmp/rc019-statusbar-table-review.md`，八文件冻结清单 `/private/tmp/rc019-statusbar-table-files.json`。
+- 实际 Textual 导出覆盖 120、80、50、28 列及 28×16 补全展开场景。50×24 保留 11 行实际日志；28×16 展开补全仍保留输入、候选与两行日志。原始 SVG/布局 JSON 位于 `/private/tmp/rc019-statusbar-*`，已目视检查宽屏与窄屏滚动底部；临时 CJK 格宽校正 PNG 位于 `/private/tmp/rc019-statusbar-preview-pngs/`，未修改产品或第三方库，不等同原生桌面截图。
+
+按用户要求仅运行定向验收，未运行完整测试范围、Docker、模型或硬件；初次沙箱内 IPC 权限失败不计通过。基线为 `5d181d7`，工作仍在 `codex/tui-statusbar`；本次显示调整未自动提交或推送，私有配置保持原样。
+
 ## 0.18 TUI 通用表格与 policy 输出（2026-11-11 至 2026-11-12）
 
 RC 与 policy SDK 更新至 0.18.0，新增 `table_output_v1` 能力，manifest schema 3 与既有协议版本保持不变。SDK 的标准库表格层提供 `Table`、`TableOutput` 和 `runtime.log_table()`。仅显式包装使用表格，普通字典、打印与业务 JSON 保持原有语义；effect 命令在最终成功后显示表格，失败不发布成功展示。
