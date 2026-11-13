@@ -17,7 +17,7 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 - 原始预测值严格大于 `params.gripper_threshold`（默认 `2.5`）：输出 `4.9`。
 - 小于或等于配置阈值：输出 `0`。
 
-不调用原 history 的 `> -0.8 → 0.04` 处理。这个夹爪步骤不修改已反归一化的 12 个手臂关节，canonical 预测缓存不被阈值化；同步和流水线模式使用相同的输出规则。原 `qwen35_history` 继续使用 ACOne 统计量和夹爪规则。RC 的设备限速仍在后续发送阶段执行。
+不调用原 history 的 `> -0.8 → 0.04` 处理。这个夹爪步骤不修改已反归一化的 12 个手臂关节，原始预测不被阈值化；是否融合和 RC 的 sync/async 模式均不改变该规则。原 `qwen35_history` 继续使用 ACOne 统计量和夹爪规则。RC 的设备限速仍在后续发送阶段执行。
 
 ## 配置与使用
 
@@ -32,6 +32,8 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 monitor 的 `subtask` 显示最近成功预测的 Subtask；未启用、未生成、缺少该字段或 reset/release 后返回空字符串，预热文本不展示。
 
 本策略仍要求 `qwen3_5_context_video_ki` 类型的 history 模型，且其 `stats.json` 必须含 `arx_lift2`。历史采样和任务文本约定沿用原 history，不会自动更换模型或适配参考仓库中的旧 `qwen3_5vla_ki` 权重。依赖镜像可继续共用；源码仅挂载本目录的 `src/` 和 `vendor/`，无需为归一化切换安装新依赖。
+
+`execution.mode` 和 `execution.call_every_actions` 只控制 RC 如何调用策略。策略在输入剩余动作数大于 `50-model_config.execution.replan_every_actions` 时原样返回，否则完成一次推理；`model_config.execution.pipelined` 只控制是否融合新旧 chunk。外部 async 时 RC 继续消费缓存，回包后由 RC 裁掉已消费前缀。
 
 RC 中可独立选择和配置：
 

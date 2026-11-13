@@ -11,6 +11,7 @@ COMMAND_TREE = (
     ('global show', '[key]'), ('global set', '<key> <JSON>'), ('global remove', '<key>'),
     ('pose save', '<名称>'), ('pose restore', '<名称或路径>'), ('snapshot', ''),
     ('record', ''), ('record start', ''), ('record stop', ''), ('record status', ''),
+    ('record reduce', '<日志文件夹名|all>'),
     ('camera', ''), ('camera show', ''), ('camera hide', ''), ('camera toggle', ''), ('monitor', '[实例]'),
     ('policy help', '[来源或实例] [命令]'), ('policy list', ''), ('policy switch', '<id> [--reset]'),
     ('policy manage', ''), ('policy manage apply', ''), ('policy manage save', ''), ('policy manage close', ''),
@@ -113,7 +114,8 @@ def parse_command(line: str) -> Command:
             return Command('global_remove', args[1])
     if head == 'pose' and len(args) == 2 and args[0] in ('save', 'restore'):
         return Command('pose_' + args[0], args[1])
-    if head == 'record' and (not args or args in (['start'], ['stop'], ['status'])):
+    if head == 'record' and (not args or args in (['start'], ['stop'], ['status'])
+                             or len(args) == 2 and args[0] == 'reduce'):
         return Command('record', args=tuple(args))
     if head == 'camera' and (not args or args in (['show'], ['hide'], ['toggle'])):
         return Command('camera', args=tuple(args or ['toggle']))

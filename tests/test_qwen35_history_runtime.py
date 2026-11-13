@@ -79,10 +79,10 @@ def make():
 
 
 @pytest.mark.parametrize('x', [1, 25, 50])
-def test_sync_replans_after_exactly_x_complete_targets(make, x):
+def test_remaining_threshold_replans_and_returns_full_prediction(make, x):
     policy, backend = make(x)
     chunk = step(policy, [], 0)
-    assert chunk.shape == (x, 14)
+    assert chunk.shape == (50, 14)
     for count in range(1, 2*x+1):
         chunk = step(policy, chunk[1:], count)
         assert len(backend.calls) == 1 + count // x
@@ -112,55 +112,6 @@ def test_history_indices_capacity_ownership_and_duplicate_counter(make):
     assert policy.monitor()['history_tick'] == 500
 
 
-@pytest.mark.parametrize('jump', [False, True])
-def test_async_keeps_tail_copies_inputs_trims_and_uses_existing_blend(make, jump):
-    from rc_policy_sdk.transitions import TrajectoryAddTransition
-    policy, backend = make(25, True)
-    chunk = step(policy, [], 0)
-    assert len(chunk) == 50
-    backend.output[:] = 10
-    backend.output[:, [6, 13]] = -.5
-    backend.gate.clear()
-    backend.started.clear()
-    for count in range(1, 26):
-        image = frames(count)
-        chunk = step(policy, chunk[1:], count, image=image)
-    assert backend.started.wait(1)
-    image['head'][:] = 255
-    assert np.all(backend.calls[-1][1]['head'] == 25)
-    if jump:
-        chunk = step(policy, chunk[5:], 30)
-    else:
-        for count in range(26, 31):
-            chunk = step(policy, chunk[1:], count)
-    assert len(chunk) == 20  # old steps 31..50 survive after X=25
-    backend.gate.set()
-    policy.pending.result(2)
-    previous = chunk[1:].copy()
-    chunk = step(policy, previous, 31)
-    expected = TrajectoryAddTransition(5., .25).apply(previous, backend.output[6:])
-    expected[:, [6, 13]] = np.where(expected[:, [6, 13]] > -.8, .04, expected[:, [6, 13]])
-    np.testing.assert_allclose(chunk, expected)
-    assert len(chunk) == len(expected) and policy.monitor()['last_trim'] == 6
-    assert len(backend.calls) == 2
-    assert chunk[0, 6] == -1 and chunk[-1, 6] == pytest.approx(.04)
-
-
-def test_late_async_result_has_one_pending_request_and_no_backlog(make):
-    policy, backend = make(5, True)
-    chunk = step(policy, [], 0)
-    backend.gate.clear()
-    for count in range(1, 21):
-        chunk = step(policy, chunk[1:], count)
-    assert len(backend.calls) <= 2
-    backend.gate.set()
-    policy.pending.result(2)
-    chunk = step(policy, chunk[1:], 21)
-    policy.pending.result(2)
-    assert len(backend.calls) == 3  # a single fresh request, not 3 missed requests
-    assert np.all(backend.calls[-1][1]['head'] == 21)
-
-
 @pytest.mark.parametrize('history_enabled', [False, True])
 def test_counter_jump_fills_current_observation_and_consumes_exact_tail(make, caplog, history_enabled):
     policy, backend = make()
@@ -171,7 +122,7 @@ def test_counter_jump_fills_current_observation_and_consumes_exact_tail(make, ca
     image = frames(77)
     chunk = step(policy, chunk[3:], 104, image=image)
     image['head'][:] = 255
-    np.testing.assert_array_equal(chunk[:, 0], np.arange(4, 25))
+    np.testing.assert_array_equal(chunk[:, 0], np.arange(4, 50))
     assert len(backend.calls) == 1
     if history_enabled:
         assert policy.monitor()['history_tick'] == 4
@@ -195,7 +146,7 @@ def test_counter_jumps_replan_with_filled_history_and_keep_capacity(make):
     chunk = step(policy, [], 0)
     for count in range(25, 501, 25):
         chunk = step(policy, chunk[25:], count)
-        assert len(chunk) == 25
+        assert len(chunk) == 50
         assert len(backend.calls) == 1 + count // 25
     assert policy.monitor()['history_tick'] == 500
     assert policy.monitor()['history_frames'] == 481
@@ -211,11 +162,11 @@ def test_counter_jumps_replan_with_filled_history_and_keep_capacity(make):
     assert backend.calls[-1][3] == ()
 
 
-@pytest.mark.parametrize('count,epoch,match', [(2, 1, 'canonical mirror'), (-1, 1, 'backwards'), (1, 2, 'epoch')])
-def test_invalid_counters_and_action_mirror_remain_errors(make, count, epoch, match):
+@pytest.mark.parametrize('count,epoch', [(-1, 1), (1, 0)])
+def test_backward_counters_and_epochs_remain_errors(make, count, epoch):
     policy, backend = make()
     chunk = step(policy, [], 0)
-    with pytest.raises(RuntimeError, match=match):
+    with pytest.raises(RuntimeError, match='backwards'):
         step(policy, chunk, count, epoch=epoch)
 
 
@@ -269,57 +220,22 @@ def test_invalid_predictions_fault_without_installing_actions(make, bad):
     with pytest.raises(ValueError): step(policy,[],0)
 
 
-def test_empty_queue_waits_for_owned_pending_prediction(make):
+def test_empty_queue_blocks_this_callback_until_full_prediction_is_ready(make):
     from concurrent.futures import ThreadPoolExecutor
     policy, backend = make(25, True)
-    chunk = step(policy,[],0)
-    backend.started.clear()
     backend.gate.clear()
-    for count in range(1,50):
-        chunk = step(policy,chunk[1:],count)
-    assert backend.started.wait(1)
     with ThreadPoolExecutor(1) as executor:
-        waiting = executor.submit(step,policy,chunk[1:],50)
+        waiting = executor.submit(step, policy, [], 50)
         try:
-            assert not waiting.done()
-            assert len(backend.calls) == 2
+            assert backend.started.wait(1)
+            assert not waiting.done() and len(backend.calls) == 1
         finally:
             backend.gate.set()
         result = waiting.result(2)
-    assert len(result) == 25 and policy.monitor()['last_trim'] == 25
-
-
-def test_reset_drains_and_discards_late_result_before_new_epoch(make):
-    from concurrent.futures import ThreadPoolExecutor
-    policy, backend = make(5,True)
-    chunk = step(policy,[],0)
-    backend.started.clear()
-    backend.gate.clear()
-    for count in range(1,6): chunk = step(policy,chunk[1:],count)
-    assert backend.started.wait(1)
-    with ThreadPoolExecutor(1) as executor:
-        resetting = executor.submit(policy.reset)
-        try:
-            assert not resetting.done()
-        finally:
-            backend.gate.set()
-        resetting.result(2)
-    backend.output[:,:6] = 7
-    result = step(policy,[],0,epoch=2)
-    assert np.all(result[:,:6] == 7)
-    assert policy.monitor()['history_tick'] == 0 and backend.calls[-1][3] == ()
-
-
-def test_result_acceptance_discards_fully_stale_chunk_without_losing_tail(make):
-    policy, backend = make(25,True)
-    chunk = step(policy,[],0)
-    for count in range(1,26): chunk = step(policy,chunk[1:],count)
-    policy.pending.result(2)
-    previous = policy.canonical.copy()
-    # Exercise the result boundary independently of the per-step counter guard.
-    policy._collect(75,1)
-    np.testing.assert_array_equal(policy.canonical,previous)
-    assert policy.pending is None and policy._last_submission is None
+    assert len(result) == 50 and policy.monitor()['last_trim'] == 0
+    policy.reset()
+    result = step(policy, [], 0, epoch=2)
+    assert len(result) == 50 and backend.calls[-1][3] == ()
 
 
 def test_monitor_exposes_only_sdk_scalar_types(make):
@@ -327,5 +243,5 @@ def test_monitor_exposes_only_sdk_scalar_types(make):
     policy, backend = make(1)
     step(policy,[],0)
     snapshot = normalize_snapshot(policy.monitor())
-    assert snapshot['inference_count']==1 and snapshot['cached_actions']==1
+    assert snapshot['inference_count']==1 and snapshot['cached_actions']==50
     assert snapshot['prefix_ms']==1. and snapshot['denoise_ms']==2.

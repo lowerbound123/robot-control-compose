@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 from rc_policy_sdk.transitions import TrajectoryAddTransition
+from rc_policy_sdk.actions import normalize_actions
 
 from .history import HistoryBuffer
 from .configuration import DEFAULTS
@@ -43,6 +44,8 @@ class HistoryPolicy:
         self.pending = self._request = None
         self._epoch = self._consumed = self._last_submission = None
         self._config_version = None
+        self._history_lock = threading.RLock()
+        self._history_origin = self._observed_consumed = None
         self._failure = None
         self._closed = False
         self.canonical = np.empty((0, 14), np.float32)
@@ -121,6 +124,7 @@ class HistoryPolicy:
                         pending_remaining_ms=max(0., (deadline-now)*1000) if deadline else 0.,
                         last_prediction_age_s=max(0., now-finished) if finished else -1.)
         result = {'subtask': '', **self._backend_snapshot(), **snapshot}
+        result['request_when_remaining'] = self.backend.chunk_size - self.x
         if 'Subtask' not in self.config.get('inference', {}).get('generate_language', []):
             result['subtask'] = ''
         return result
@@ -174,12 +178,11 @@ class HistoryPolicy:
         finally:
             self._record(inference_busy=0)
 
-    def _launch(self, state, images, count, epoch):
+    def _launch(self, state, images, count, epoch, contexts):
         qpos = np.asarray(state['qpos'], dtype=np.float32)
         if qpos.shape != (14,) or not np.isfinite(qpos).all():
             raise ValueError('state.qpos must be finite with shape (14,)')
         snapshot = {name: frame(images[name], name).copy() for name in CAMERAS}
-        contexts = self.history.snapshot() if self.history_enabled else ()
         now = time.monotonic()
         self._request = (count, epoch, now + self.timeout)
         self._last_submission = count
@@ -191,33 +194,19 @@ class HistoryPolicy:
                                     for name,image in snapshot.items()})
         self.pending = self._executor.submit(self._predict, qpos.copy(), snapshot, self.instruction, contexts)
 
-    def _collect(self, count, epoch):
-        submitted, request_epoch, deadline = self._request
+    def _collect(self):
+        _, _, deadline = self._request
         try:
             new, finished = self.pending.result(timeout=max(0., deadline-time.monotonic()))
         except FutureTimeoutError as exc:
             raise TimeoutError('model inference exceeded its submission deadline') from exc
         if finished > deadline:
             raise TimeoutError('model inference exceeded its submission deadline')
-        if request_epoch != epoch:
-            raise RuntimeError('stale inference epoch')
-        stale = count-submitted
-        if stale < 0:
-            raise RuntimeError('consumed action counter moved backwards')
         self.pending = self._request = None
-        if stale >= len(new):
-            self._last_submission = None
-            self._record(pending=0, last_trim=stale, _pending_at=0., _deadline=0.)
-            return
-        if self.pipelined:
-            self.canonical = self.transition.apply(self.canonical, new[stale:])
-        else:
-            self.canonical = new[:self.x].copy()
-        with self._metrics_lock:
-            self._metrics.update(pending=0, last_trim=stale, _pending_at=0., _deadline=0.,
-                                 trimmed_actions_total=self._metrics['trimmed_actions_total']+stale)
-        logging.getLogger(__name__).log(5, 'history prediction: consumed=%d trimmed=%d remaining=%d',
-                                       count, stale, len(self.canonical))
+        self._record(pending=0, last_trim=0, _pending_at=0., _deadline=0.)
+        # The response retains the request's time origin. Only RC knows how
+        # many targets were actually consumed while this callback was running.
+        return new
 
     @staticmethod
     def _process(actions, threshold=-.8):
@@ -226,66 +215,63 @@ class HistoryPolicy:
         result[:, [6, 13]] = np.where(grippers > threshold, .04, grippers)
         return result
 
+    def _observe_history(self, images, runtime):
+        """Called with the history lock; observations may overtake an infer RPC."""
+        count, epoch = runtime.consumed_actions, runtime.control_epoch
+        version = getattr(runtime, 'config_version', 1)
+        if self._epoch is not None and (epoch < self._epoch or version < self._config_version):
+            raise RuntimeError('history observation epoch/version moved backwards')
+        self._epoch, self._config_version = epoch, version
+        if self._observed_consumed is None:
+            self._history_origin = self._observed_consumed = count
+        elif count > self._observed_consumed:
+            delta = count - self._observed_consumed
+            if self.history_enabled:
+                self.history.append(frame(images['head'], 'head'), count=delta)
+                if delta > 1:
+                    logging.getLogger(__name__).warning(
+                        'consumed actions jumped from %d to %d; filling %d intermediate history '
+                        'frames with current head observation', self._observed_consumed, count, delta-1)
+            self._observed_consumed = count
+        self._record(history_tick=self.history.tick, history_frames=len(self.history.frames),
+                     consumed_actions=self._observed_consumed, control_epoch=epoch)
+
+    def observe(self, state, images, *, runtime):
+        if self._closed or self._failure is not None:
+            return
+        with self._history_lock:
+            self._refresh_settings()
+            self._observe_history(images, runtime)
+
     def step(self, state, action_chunk, images, *, runtime):
         if self._closed:
             raise RuntimeError('policy is closed')
         if self._failure is not None:
             raise self._failure
         try:
-            self._refresh_settings()
+            with self._history_lock:
+                self._refresh_settings()
             instruction = self._instruction()
             if instruction != self.instruction:
                 self.reset()
-                self.instruction = instruction
                 action_chunk = []
+            old = normalize_actions(action_chunk, 'qpos', allow_empty=True).actions
             count, epoch = runtime.consumed_actions, runtime.control_epoch
-            version = getattr(runtime, 'config_version', 1)
-            if self._epoch is None:
-                self._epoch, self._consumed = epoch, count
-                self._config_version = version
-            if epoch != self._epoch:
-                # A committed no-reset config clears RC's queue and advances its
-                # generation once per version. Never carry a prediction across
-                # that boundary; preserve visual history and use fresh inputs.
-                if (version <= self._config_version
-                        or epoch - self._epoch != version - self._config_version
-                        or len(action_chunk) or count < self._consumed):
-                    raise RuntimeError('control epoch changed without reset_context')
-                self._drain()
-                self.canonical = np.empty((0, 14), np.float32)
-                self._last_submission = None
-                self._epoch = epoch
-            self._config_version = version
-            delta = count-self._consumed
-            if delta < 0:
-                raise RuntimeError('consumed action counter moved backwards')
-            if delta:
-                if self.history_enabled:
-                    self.history.append(frame(images['head'], 'head'), count=delta)
-                    if delta > 1:
-                        logging.getLogger(__name__).warning(
-                            'consumed actions jumped from %d to %d; filling %d intermediate history '
-                            'frames with current head observation', self._consumed, count, delta - 1)
-                self.canonical = self.canonical[delta:]
+            with self._history_lock:
+                if self._consumed is not None and count < self._consumed:
+                    raise RuntimeError('consumed action counter moved backwards')
+                self._observe_history(images, runtime)
                 self._consumed = count
-            old = np.asarray(action_chunk, dtype=np.float32)
-            if old.size == 0:
-                old = np.empty((0, 14), np.float32)
-            if old.shape != self.canonical.shape or not np.isfinite(old).all():
-                raise RuntimeError('canonical mirror differs from RC remaining actions')
-            if self.pending is not None and (self.pending.done() or not len(old)
-                                             or time.monotonic() >= self._request[2]):
-                self._collect(count, epoch)
-            if self.pending is None:
-                due = (not len(self.canonical) or
-                       (self.pipelined and (self._last_submission is None
-                        or count-self._last_submission >= self.x)))
-                if due:
-                    self._launch(state, images, count, epoch)
-                    if not len(self.canonical):
-                        self._collect(count, epoch)
-            self._record(history_tick=self.history.tick, history_frames=len(self.history.frames),
-                         cached_actions=len(self.canonical), consumed_actions=count, control_epoch=epoch)
+                tick = max(0, count-self._history_origin)
+                contexts = self.history.snapshot(tick=tick) if self.history_enabled else ()
+            if len(old) > self.backend.chunk_size - self.x:
+                self.canonical = old.copy()
+                self._record(cached_actions=len(old))
+                return old.copy()
+            self._launch(state, images, count, epoch, contexts)
+            new = self._collect()
+            self.canonical = self.transition.apply(old, new) if self.pipelined else new.copy()
+            self._record(cached_actions=len(self.canonical))
             threshold = self.policy_config.get('params', {}).get('gripper_threshold', self.default_gripper_threshold)
             return self._process(self.canonical, threshold=threshold)
         except Exception as exc:
@@ -310,10 +296,12 @@ class HistoryPolicy:
         self._refresh_settings()
         self.instruction = self._instruction()
         self._executor.submit(self.backend.reset_context).result()
-        self.history.reset()
+        with self._history_lock:
+            self.history.reset()
+            self._history_origin = self._observed_consumed = None
+            self._epoch = self._consumed = self._last_submission = None
+            self._config_version = None
         self.canonical = np.empty((0, 14), np.float32)
-        self._epoch = self._consumed = self._last_submission = None
-        self._config_version = None
         with self._metrics_lock:
             self._metrics.update(history_tick=0, history_frames=0, context_slots=0,
                                  pending=0, last_trim=0, cached_actions=0, consumed_actions=0, control_epoch=-1,

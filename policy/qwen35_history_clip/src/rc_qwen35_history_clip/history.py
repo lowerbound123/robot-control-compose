@@ -32,8 +32,9 @@ class HistoryBuffer:
             self.frames.append(HistoryFrame(index, owned))
         self.tick += count
 
-    def snapshot(self):
+    def snapshot(self, *, tick=None):
+        tick = self.tick if tick is None else min(self.tick, max(0, tick))
         first = self.tick - len(self.frames)
         return tuple(self.frames[index - first]
-                     for index in range(self.tick - self.count*self.stride, self.tick, self.stride)
+                     for index in range(tick - self.count*self.stride, tick, self.stride)
                      if index >= max(0, first))

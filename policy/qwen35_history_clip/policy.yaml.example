@@ -2,7 +2,7 @@ schema_version: 3
 id: qwen35_history_clip
 help: 临时 ACOne 历史策略；臂关节硬裁剪可热开关，默认阈值 0.1 rad
 execution:
-  mode: sync # RC回调边界；模型流水线由model.json execution.pipelined选择
+  mode: sync # RC 调用调度；model.json pipelined 只控制新旧动作融合
   call_every_actions: 1
   control_mode: qpos
   on_connector_switch: reinitialize_policy
@@ -52,10 +52,11 @@ config_hints:
       type: enum
       choices:
       - sync
-      help: 推理调度模式
+      - async
+      help: RC 调用调度：sync 等待策略返回，async 继续发送缓存；策略独立决定是否推理
     execution.call_every_actions:
       type: int
-      help: 每次调用之间的动作数；此策略固定为 1
+      help: RC 每消费 N 个目标调用策略（正整数）；不是模型推理阈值
     execution.control_mode:
       type: enum
       choices:
@@ -81,10 +82,10 @@ config_hints:
       help: 默认任务，params.task 非空时覆盖此值；重置上下文，保留权重
     model_config.execution.replan_every_actions:
       type: int
-      help: 每消费 X 条触发推理，范围 1～50；清理旧上下文，保留权重
+      help: 策略余量阈值 X（1～50）：剩余 <= 50-X 时推理，否则原样返回；不控制 RC 调用频率
     model_config.execution.pipelined:
       type: bool
-      help: 后台推理期间继续消费剩余动作；清理旧上下文，保留权重
+      help: 需要推理时是否融合输入旧 chunk 与新预测；false 直接返回完整新预测，true 融合后返回
     model_config.execution.inference_timeout_s:
       type: float
       help: 新推理请求的超时秒数；已有请求期限不变

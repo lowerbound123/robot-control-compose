@@ -73,7 +73,7 @@ policy example config set params.table_logs true
 | qwen35_single / qwen35_twostage / qwen35_history | `params.task` | reset；非空文本或 `null`（恢复模型配置中的默认任务），清除旧任务的动作/历史。 |
 | qwen35_single / qwen35_twostage / qwen35_history / pi05 / internvla_maas | `params.model_config_path` | 先只读验证对应模型配置，再 reinitialize；不在 handler 中加载模型。 |
 | llm_direction / llm_failure | 已有 `params` 字段 | reinitialize，因为运行时保留独立参数副本；供应商路径先验证配置文件。failure 的 task/prompt 属于供应商配置，不能作为 params 修改。 |
-| 所有可执行来源 | `execution.mode`、`execution.call_every_actions` | 普通应用；模式为 sync/async，周期为正整数。Qwen 与 pi05 仅允许 sync 和 1。 |
+| 所有可执行来源 | `execution.mode`、`execution.call_every_actions` | 普通应用；模式为 sync/async，周期为正整数。保留动作缓存与策略上下文；是否推理由策略自行决定。 |
 | 所有可执行来源 | `execution.control_mode`、`execution.tui_command_workers` | reinitialize；workers 为正整数。example/failure 支持 qpos、epos、mixed；direction 仅支持 epos；其他来源仅支持 qpos。 |
 
 用 `policy <实例> config show` 查看已提交配置，`policy <实例> config save` 写回来源目录。重初始化失败不会自动冷重载，需手动执行 `policy <实例> retry`。

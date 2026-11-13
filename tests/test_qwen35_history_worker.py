@@ -74,7 +74,8 @@ def policy(context, state, action_chunk, images, config, *, runtime):
 def test_consumption_history_survives_shared_image_release_and_pause(running):
     controller, root = running
     assert completed(controller,'resume')['status'] == 'succeeded'
-    wait(lambda: controller.status()['consumed'] >= 32)
+    wait(lambda: controller.status()['consumed'] >= 32
+         and any(row['indices'] for row in events(root, 'predict_end')), timeout=10)
     assert completed(controller,'pause')['status'] == 'succeeded'
     with_history = [row for row in events(root,'predict_end') if row['indices']]
     assert with_history and all(value==11 for row in with_history for value in row['head'])
@@ -149,3 +150,24 @@ def test_model_settings_save_original_json_and_keep_loaded_model(running):
     reply = completed(controller, f'policy qwen35_history switch-model "{path}"')
     assert reply['status'] == 'succeeded', reply
     assert controller.query('policy qwen35_history config show')['model_config']['inference']['num_inference_steps'] is None
+
+
+def test_external_async_consumes_while_policy_waits_and_rc_trims_response(running, monkeypatch):
+    controller, root = running
+    accepted = []
+    original = controller.buffer.accept
+    def capture(token, actions):
+        result = original(token, actions)
+        accepted.append((token.consumed, controller.buffer.last_trim))
+        return result
+    monkeypatch.setattr(controller.buffer, 'accept', capture)
+    (root / 'controls.json').write_text(json.dumps({'value': .1, 'delay': .4}))
+    assert completed(controller, 'policy qwen35_history config set execution.mode async')['status'] == 'succeeded'
+    assert completed(controller, 'resume')['status'] == 'succeeded'
+    wait(lambda: len(events(root, 'predict_start')) >= 2)
+    count = controller.status()['consumed']
+    wait(lambda: controller.status()['consumed'] >= count + 2)
+    assert len(events(root, 'predict_end')) < len(events(root, 'predict_start'))
+    wait(lambda: any(start > 0 and trim >= 2 for start, trim in accepted))
+    assert controller.status()['state'] == 'running'
+    assert controller._worker.runnable

@@ -48,7 +48,7 @@ from .policy_configuration import PolicyConfigurationSupport
 from .operations import ControlRequest, Operations
 from .terminal_batches import TerminalBatches
 from .direct import DirectMotion
-from rc_policy_sdk.actions import normalize_actions
+from rc_policy_sdk.actions import normalize_actions, normalize_result
 from rc_policy_sdk.control import control_requests
 
 
@@ -383,9 +383,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             local_help = parsed is None and origin == "tui" and words and words[0] == "help" and len(words) in (1, 2)
             readonly = parsed.readonly if parsed is not None else self._is_read_command(command) or local_help
             recording = bool(words and words[0] == 'record')
+            recording_toggle = recording and words[1:2] != ['reduce']
             if command == "return" and self._return_operation is not None:
                 return self._return_operation
-            if origin == "mcp" and not readonly and not recording and command not in ("take", "return"):
+            if origin == "mcp" and not readonly and not recording_toggle and command not in ("take", "return"):
                 self._require_mcp()
             if origin == "mcp" and self._operation is not None and not readonly and not recording and command not in ("pause", "exit", "quit"):
                 if command != 'return' or self._operation['kind'] not in ('connector_switch', 'connector_member_retry'):
@@ -893,6 +894,11 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         if kind == "shutdown":
             deadline = self._cleanup_deadline()
             failures = []
+            try:
+                if self._record_reducer.close(deadline):
+                    failures.append('日志缩减进程需要强制清理')
+            except Exception as exc:
+                failures.append(str(exc))
             with self._owned_lock:
                 workers = list(self._owned)
             for worker in workers:
@@ -1113,10 +1119,15 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 else:
                     self._retry_candidate = None
                     self._reload_owner = None
-                if job.get('origin') == 'mcp':
+                if job.get('origin') == 'mcp' and not job.get('scheduling_only'):
                     self._cancel_direct('cancelled by policy lifecycle change')
-                self._pause("reloading" if job.get("commit") else "switching",
-                            cancel_wait=not (job["kind"] == "configure" and job.get("action") is None))
+                if job.get('scheduling_only'):
+                    # Changing the caller's scheduling does not invalidate the
+                    # callee's action timeline, private model work or context.
+                    self._state = 'reloading'
+                else:
+                    self._pause("reloading" if job.get("commit") else "switching",
+                                cancel_wait=not (job["kind"] == "configure" and job.get("action") is None))
                 job['prepared_generation'] = self.buffer.generation
                 job['prepared'] = True
                 result["complete"].set()
@@ -1228,7 +1239,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self._state = job['prior_state'] if job.get('action') is None else 'paused'
                 elif self._state == 'reloading':
                     self._state = 'paused'
-                self._needs_request = True
+                if not job.get('scheduling_only'):
+                    self._needs_request = True
                 if self._policy_wait is not None and self._state == 'running':
                     self._policy_wait.update(generation=self.buffer.generation, epoch=self._control_epoch)
                 self._restore_policy_commands(self._worker)
@@ -1371,8 +1383,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         record = self.registry.get(self._identity)
         if response.get("generation") != request["token"].generation or response.get("config_version") != record.version:
             raise ValueError("policy 结果代次或配置版本不匹配")
-        payload = {"actions": response["actions"], "modes": response["modes"]} if "modes" in response else response["actions"]
-        chunk = normalize_actions(payload, record.execution["control_mode"])
+        chunk = normalize_result(response, record.execution['control_mode'])
         controls = control_requests(response.get("control_requests", []), chain=record.is_chain)
         if controls:
             control = controls[0]
@@ -1399,7 +1410,22 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             else:
                 self._emit(f"policy {source} 请求 {request['id']} 暂停：{control['reason']}；保持当前目标，等待 resume")
             return
-        accepted = self.buffer.accept(request["token"], chunk)
+        if chunk.clipped is None:
+            accepted = self.buffer.accept(request['token'], chunk)
+        else:
+            workers = (self._worker.member_workers() if record.is_chain else {record.instance_id: self._worker})
+            source = response.get('action_annotation_owner') if record.is_chain else None
+            if source is None:
+                identity = record.members[-1].instance_id if record.is_chain else record.instance_id
+                owner = (identity, getattr(workers[identity], 'context_id', None))
+            else:
+                if not isinstance(source, dict):
+                    raise ValueError('invalid action annotation owner')
+                identity = source.get('instance_id')
+                if (identity not in workers or source.get('context_id') != getattr(workers[identity], 'context_id', None)):
+                    raise ValueError('stale action annotation owner')
+                owner = (identity, source['context_id'])
+            accepted = self.buffer.accept(request['token'], chunk, owner=owner)
         self._needs_request = not accepted and self.buffer.submission_state() == 'empty'
         self._last_action_request = ActionRequestSnapshot(
             request['id'], request['token'].generation, self.buffer.last_trim, len(self.buffer.remaining()))
@@ -1416,6 +1442,16 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._observation_serial += 1
         runtime = {'observation_id': f'{self.run_id}:{self.buffer.generation}:{self._observation_serial}',
                    'control_epoch':self.buffer.generation,'consumed_actions':self.buffer.consumed}
+        workers = (self._worker.member_workers() if hasattr(self._worker, 'member_workers')
+                   else {self._identity: self._worker} if self._worker is not None else {})
+        owners, stats = set(), {}
+        for identity, worker in workers.items():
+            context_id = getattr(worker, 'context_id', None)
+            owner = (identity, context_id)
+            owners.add(owner)
+            stats[identity] = {'context_id': context_id, **self.buffer.clip_stats(owner)}
+        self.buffer.retain_clip_stats(owners)
+        runtime['action_stats'] = stats
         self._recorder.observation(runtime['observation_id'], observation, published, descriptors=lease.descriptors)
         return observation,lease,runtime
 

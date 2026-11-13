@@ -34,10 +34,10 @@ config_hints:
       choices:
       - sync
       - async
-      help: 推理调度模式
+      help: RC 调用调度：sync 等待策略返回，async 继续发送缓存；策略独立决定是否推理
     execution.call_every_actions:
       type: int
-      help: 每次调用之间的动作数
+      help: RC 每消费 N 个目标调用策略（正整数）；不是模型推理阈值
     execution.control_mode:
       type: enum
       choices:

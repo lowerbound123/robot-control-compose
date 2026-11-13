@@ -25,6 +25,9 @@ class ActionBuffer:
         self._cursor = 0
         self._submitted = 0
         self._pinned = False
+        self._clip_masks = np.empty((0, 14), bool)
+        self._owners = []
+        self._clip_totals = {}
 
     def install(self, actions) -> None:
         value = normalize_actions(actions)
@@ -34,6 +37,24 @@ class ActionBuffer:
             self._cursor = 0
             self._submitted = 0
             self._pinned = False
+            self._clip_masks = np.zeros(value.actions.shape, bool)
+            self._owners = [None] * len(value.actions)
+
+    def clip_stats(self, owner):
+        with self.lock:
+            actions, dimensions = self._clip_totals.get(owner, (0, 0))
+            return {'clipped_actions': actions, 'clipped_dimensions': dimensions}
+
+    def retain_clip_stats(self, owners):
+        with self.lock:
+            self._clip_totals = {key: value for key, value in self._clip_totals.items() if key in owners}
+
+    def _count_clip(self):
+        owner = self._owners[self._cursor]
+        mask = self._clip_masks[self._cursor]
+        if owner is not None and mask.any():
+            old = self._clip_totals.get(owner, (0, 0))
+            self._clip_totals[owner] = (old[0] + 1, old[1] + int(np.count_nonzero(mask)))
 
     def remaining(self) -> np.ndarray:
         with self.lock:
@@ -76,6 +97,7 @@ class ActionBuffer:
                 return False
             if token.consumed != self.consumed + 1 or self._cursor >= self._submitted:
                 raise RuntimeError('out-of-order action publication confirmation')
+            self._count_clip()
             self._cursor += 1
             self.consumed += 1
             self.consumed_since_request += 1
@@ -89,6 +111,7 @@ class ActionBuffer:
         with self.lock:
             if self._cursor >= len(self._actions):
                 raise RuntimeError("不能消费空动作缓存")
+            self._count_clip()
             self._cursor += 1
             self._submitted = max(self._submitted, self._cursor)
             self._pinned = False
@@ -100,7 +123,7 @@ class ActionBuffer:
             self.consumed_since_request = 0
             return RequestToken(self.generation, self.consumed)
 
-    def accept(self, request: RequestToken, actions) -> bool:
+    def accept(self, request: RequestToken, actions, *, owner=None) -> bool:
         value = normalize_actions(actions)
         with self.lock:
             if request.generation != self.generation:
@@ -110,6 +133,20 @@ class ActionBuffer:
             self.last_trim = self.consumed - request.consumed + protected
             if self.last_trim >= len(value.actions):
                 return False
+            masks = (np.zeros(value.actions[self.last_trim:].shape, bool) if value.clipped is None
+                     else value.clipped[self.last_trim:].copy())
+            owners = [owner if value.clipped is not None else None] * len(masks)
+            if value.clipped is None:
+                # An unchanged target is still the original target: preserve
+                # its marker/source instead of counting a passthrough twice.
+                for index in range(min(len(masks), len(self._actions)-protected_end)):
+                    if (self._modes[protected_end+index] != value.modes[self.last_trim+index]
+                            or not np.array_equal(self._actions[protected_end+index], value.actions[self.last_trim+index])):
+                        break
+                    masks[index] = self._clip_masks[protected_end+index]
+                    owners[index] = self._owners[protected_end+index]
+            self._clip_masks = np.concatenate((self._clip_masks[self._cursor:protected_end], masks))
+            self._owners = self._owners[self._cursor:protected_end] + owners
             self._actions = np.concatenate((self._actions[self._cursor:protected_end], value.actions[self.last_trim:]))
             self._modes = self._modes[self._cursor:protected_end] + value.modes[self.last_trim:]
             self._submitted -= self._cursor
@@ -125,3 +162,5 @@ class ActionBuffer:
             self.consumed_since_request = 0
             self._submitted = 0
             self._pinned = False
+            self._clip_masks = np.empty((0, 14), bool)
+            self._owners = []

@@ -91,7 +91,6 @@ def test_command_worker_configuration_requires_reinitialize(entry, source):
     ('example', 'params.message', '"unterminated'),
     ('example', 'params.reset_token', '-1'),
     ('example', 'params.inference_delay_s', 'NaN'),
-    ('example', 'execution.mode', 'unknown'),
     ('hold', 'params.chunk_size', '-1'),
     ('hold', 'execution.control_mode', 'epos'),
     ('llm_direction', 'params.task', '""'),
@@ -100,10 +99,6 @@ def test_command_worker_configuration_requires_reinitialize(entry, source):
     ('llm_direction', 'execution.control_mode', 'qpos'),
     ('llm_failure', 'params.history_size', '1'),
     ('llm_failure', 'params.task', 'unsupported'),
-    ('pi05', 'execution.mode', 'async'),
-    ('pi05', 'execution.call_every_actions', '2'),
-    ('qwen35_single', 'execution.mode', 'async'),
-    ('qwen35_twostage', 'execution.call_every_actions', '2'),
     ('qwen35_history', 'execution.control_mode', 'epos'),
     ('qwen35_history', 'params.task', '"  "'),
     ('internvla_maas', 'execution.control_mode', 'epos'),
@@ -175,3 +170,30 @@ def test_connector_switch_action_is_policy_owned_and_applies_to_future_switch(en
     with pytest.raises(ValueError):
         module.configure(object(), config, 'execution.on_connector_switch', 'unknown', effects.append)
     assert config == before and effects == []
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('mode', ['sync', 'async'])
+def test_rc_owns_mode_and_call_cadence_for_every_policy(entry, source, mode):
+    from rc_policy_sdk.catalog import validate_policy
+    from rc_policy_sdk.configuration import validate_candidate
+    module, active = entry(source)
+    candidate, effects = copy.deepcopy(active), []
+    module.configure(object(), candidate, 'execution.mode', mode, effects.append)
+    module.configure(object(), candidate, 'execution.call_every_actions', '7', effects.append)
+    validate_candidate(active, candidate, None)
+    validate_policy(candidate)
+    validator = getattr(module, 'validate_config', None)
+    if validator is not None: validator(candidate)
+    assert candidate['execution']['mode'] == mode
+    assert candidate['execution']['call_every_actions'] == 7
+    assert not effects
+
+
+def test_shared_sdk_still_rejects_unknown_execution_mode(entry):
+    from rc_policy_sdk.configuration import validate_candidate
+    module, active = entry('example')
+    candidate = copy.deepcopy(active)
+    module.configure(object(), candidate, 'execution.mode', 'unknown', lambda _: None)
+    with pytest.raises(ValueError, match='mode'):
+        validate_candidate(active, candidate, None)

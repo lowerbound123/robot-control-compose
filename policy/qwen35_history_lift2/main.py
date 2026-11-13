@@ -49,6 +49,10 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     return context.step(state, action_chunk, images, runtime=runtime)
 
 
+def observe(context, state, images, config, *, runtime):
+    context.observe(state, images, runtime=runtime)
+
+
 def reset_context(context):
     context.reset()
 
@@ -105,8 +109,6 @@ def configure(context, config, key, value, callback):
     execution = candidate['execution']
     if execution.get('on_connector_switch', 'reinitialize_policy') not in ('reset', 'reinitialize_policy'):
         raise ValueError('execution.on_connector_switch must be reset or reinitialize_policy')
-    if execution.get('mode') not in ('sync', 'async'):
-        raise ValueError('execution.mode must be sync or async')
     for field in ('call_every_actions', 'tui_command_workers'):
         count = execution.get(field, 4 if field == 'tui_command_workers' else 1)
         if type(count) is not int or count <= 0:

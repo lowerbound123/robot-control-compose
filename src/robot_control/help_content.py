@@ -30,6 +30,7 @@ BUILTINS = {
     'record start': ('运动与记录', '开始录制相机、状态和控制记录。', '无需 take，不重置策略，也不改变当前动作。', 'record start'),
     'record stop': ('运动与记录', '停止录制并等待已接受数据写盘。', '成功回执表示录制数据已刷盘；等待超时不取消写盘。', 'record stop'),
     'record status': ('运动与记录', '查看完整录制状态，包括会话、路径、待写入数据、统计和错误。', '只读；状态栏只展示录制状态和错误，完整录制信息保留在此查询。录制失败不自动接管策略控制权。', 'record status'),
+    'record reduce': ('运动与记录', '缩减指定日志文件夹或全部已正常停止的录制。', '名称相对于 outputs/logs；all 扫描全部。后台转换为 H.264 CRF 28 / medium，校验成功后删除 images 和 assets，保留无损 initial.png、视频及其他日志。正在录制、异常停止及已有结果会跳过，不改变机器人运动。', 'record reduce all'),
     'camera': ('本地面板', '切换 TUI 相机面板的显示状态。', '省略参数等价 camera toggle。仅支持本地 TUI；不改变机器人运动。', 'camera'),
     'camera show': ('本地面板', '显示 TUI 相机面板。', '仅支持本地 TUI；重复执行保持显示。', 'camera show'),
     'camera hide': ('本地面板', '隐藏 TUI 相机面板。', '仅支持本地 TUI；重复执行保持隐藏。', 'camera hide'),

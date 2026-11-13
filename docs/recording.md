@@ -68,7 +68,17 @@ record stop
 
 ## 批量生成视频并删除原图
 
-`scripts/recording_videos.py` 是独立离线脚本，只依赖 Python 标准库以及 PATH 中的 `ffmpeg`、`ffprobe`，FFmpeg 需要支持 `libx264`。默认递归扫描项目的 `outputs/logs/`，也可指定日志根目录或单个 `record_*` 会话目录。
+TUI 或 headless 可直接执行：
+
+```text
+record reduce record_20261113_120000_12345678
+record reduce "record_带空格的名称"
+record reduce all
+```
+
+名称相对于当前 RC 的 `outputs_directory/logs`，必须是该目录下的文件夹名，不能传绝对路径或 `../`。`all` 递归扫描全部会话，指定名称只扫描对应目录。命令在独立后台进程执行，不暂停策略、不切换录制、不改变控制权；日志输出进度和转换/跳过/失败数量。同一 RC 同时只接受一个 reduce 任务，等待超时不会取消任务；RC 退出会中断转换并收齐子进程，尚未验证完成的原图保留。MCP `command` 执行 reduce 需要 take，原有录制开关无需 take 的规则不变。
+
+TUI 命令与 `scripts/recording_videos.py` 离线入口共用 `robot_control.recording_videos` 的实现。离线脚本只依赖 Python 标准库以及 PATH 中的 `ffmpeg`、`ffprobe`，FFmpeg 需要支持 `libx264`。RC Dockerfile 已加入 FFmpeg；旧 RC 镜像需重新构建后才能在容器内使用此命令。脚本默认递归扫描项目的 `outputs/logs/`，也可指定日志根目录或单个 `record_*` 会话目录。
 
 先预览处理范围：
 
@@ -88,9 +98,10 @@ python3 scripts/recording_videos.py
 python3 scripts/recording_videos.py /data/robot-logs --dry-run
 python3 scripts/recording_videos.py /data/robot-logs
 python3 scripts/recording_videos.py /data/robot-logs --fps 30 --overwrite
+python3 scripts/recording_videos.py /data/robot-logs --crf 24 --preset slow
 ```
 
-每个会话输出 `videos/head.mp4`、`videos/left_wrist.mp4`、`videos/right_wrist.mp4`，以该会话实际存在的相机目录为准。视频采用 H.264 / yuv420p、CRF 18，默认 30 FPS；奇数尺寸在右侧／底部补齐到偶数。PNG 按数字采样编号排序，编号不连续也可处理，缺失编号会报告但不补帧。因此视频是已有图像的连续预览，存在缺帧时不能直接以视频时间对齐原始 CSV 时间轴。
+每个会话输出 `videos/head.mp4`、`videos/left_wrist.mp4`、`videos/right_wrist.mp4`，以该会话实际存在的相机目录为准。新默认采用 H.264 / yuv420p、**CRF 28 / preset medium**，比原 CRF 18 / fast 更偏向节省体积，允许细节损失；保留分辨率和默认 30 FPS。脚本支持 `--crf 0..51` 和 `--preset` 调整；CRF 越高越偏向小文件。奇数尺寸在右侧／底部补齐到偶数。PNG 按数字采样编号排序，编号不连续也可处理，缺失编号会报告但不补帧。因此视频是已有图像的连续预览，存在缺帧时不能直接以视频时间对齐原始 CSV 时间轴。
 
 每个会话根目录还会保存 `initial.png`：从 `images/head/` 中选择数字采样编号最小的现有 PNG，逐字节独立复制并校验，不从视频截图，也不改变原图尺寸或像素。即使最早几个采样缺少 head 图像，也会选第一张实际存在的 head 图片。缺少 head 相机时报告错误并保留原始目录。
 

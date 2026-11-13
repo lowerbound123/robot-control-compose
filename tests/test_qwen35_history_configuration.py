@@ -54,7 +54,7 @@ def test_manifest_uses_existing_contract_and_only_task_is_hot():
     assert path.exists(), 'history manifest missing'
     config = load_yaml_config(path)
     implementation().validate_manifest(config)
-    for field, value in [('mode', 'async'), ('call_every_actions', 25), ('control_mode', 'epos')]:
+    for field, value in [('control_mode', 'epos')]:
         changed = json.loads(json.dumps(config))
         changed['execution'][field] = value
         with pytest.raises(ValueError):

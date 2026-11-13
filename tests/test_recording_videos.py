@@ -73,6 +73,24 @@ class RecordingVideosTests(unittest.TestCase):
                  for p in self.root.rglob('*') if p.is_file()}
         self.assertEqual(before, after)
 
+    def test_default_compression_reduces_size_relative_to_previous_settings(self):
+        import random
+        from PIL import Image
+        default = self.session('record_default')
+        previous = self.session('record_previous')
+        random_source = random.Random(42)
+        for index in (2, 10):
+            data = bytes(random_source.randrange(256) for _ in range(128*96*3))
+            for folder in (default, previous):
+                Image.frombytes('RGB', (128, 96), data).save(folder / 'images/head' / f'{index}.png')
+        for folder, options in ((default, []), (previous, ['--crf', '18', '--preset', 'fast'])):
+            result = subprocess.run([sys.executable, str(SCRIPT), str(folder), *options],
+                                    capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.probe(folder / 'videos/head.mp4')['nb_read_frames'], '2')
+        self.assertLess((default / 'videos/head.mp4').stat().st_size,
+                        (previous / 'videos/head.mp4').stat().st_size)
+
     def test_batch_encodes_numeric_order_then_removes_both_image_directories(self):
         sessions = [self.session(cameras=('head', 'left_wrist', 'right_wrist')),
                     self.session('nested/record_two')]

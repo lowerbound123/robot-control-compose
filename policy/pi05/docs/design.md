@@ -59,7 +59,7 @@
 
 用户明确要求 chunk 裁剪融合套用 Qwen35。把 Qwen35 现有通用调度实现抽到 SDK 的轻量 `AsyncChunkPolicy`，两边复用同一份代码；SDK 仅增加标准库/NumPy 逻辑，不引入模型依赖。Qwen35 的固定 50/30 和专属夹爪后处理保持原行为，π0.5 调用同一裁剪/融合实现而不应用该偏移。
 
-使用独立的单线程模型执行器，串行完成 load/warmup/predict/reset/release。策略声明 sync 回调、每完整动作回调一次；昂贵的推理在策略内部异步进行。
+使用独立的单线程模型执行器，串行完成 load/warmup/predict/reset/release。默认声明 sync 回调、每完整动作回调一次；RC 的 mode/call_every_actions 均可修改，策略不强制这两个值。昂贵的推理在策略内部异步进行。
 
 每次调用原生 `predict_action_chunk`，按 checkpoint 的 `n_action_steps` 选择可执行前缀，并验证 `0 < n_action_steps <= chunk_size`。补充阈值可配置，默认按可执行长度的 60% 取整并限制在有效范围内；50 步配置对应少于 30 步触发补充。首次空缓存等待第一批；旧缓存耗尽时等待现有任务，不重复发起第二个模型任务。
 

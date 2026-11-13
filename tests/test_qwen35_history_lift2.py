@@ -47,7 +47,7 @@ def test_gripper_threshold_only_changes_output_copy_and_preserves_original_polic
 
 
 @pytest.mark.parametrize('pipelined', [False, True])
-def test_history_cadence_and_raw_canonical_are_unchanged(pipelined):
+def test_history_passthrough_preserves_received_targets_and_raw_model_output(pipelined):
     module = entry()
     backend = Backend()
     backend.output[:, [6, 13]] = [2.5, 3.]
@@ -62,8 +62,8 @@ def test_history_cadence_and_raw_canonical_are_unchanged(pipelined):
                                      runtime=SimpleNamespace(consumed_actions=count, control_epoch=1))
             np.testing.assert_array_equal(remaining[:, 6], 0.)
             np.testing.assert_allclose(remaining[:, 13], 4.9)
-            np.testing.assert_array_equal(context.canonical[:, 6], 2.5)
-            np.testing.assert_array_equal(context.canonical[:, 13], 3.)
+            np.testing.assert_array_equal(backend.output[:, 6], 2.5)
+            np.testing.assert_array_equal(backend.output[:, 13], 3.)
             assert context.history.tick == count
             previous = count
         assert len(backend.calls) == 1

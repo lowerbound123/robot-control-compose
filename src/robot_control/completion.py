@@ -235,6 +235,11 @@ def analyze(text, cursor, catalog):
     elif previous == ['pose', 'restore']:
         spec = {'name': 'pose', 'type': 'path', 'root': '.', 'kind': 'file', 'suffixes': ['.json']}
         path_request = {'instance': None, 'spec': spec, 'base_dir': catalog.get('pose_root', '.'), 'pose': True}
+    elif previous == ['record', 'reduce']:
+        choices['all'] = CompletionItem('all', 'all', '处理全部已正常停止的日志')
+        spec = {'name': '日志文件夹名或 all', 'type': 'path', 'root': '.', 'kind': 'directory',
+                'help': '转视频并校验后删除原图；保留 initial.png 和其他日志'}
+        path_request = {'instance': None, 'spec': spec, 'base_dir': catalog.get('logs_root', '.'), 'record_reduce': True}
     elif previous[:1] == ['policy'] and current >= 2 and previous[1] in instances:
         identity, entry = previous[1], instances[previous[1]]
         settings = entry.get('config_hints', {}).get('settings', {})

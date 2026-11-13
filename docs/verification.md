@@ -2,6 +2,22 @@
 
 当前命令树与 configure 配置契约见 [统一命令树](commands.md)；下文按时间记录的旧 set/show/switch 等拼写只代表当时验收接口，现已移除。当前默认只做改动相关的定向验收；完整接口回归、整套 Docker smoke 等全量验收须获得用户对本轮的明确允许，不能因公共契约变化或阶段结束自动执行。跳过不计通过。
 
+## record reduce 与压缩默认值（2026-11-13）
+
+新增 `record reduce <日志文件夹名|all>`，后台处理已正常停止的录制，命令、补全和离线入口共用原有转换规则。默认改为 H.264 CRF 28 / medium，保留分辨率、30 FPS 和无损 head 首帧；视频校验通过后才删除原始图像目录。
+
+最终定向验证 **164 passed，48.69 秒**，退出码 0；日志 `/private/tmp/record-reduce-final.log`。覆盖临时录制的真实 FFmpeg 编码、指定目录/all、进行中与重复任务跳过、失败保留、部分失败汇总、目录与符号链接边界、补全、example 与自链运行不受影响、MCP 权限和 RC 退出清理。固定临时图像样本的新默认视频小于旧 CRF 18 / fast；不将该样本推断为实际录制的固定压缩比。
+
+RC Dockerfile 增加 FFmpeg，尚未构建镜像。没有运行全量验收、clip 策略测试、真实模型或机器人，没有处理用户的真实日志，没有修改服务器运行状态。
+
+## RC 调用调度与 history 推理分离（2026-11-13）
+
+所有 policy 移除固定 sync 和固定调用间隔的限制，合法模式和正整数仍由 SDK/RC 校验。仅变更 RC mode/call_every_actions 保留动作缓存与 context。三个 history 来源按输入剩余动作数量决定透传或推理，pipelined 只控制接近点融合；RC 在外部 async 推理期间继续消费，并在收包时裁掉已消费前缀。
+
+定向验证 **477 passed、3 skipped，79.54 秒**，退出码 0；日志 `/private/tmp/policy-scheduling-final.log`。覆盖配置解析、运行中模式切换、迟到暂停、原 history/LIFT2 请求与历史采样、RC 发布与前缀保护、SDK 标记传输、example 和 example 自链。三项跳过均因本机缺少 Torch，不计通过。
+
+硬裁剪保留在 clip policy 内，仅保证返回 chunk 内限幅；RC 只对标记进行裁剪和消费计数。按用户要求没有新增或执行 clip 策略测试，也未导入其源码；仅做源码与配置静态核查。11 个 manifest 模板的执行/参数默认值未改变，22 个本地实际配置文件保持 Git 忽略。没有运行全量验收、Docker、真实模型或机器人验证，没有操作服务器运行状态。
+
 ## LIFT2 独立 connector（2026-11-12）
 
 新增 ROS 1 Noetic / CPython 3.10 的 `lift2` 来源，支持双臂及夹爪 qpos、关节/末端状态和三路 RGB。

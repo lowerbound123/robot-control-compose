@@ -343,7 +343,7 @@ def create_server(controller):
 
         Examples: policy list; config rc show; global show; policy <instance> config show;
         policy <instance> config set <key> <raw value>; policy <instance> retry; record start/stop.
-        Queries and recording need no take; other writes require the structured take tool.
+        Queries and recording on/off/toggle need no take; log reduction and other writes require the structured take tool.
         UI commands stay local. Prefer structured policy_config and policy_command for policy writes.
         """
         return await submit(line, wait, timeout_s, expected_control)

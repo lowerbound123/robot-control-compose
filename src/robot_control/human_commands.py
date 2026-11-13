@@ -47,6 +47,8 @@ def execution_line(command):
     if kind in ('pose_save', 'pose_restore'):
         return shlex.join(['save' if kind == 'pose_save' else 'load', target])
     if kind == 'record':
+        if args and args[0] == 'reduce':
+            return shlex.join(['record', *args])
         return 'record' + ((' ' + {'start':'on', 'stop':'off', 'status':'status'}[args[0]]) if args else '')
     return kind
 
@@ -85,7 +87,8 @@ class HumanCommandSupport:
                 global_keys = []
             return {'instances': instances, 'sources': list(records),
                     'rc_config': public_value(getattr(self, '_rc_config_draft', self.config)),
-                    'global_keys': global_keys, 'pose_root': str(self.outputs / 'state_saves')}
+                    'global_keys': global_keys, 'pose_root': str(self.outputs / 'state_saves'),
+                    'logs_root': str(self.outputs / 'logs')}
 
     def submit(self, line, *, origin='tui', policy_arguments=None, mcp_tool=None,
                expected_control=None, batch_id=None):

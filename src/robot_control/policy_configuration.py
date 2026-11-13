@@ -3,6 +3,8 @@ import copy
 import time
 from dataclasses import replace
 
+from rc_policy_sdk.configuration import same_config
+
 from .config import PolicyRecord, validate_policy
 from .member_reload import ReloadCandidate
 from .operations import ControlRequest, PolicyConfigEdit
@@ -90,10 +92,17 @@ class PolicyConfigurationSupport:
                 self._check_config_preparation(job)
             edit = job['request'].config_edit
             prepared = target.prepare_config(edit.path, edit.value, cancel)
+            before, after = copy.deepcopy(baseline_member.runtime_config), copy.deepcopy(prepared['config'])
+            for value in (before, after):
+                for field in ('mode', 'call_every_actions'):
+                    value.get('execution', {}).pop(field, None)
+            scheduling_only = (edit.path in ('execution.mode', 'execution.call_every_actions')
+                               and prepared['action'] is None and same_config(before, after))
             with self._lock:
                 self._check_config_preparation(job)
                 record, member = self._configuration_candidate(job, prepared['config'])
-                job.update(record=record, member=member, action=prepared['action'], commit=True)
+                job.update(record=record, member=member, action=prepared['action'], commit=True,
+                           scheduling_only=scheduling_only)
                 self._invalidate_policy_editor()
             if prepared['action'] == 'reinitialize':
                 # Reuse the same guarded lifecycle job and original public receipt.

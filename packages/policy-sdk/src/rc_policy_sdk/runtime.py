@@ -195,6 +195,7 @@ class PolicyRuntime:
         self.consumed_actions = metadata.get('consumed_actions', 0)
         self.control_epoch = metadata.get('control_epoch', message.get('generation', 0))
         self.config_version = message.get('config_version', 1)
+        self.action_stats = metadata.get('action_stats', {})
         self.context_id = message.get('context_id', getattr(channel, 'context_id', None))
         self._globals = getattr(channel, 'global_proxy', None)
         self._inference_thread = None

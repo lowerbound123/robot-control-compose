@@ -34,6 +34,7 @@ record
 record start
 record stop
 record status
+record reduce <日志文件夹名|all>
 
 camera
 camera show
@@ -93,7 +94,9 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 
 `resume` 只恢复 policy 拥有控制权时的运行，不隐式归还 MCP 控制权。本地接管/归还使用 `mcp take` / `mcp return`；HTTP 的结构化工具名仍为 take/return。MCP 工具参数只能是 JSON 对象，无参数工具可省略对象。`mcp help` 显示工具目录。
 
-裸 `record` 切换录制，带参数只允许 start/stop/status；on/off/toggle 仅属于结构化 MCP record 工具的 action 值。录制不改变控制归属或运动。`monitor` 切换机器人面板，`monitor <实例>` 切换该实例面板；不接受 on/off 参数。
+裸 `record` 切换录制，start/stop/status 分别开始、停止和查询；on/off/toggle 仅属于结构化 MCP record 工具的 action 值。`record reduce <日志文件夹名>` 在后台缩减当前 `outputs/logs` 下的指定目录，`record reduce all` 扫描全部。补全提供文件夹名，含空格的名称需要引号；不接受任意路径。转换并验证视频后删除原图，保留 `initial.png`、视频和其他日志；进行中的会话自动跳过。录制与日志缩减均不改变控制归属或运动。MCP 的录制开关仍无需 take；经 MCP `command` 执行 reduce 属于文件写操作，需要先 take。详情见[录制说明](recording.md)。
+
+`monitor` 切换机器人面板，`monitor <实例>` 切换该实例面板；不接受 on/off 参数。
 
 camera、monitor、snapshot 和 policy manage 是本地界面操作，人工文本批次不接受这些路径，也不允许递归 mcp。文本批次仍逐行 FIFO，exit 只能在末行。所有固定命令树关键字均为自定义策略命令保留字，policy 根下 help/list/switch/manage 也不能用作来源 ID。
 

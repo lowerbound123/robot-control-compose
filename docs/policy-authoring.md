@@ -138,6 +138,18 @@ MCP 持有控制权时可用 `retry_reload(instance_id=...)` 或 `command("polic
 
 `policy a-0 config save` 保存该实例的有效配置到来源目录 `policy/a/`，保留 YAML 注释和顺序，并将落盘 ID 写为 a。不会创建实例目录或修改其他实例。重复来源必须指定实例，不能用 `policy a config save`。多个实例先后保存时，最后一次成功保存决定来源默认配置。链顺序通过本地 `policy manage save` 或 MCP `policy_chain(action="save", policies=[...])` 保存。
 
+## RC 调用调度与 policy 推理判断
+
+所有 policy 的外部调用模式由 RC 的 `execution.mode`（sync/async）控制，调用间隔由 `execution.call_every_actions` 控制；合法值统一由 SDK/RC 校验，policy 不应再限制必须 sync 或间隔必须为 1。只修改这两个字段且不请求生命周期动作时，配置事务保留动作缓存、动作代次和已加载 context，仍执行读者屏障与配置版本确认。
+
+调用 policy 不等于启动模型推理。policy 可根据输入剩余 chunk 自行选择原样返回或推理；需要推理的回调可以等待结果，外部 async 的 RC 继续执行缓存。返回 chunk 保持请求时的起点，RC 负责裁掉请求到回包期间已消费的前缀及保护已提交目标。独立 `observe` 可在推理期间采样历史。
+
+## 可选动作计数标记
+
+`ActionChunk(actions, modes, clipped=...)` 可附带与动作数组形状相同的布尔矩阵，表示 policy 已对哪些目标维度执行过裁剪。SDK 复制并验证标记，通过结果的 `action_annotations` 传递；标记只用于统计，不要求 RC 改变动作或再次限幅。
+
+RC 随动作一起裁掉过时标记并保留已提交目标的标记，只在完整发布确认后累计。无标记的原样返回保留相同目标的来源和标记；原生链中透传的标记保留原实例/context 归属，发生变化的前缀不继续冒用旧标记。统计通过 `runtime.action_stats` 按实例 ID 返回，包含 `context_id`、`clipped_actions` 和 `clipped_dimensions`。policy 应校验 context 绑定，缓存统计供 monitor 只读展示；普通 reset 保留，重新初始化的新 context 从零开始。
+
 ## 可选配置导出
 
 策略可提供纯数据 `export_config(context, config)`，返回 `{"policy": manifest_projection, "settings": display_fields, "files": [{"path": "model.json", "data": model_snapshot}]}`。SDK 在初始化、配置提交和重新初始化确认时导出，RC 缓存结果供 `config show/save` 使用；查询和保存不临时调用策略。hook 不读写文件、不执行推理，不修改传入的配置或 context。

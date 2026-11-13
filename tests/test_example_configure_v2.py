@@ -1,5 +1,6 @@
 import copy
 import json
+import pytest
 
 from test_example_controller import example_rc, ROOT
 from project_templates import copy_templates
@@ -65,7 +66,8 @@ def test_chain_configure_changes_only_target_and_refreshes_execution(example_rc)
     assert command(rc, 'policy example-0 example')['chunk_size'] == 6
 
 
-def test_pause_after_config_publish_is_not_overwritten_by_success_result(example_rc, monkeypatch):
+@pytest.mark.parametrize('setting,value', [('params.message', 'paused-after-publish'), ('execution.mode', 'async')])
+def test_pause_after_config_publish_is_not_overwritten_by_success_result(example_rc, monkeypatch, setting, value):
     import threading
     from test_controller import until
     rc = example_rc
@@ -80,7 +82,7 @@ def test_pause_after_config_publish_is_not_overwritten_by_success_result(example
 
     monkeypatch.setattr(rc, '_run_configure', delayed_result)
     command(rc, 'resume')
-    identity = rc.submit('policy example config set params.message paused-after-publish')
+    identity = rc.submit(f'policy example config set {setting} {value}')
     try:
         assert published.wait(5)
         command(rc, 'pause')
@@ -89,7 +91,8 @@ def test_pause_after_config_publish_is_not_overwritten_by_success_result(example
     reply = rc.wait_operation(identity, 5)
     assert reply['status'] in ('succeeded', 'cancelled'), reply
     assert rc.status()['state'] == 'paused'
-    assert rc.query('policy example config show')['params']['message'] == 'paused-after-publish'
+    section, field = setting.split('.')
+    assert rc.query('policy example config show')[section][field] == value
 
 
 def test_example_export_is_cached_and_saved_without_changing_other_instances(example_rc):
@@ -115,3 +118,62 @@ def export_config(context, config):
     assert rc.query('policy example-1 config show') == before
     command(rc, 'policy example-0 config set params.chunk_size 7')
     assert rc.query('policy example-0 config show')['model_config'] == {'message': 'saved-model'}
+
+
+def test_rc_scheduling_edits_keep_action_epoch_and_cached_targets(example_rc):
+    import numpy as np
+    rc = example_rc
+    values = np.ones((4, 14), np.float32)
+    with rc._lock:
+        rc.buffer.install(values)
+        generation = rc.buffer.generation
+    worker, context_id = rc._worker, rc._worker.context_id
+    command(rc, 'policy example config set execution.mode async')
+    command(rc, 'policy example config set execution.call_every_actions 7')
+    assert rc.buffer.generation == generation
+    np.testing.assert_array_equal(rc.buffer.remaining(), values)
+    assert rc._worker is worker and worker.context_id == context_id
+
+
+@pytest.mark.parametrize('mode', ['async', 'sync'])
+def test_running_mode_edit_waits_for_inflight_and_keeps_execution_context(example_rc, mode):
+    from test_controller import until
+    rc = example_rc
+    command(rc, 'policy example config set params.inference_delay_s 0.15')
+    command(rc, 'policy example config set execution.mode ' + ('sync' if mode == 'async' else 'async'))
+    command(rc, 'resume')
+    until(lambda: rc._inflight is not None)
+    worker, context_id, generation = rc._worker, rc._worker.context_id, rc.buffer.generation
+    command(rc, f'policy example config set execution.mode {mode}')
+    assert rc.buffer.generation == generation
+    assert rc._worker is worker and worker.context_id == context_id
+    consumed = rc.buffer.consumed
+    until(lambda: rc.buffer.consumed > consumed)
+    assert rc.status()['state'] == 'running'
+
+
+def test_chain_passthrough_keeps_marker_source_and_reports_confirmed_counts(example_rc):
+    from test_controller import until
+    rc = example_rc
+    path = rc.registry.directory / 'example' / 'main.py'
+    path.write_text(path.read_text() + '''
+from rc_policy_sdk.actions import ActionChunk
+import numpy as np
+_unmarked_policy = policy
+def policy(context, state, action_chunk, images, config, *, runtime):
+    result = _unmarked_policy(context, state, action_chunk, images, config, runtime=runtime)
+    if not config['id'].endswith('-0') or len(action_chunk): return result
+    values = np.asarray(result, dtype=np.float32)
+    markers = np.zeros(values.shape, bool)
+    markers[:, 0] = True
+    return ActionChunk(values, ('qpos',)*len(values), clipped=markers)
+''')
+    copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
+    command(rc, 'policy switch example_chain')
+    workers = rc._worker.member_workers()
+    command(rc, 'resume')
+    until(lambda: rc.buffer.consumed >= 3)
+    owner = ('example-0', workers['example-0'].context_id)
+    with rc._lock:
+        assert rc.buffer.clip_stats(owner)['clipped_actions'] == rc.buffer.consumed
+        assert rc.buffer.clip_stats(('example-1', workers['example-1'].context_id))['clipped_actions'] == 0

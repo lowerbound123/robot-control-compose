@@ -5,7 +5,7 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=compose-cli /docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential && rm -rf /var/lib/apt/lists/*
+    build-essential ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY requirements/rc.lock /tmp/rc.lock
 RUN python3 -m pip install --no-cache-dir -r /tmp/rc.lock && python3 -m pip check
 

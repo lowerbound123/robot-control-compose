@@ -221,11 +221,11 @@ def load_model_config(path, *, project_root):
 
 def validate_manifest(config):
     execution = config.get('execution', {})
-    if (execution.get('mode') != 'sync' or execution.get('call_every_actions') != 1
-            or execution.get('control_mode') != 'qpos'):
-        raise ValueError('Pi05 requires sync callbacks every complete qpos action')
-    if any(path != 'execution.on_connector_switch' for path in config.get('hot_reloadable', [])):
-        raise ValueError('Pi05 configuration is cold; use switch-model')
+    # RC owns call scheduling; policies only constrain their action format.
+    if execution.get('control_mode') != 'qpos':
+        raise ValueError('Pi05 returns qpos actions')
+    if any(path not in ('execution.mode', 'execution.call_every_actions', 'execution.on_connector_switch') for path in config.get('hot_reloadable', [])):
+        raise ValueError('only RC scheduling and connector handling are hot reloadable; use switch-model for model settings')
     path = config.get('params', {}).get('model_config_path')
     if not isinstance(path, str) or not path.strip():
         raise ValueError('params.model_config_path must be nonempty')

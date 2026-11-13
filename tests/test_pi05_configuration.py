@@ -114,13 +114,16 @@ def test_config_import_stays_gpu_framework_free():
                    env={**__import__('os').environ, 'PYTHONPATH': str(PACKAGE)})
 
 
-def test_manifest_requires_the_existing_sync_qpos_boundary():
+def test_manifest_allows_rc_scheduling_but_requires_qpos():
     validate = implementation().validate_manifest
     manifest = {'execution': {'mode': 'sync', 'control_mode': 'qpos', 'call_every_actions': 1},
                 'params': {'model_config_path': 'model.json'}, 'hot_reloadable': []}
     validate(manifest)
     manifest['execution']['mode'] = 'async'
-    with pytest.raises(ValueError, match='sync'): validate(manifest)
+    manifest['execution']['call_every_actions'] = 7
+    validate(manifest)
+    manifest['execution']['control_mode'] = 'epos'
+    with pytest.raises(ValueError, match='qpos'): validate(manifest)
 
 
 @pytest.mark.parametrize('value', [1e100, 1e-100])

@@ -29,12 +29,12 @@ resume
 
 ## X、回调模式与模型流水线
 
-manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos` 必须保持不变：每个完整动作目标成功发送并消费后，RC 进入一次轻量回调。模型流水线由 **model.json** 的 `execution.pipelined` 决定，不通过更改 manifest 的 mode 开启。
+RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC 发起策略调用的间隔，策略不限定这两个值；`control_mode` 仍需 `qpos`。是否启动模型推理由策略检查输入剩余动作数量决定，`model.json` 的 `execution.pipelined` 只控制新旧动作是否融合。
 
 | model.json 字段 | 默认值 | 含义 |
 | --- | --- | --- |
-| `execution.replan_every_actions` | 25 | X；整数，范围 1～50 |
-| `execution.pipelined` | false | false 同步，true 后台异步推理 |
+| `execution.replan_every_actions` | 25 | X；剩余动作 <= 50-X 时推理，否则原样返回，范围 1～50 |
+| `execution.pipelined` | false | false 返回完整新预测，true 与输入剩余 chunk 融合后返回 |
 | `execution.inference_timeout_s` | 60 | 从提交时开始计时的单次推理期限 |
 | `inference.num_inference_steps` | null | 使用 checkpoint 的 Euler 步数，当前为 10 |
 | `inference.use_cuda_graph` | true | 尝试捕获专家去噪循环 |
@@ -50,17 +50,17 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 修改阈值不重载模型、不清空历史。RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，
 从新观测重新规划并应用新阈值；已经提交给 connector 的动作不撤回。
 
-同步模式预测完整 50 步，只返回前 X 步。消费完 X 步后用新观测推理，等待期间不继续消费旧 chunk。
+每次策略调用先检查 RC 传入的剩余 chunk。剩余数量大于 `50-X` 时直接原样返回，不推理、不重复做夹爪或硬裁剪处理；否则完成一次模型推理。`pipelined=false` 返回完整 50 条新预测，`true` 使用 SDK 接近点拼接融合输入旧 chunk 和新预测。默认旧段尾点匹配新段最近点，全部 14 维包含夹爪参与融合。
 
-异步模式首轮等待完整预测；此后每累计消费 X 步提交新推理，旧 chunk 后半段可以继续执行。结果按观测之后实际消费的步数裁掉过时前缀，再复用 SDK 的 `TrajectoryAddTransition`：默认旧段尾点匹配新段最近点，14 维包含夹爪一起插值，factor=5、smoothing=0.25。融合缓存按实际长度消费。没有原脚本的 replan_ahead/blend_steps 两套阈值。
+一次需要推理的回调会等本轮模型完成。RC 为 async 时继续发送旧缓存，为 sync 时等待回调返回。回包始终保持请求时的动作起点，只有 RC 裁掉请求到回包期间实际消费的前缀，并保留已开始/已提交目标。融合缓存按实际长度消费；模型预测和待执行队列不再在 policy 内重复维护两条时间线。
 
-同时最多一个在途请求。推理跨过多个触发点后只提交一次当前请求，不补发；队列耗尽则等待当前请求。完全过时的结果丢弃并重新推理，保留有效旧缓存。超时、异常或非有限动作进入现有 policy 故障处理，不自动清除故障或冷重试。
+历史通过独立 observe 回调按消费计数采样，模型推理等待时也可更新。推理使用请求消费时刻的历史快照，迟到的请求不会混入未来观测。观察回调漏步时仍以最新图补齐并告警。超时、异常和非有限预测继续进入既有故障处理。
 
 ## 历史、动作与模型
 
 历史只属于本实例 context，不写文件、不放入共享全局状态。每个已消费动作保存一张经过来源缩放和量化的头相机图：默认 CHW uint8、长边192；最多保存481张。第n个动作完成后的观测记为索引n−1，历史时钟为n。当前观测三路图默认长边256。
 
-推理仍按 checkpoint 的 `context_slot_count=32`、`context_slot_stride=15` 采样，即 t−480 到 t−15，旧帧在前。X改变的是推理时刻及该时刻可见的历史，不改变15步采样间隔。不足的历史不补齐到32张；重复消费计数、暂停、等待推理和限速中间周期不增长历史。回调漏步、计数倒退或未重置的代次变化明确报错。
+推理仍按 checkpoint 的 `context_slot_count=32`、`context_slot_stride=15` 采样，即 t−480 到 t−15，旧帧在前。X改变的是推理时刻及该时刻可见的历史，不改变15步采样间隔。不足的历史不补齐到32张；重复消费计数、暂停、等待推理和限速中间周期不增长历史。观察漏步会补帧并告警，消费计数或代次倒退明确报错。
 
 共享图像在回调内复制，缩放后的历史拥有独立内存。后台推理仅持有自有当前图像与不可变历史快照；不保留共享 mmap、切片或旧 runtime。reset/release 清空历史，重复来源实例互相隔离。
 

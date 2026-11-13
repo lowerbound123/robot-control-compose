@@ -8,6 +8,8 @@
 
 ```text
 policy qwen35_history config show
+policy qwen35_history config set execution.mode async
+policy qwen35_history config set execution.call_every_actions 1
 policy qwen35_history config set model_config.execution.pipelined true
 policy qwen35_history config set model_config.execution.replan_every_actions 45
 policy qwen35_history config set model_config.inference.generate_language ["Memory","Scene","Subtask"]
@@ -18,6 +20,7 @@ policy qwen35_history config save
 
 | 设置 | 生效方式 |
 | --- | --- |
+| `execution.mode`、`execution.call_every_actions` | RC 调用调度更新，保留动作缓存、动作代次和策略上下文；仍确认配置版本 |
 | `params.gripper_threshold`、clip 的 `params.arm_clip_enabled` / `params.arm_clip_max_delta_rad` | 普通提交，保留模型及历史；已提交动作不撤回 |
 | `model_config.execution.inference_timeout_s` | 普通提交，用于后续请求，原请求期限不变 |
 | `model_config.execution.pipelined`、`replan_every_actions`、`model_config.transition.*` | reset，排空旧推理、清空动作及历史，保留权重 |
@@ -32,11 +35,13 @@ policy qwen35_history config save
 
 ## 流水线与融合
 
-RC 保持 30 Hz；manifest 保持 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos`。完整目标等待发布确认后才消费并进入回调；已开始的分步目标继续完成，不因重复请求空转。
+RC 保持 30 Hz，`execution.mode` 接受 `sync` / `async`，`execution.call_every_actions` 接受正整数。它们分别决定 RC 是否等待策略返回、多久调用一次策略；不会替 policy 决定是否推理。目标只有收到完整发布确认才算消费，已开始的分步目标继续完成。
 
-`pipelined=false` 时，预测 50 条、执行前 X 条，再同步等待下一批。`pipelined=true` 时，X 是重规划触发间隔，不是旧缓存执行上限；新推理未完成时继续消费余量。初始缓存 50 条、X=45 时，第 45 条消费后启动推理，第 46～50 条仍可执行。
+policy 每次查看传入的剩余动作数量：大于 `50-X` 时原样返回，不推理、不重复后处理；小于或等于此阈值时执行一轮推理。X 是现有 `model_config.execution.replan_every_actions`，例如 X=45 表示剩余 5 条时推理。RC 调用间隔和 policy 推理阈值是两项独立配置，现有值不会自动互相覆盖。
 
-新结果先按实际消费数裁掉过时前缀，再使用 SDK `TrajectoryAddTransition` 寻找接近点并融合。默认用旧段尾点寻找新段最近点，全部 14 维（包含夹爪）参与距离和插值；之后执行各策略的夹爪阈值处理，clip 最后执行臂关节裁剪。融合后的缓存长度可能超过 50，按实际长度消费。
+`pipelined=false` 直接返回完整新预测；`true` 将请求中收到的旧 chunk 与新预测融合后返回。这个开关不再启动另一套后台调度。需要推理的 policy 调用会等待本轮结果；外层 async 时 RC 同时继续消费旧缓存，sync 时等待返回。
+
+policy 使用 SDK `TrajectoryAddTransition` 寻找接近点并融合，默认用旧段尾点寻找新段最近点，全部 14 维（包含夹爪）参与距离和插值；之后执行夹爪处理和 clip 的臂关节裁剪。回包保留请求时的起点，由 RC 单独裁掉已经消费的前缀、保留已提交目标并更新缓存，不重复裁剪。融合后的缓存长度可能超过 50，按实际长度消费。
 
 | `transition` 字段 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -46,7 +51,7 @@ RC 保持 30 Hz；manifest 保持 `execution.mode=sync`、`call_every_actions=1`
 | `exponential_factor` | `5.0` | 正数，指数融合因子 |
 | `exponential_smoothing` | `0.25` | 正数，指数平滑系数 |
 
-同时最多一个后台推理。完全过时的新结果被丢弃，并从最新观测重新推理；有效旧缓存可继续执行，缓存耗尽时等待。超时、非有限输出和真实推理异常仍进入故障处理，不自动恢复。
+RC 同时只保留一个在途策略请求。返回结果全部过时时，由 RC 丢弃结果并保留有效缓存；缓存耗尽时等待新结果。超时、非有限输出和真实推理异常仍进入故障处理。历史由独立 observe 通道更新，模型使用请求消费时刻的历史快照。
 
 ## Clip 的阈值与计数
 
@@ -65,6 +70,8 @@ monitor qwen35_history_clip
 - `arm_clip_count`：已消费动作中至少一个臂关节超过阈值的动作条数。
 - `arm_clip_joint_count`：已消费动作中超过阈值的关节总次数。
 
-计数依据后续回调报告的 `consumed_actions` 更新，不统计未执行预测，也不因重复返回缓存而累加。普通 reset 重建消费游标但保留累计值，实例重新初始化/重载后清零。裁剪改变目标本身，不追加动作补回原预测终点。
+硬裁剪在 policy 内完成：首条以请求时的 qpos 为参考，随后按返回 chunk 内上一条目标裁剪。只保证返回 chunk 内部的限幅，不承诺 RC 裁掉前缀后的接续首条仍相对上一条实际执行目标满足阈值；RC 不进行第二次硬裁剪，设备限速仍有效。
 
-切换硬裁剪开关保留模型、历史和累计计数。关闭后继续跟踪实际消费目标，重新开启时沿用最后一条已消费目标作为锚点；RC 的设备限速始终生效。
+policy 为返回动作附带裁剪标记，RC 在实际消费时按实例/context 累计，再通过观测反馈给 monitor。丢弃的预测前缀不计数，原样返回保留旧标记，重复确认不重复累计。普通 reset 保留累计值，实例重新初始化/重载后清零。裁剪改变目标本身，不追加动作补回原预测终点。
+
+切换硬裁剪开关保留模型、历史和累计计数。关闭时新预测附带的裁剪标记全为 false，开启后对后续新预测恢复 chunk 内限幅。

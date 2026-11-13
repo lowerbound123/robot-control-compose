@@ -1,11 +1,13 @@
 """Local recording commands and bounded controller producers."""
 import copy
+from concurrent.futures import CancelledError
 import time
 
 from .recording import RecordingService
+from .recording_reduce import RecordingReducer, ReductionFailed
 
 
-RECORD_HELP = 'record：切换录制；record start：开始；record stop：停止；record status：状态、目录、采样、缺口和待写入量'
+RECORD_HELP = 'record：切换录制；record start：开始；record stop：停止；record status：状态；record reduce <日志文件夹名|all>：缩减已停止录制的体积'
 
 
 class RecordingControl:
@@ -14,6 +16,9 @@ class RecordingControl:
         self._record_requested = False
         self._recorder = RecordingService(self.outputs/'logs', self.run_id, self._record_snapshot,
             on_error=self._record_error, stop_timeout=self.config.get('timeouts', {}).get('release_s', 30))
+        self._record_reducer = RecordingReducer(self.outputs/'logs',
+            on_log=lambda line: self._emit_command('record reduce: ' + line,
+                                                  'error' if line.startswith('[ERROR]') else 'info'))
         if hasattr(self.robot, 'set_command_observer'):
             self.robot.set_command_observer(self._recorder.sent)
         self.operations.on_event = lambda event: self._recorder.event('events',
@@ -66,6 +71,11 @@ class RecordingControl:
         try:
             if self._stop.is_set():
                 raise RuntimeError('controller is shutting down')
+            if len(words) == 3 and words[1] == 'reduce':
+                self.operations.update(identity, 'running')
+                future = self._record_reducer.submit(words[2])
+                future.add_done_callback(lambda result: self._reduction_finished(identity, result))
+                return
             if len(words) > 2:
                 raise ValueError(RECORD_HELP)
             action = words[1] if len(words) == 2 else 'toggle'
@@ -99,3 +109,17 @@ class RecordingControl:
                 self.operations.update(identity, 'failed', error=exc)
                 self._emit_command(f'录制命令失败：{exc}', 'error')
         future.add_done_callback(finished)
+
+    def _reduction_finished(self, identity, future):
+        try:
+            result = future.result()
+            self.operations.update(identity, 'succeeded', result=result)
+            self._emit_command(f"record reduce 完成：{result['target']}；转换 {result['converted']}；"
+                               f"跳过 {result['skipped']}；失败 {result['failed']}")
+        except CancelledError as exc:
+            self.operations.update(identity, 'cancelled', reason=str(exc))
+            self._emit_command(str(exc), 'warning')
+        except Exception as exc:
+            self.operations.update(identity, 'failed', error=exc,
+                                   result=exc.result if isinstance(exc, ReductionFailed) else None)
+            self._emit_command(f'record reduce 失败：{exc}', 'error')

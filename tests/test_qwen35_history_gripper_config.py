@@ -42,14 +42,14 @@ def test_threshold_commit_changes_cached_grippers_without_reset_or_inference(ent
         assert candidate['params']['gripper_threshold'] == updated
         # Normal SDK commits update the existing dict; the context retains that reference.
         active['params'].update(candidate['params'])
-        output = context.step(state, output[1:], frames(1),
-                              runtime=SimpleNamespace(consumed_actions=1, control_epoch=1))
+        output = context.step(state, [], frames(1),
+                              runtime=SimpleNamespace(consumed_actions=1, control_epoch=2, config_version=2))
         np.testing.assert_allclose(output[:, [6, 13]], np.tile([0., 0.] if lift2 else [.04, -1.2], (len(output), 1)))
-        np.testing.assert_array_equal(context.canonical, raw[1:len(output)+1])
-        np.testing.assert_array_equal(output[:, :6], raw[1:len(output)+1, :6])
+        np.testing.assert_array_equal(context.canonical, raw[:len(output)])
+        np.testing.assert_array_equal(output[:, :6], raw[:len(output), :6])
         assert context.policy_config is active and context.history.tick == 1
-        assert len(backend.calls) == 1
-        assert [name for name, _ in backend.events] == ['load', 'warmup', 'predict']
+        assert len(backend.calls) == 2
+        assert [name for name, _ in backend.events] == ['load', 'warmup', 'predict', 'predict']
     finally:
         context.close()
 
@@ -98,13 +98,10 @@ def test_committed_config_epoch_keeps_history_and_replans_from_fresh_observation
         old_state = {'qpos': np.zeros(14, np.float32)}
         output = context.step(old_state, [], frames(), runtime=SimpleNamespace(
             consumed_actions=0, control_epoch=1, config_version=1))
-        if pipelined:
-            backend.gate.clear()
         context.step(old_state, output[1:], frames(1), runtime=SimpleNamespace(
             consumed_actions=1, control_epoch=1, config_version=1))
         if pipelined:
-            assert context.pending is not None
-            backend.gate.set()
+            assert context.pending is None
         before_calls = 2 if pipelined else 1
         threshold = 3.5 if source.endswith('lift2') else -1.2
         module.configure(context, active, 'params.gripper_threshold', str(threshold), lambda _: pytest.fail('no reset'))
@@ -129,15 +126,15 @@ def test_committed_config_epoch_keeps_history_and_replans_from_fresh_observation
         context.close()
 
 
-def test_config_version_cannot_hide_an_additional_control_intervention(entry):
+def test_backward_control_epoch_is_rejected(entry):
     module, active, _ = entry
     context = module.HistoryPolicy(config(), policy_config=active, backend=Backend())
     state = {'qpos': np.zeros(14, np.float32)}
     try:
         context.step(state, [], frames(), runtime=SimpleNamespace(
             consumed_actions=0, control_epoch=1, config_version=1))
-        with pytest.raises(RuntimeError, match='control epoch changed'):
+        with pytest.raises(RuntimeError, match='backwards'):
             context.step(state, [], frames(), runtime=SimpleNamespace(
-                consumed_actions=0, control_epoch=3, config_version=2))
+                consumed_actions=0, control_epoch=0, config_version=2))
     finally:
         context.close()

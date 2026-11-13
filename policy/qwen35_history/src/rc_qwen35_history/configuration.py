@@ -161,12 +161,12 @@ def load_model_config(path, *, project_root, robot_type='arx_acone', raw=None):
 
 def validate_manifest(config):
     execution = config.get('execution', {})
-    if (execution.get('mode') != 'sync' or type(execution.get('call_every_actions')) is not int
-            or execution['call_every_actions'] != 1 or execution.get('control_mode') != 'qpos'):
-        raise ValueError('history requires sync callbacks every complete qpos action; use model.json pipelined')
-    if any(path not in ('params.task', 'params.gripper_threshold', 'execution.on_connector_switch')
+    # RC owns call scheduling; policies only constrain their action format.
+    if execution.get('control_mode') != 'qpos':
+        raise ValueError('history returns qpos actions')
+    if any(path not in ('execution.mode', 'execution.call_every_actions', 'params.task', 'params.gripper_threshold', 'execution.on_connector_switch')
            for path in config.get('hot_reloadable', [])):
-        raise ValueError('only params.task, params.gripper_threshold and execution.on_connector_switch are hot reloadable')
+        raise ValueError('only task/threshold params and RC scheduling/connector-switch settings are hot reloadable')
     params = config.get('params', {})
     if 'gripper_threshold' in params:
         threshold = params['gripper_threshold']

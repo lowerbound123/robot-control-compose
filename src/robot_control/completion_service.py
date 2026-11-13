@@ -190,9 +190,14 @@ class CompletionService:
                     raise RuntimeError('实例已变化；路径建议已过期')
                 response = query(request['selector'], request['prefix'], timeout=self.timeout)
             else:
-                from rc_policy_sdk.path_completion import list_paths
-                response = list_paths(request['spec'], request['prefix'], request['base_dir'],
-                                      limit=self.LIMIT, timeout=self.timeout)
+                if request.get('record_reduce'):
+                    from .recording_reduce import log_directories
+                    response = log_directories(request['base_dir'], request['prefix'],
+                                               limit=self.LIMIT, timeout=self.timeout)
+                else:
+                    from rc_policy_sdk.path_completion import list_paths
+                    response = list_paths(request['spec'], request['prefix'], request['base_dir'],
+                                          limit=self.LIMIT, timeout=self.timeout)
                 if request.get('pose'):
                     # pose restore treats relative *.json as project-root paths.
                     # Absolute suggestions point unambiguously at state_saves.
@@ -219,7 +224,7 @@ class CompletionService:
 
     @classmethod
     def _with_response(cls, result, response):
-        items = []
+        items = list(result.items) if result.path_request.get('record_reduce') else []
         for item in response.get('items', ())[:cls.LIMIT]:
             if isinstance(item, dict) and isinstance(item.get('text'), str):
                 value = item['text']

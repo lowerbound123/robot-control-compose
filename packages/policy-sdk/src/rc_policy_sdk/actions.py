@@ -11,6 +11,10 @@ CONTROL_MODES = ("qpos", "epos", "mixed")
 class ActionChunk:
     actions: np.ndarray
     modes: tuple[str, ...]
+    clipped: np.ndarray | None = None
+
+    def annotations(self):
+        return {} if self.clipped is None else {'action_annotations': {'clipped': self.clipped.tolist()}}
 
     def payload(self, control_mode="mixed"):
         if control_mode not in CONTROL_MODES:
@@ -27,6 +31,7 @@ def normalize_actions(value, control_mode=None, *, allow_empty=False):
     """Validate, copy and normalize arrays or explicitly tagged mixed chunks."""
     if control_mode is not None and control_mode not in CONTROL_MODES:
         raise ValueError("control_mode must be qpos, epos or mixed")
+    clipped = value.clipped if isinstance(value, ActionChunk) else None
     if isinstance(value, ActionChunk):
         value = value.payload()
     if isinstance(value, Mapping):
@@ -55,4 +60,21 @@ def normalize_actions(value, control_mode=None, *, allow_empty=False):
     if control_mode in ("qpos", "epos") and any(mode != control_mode for mode in modes):
         raise ValueError("action mode differs from policy control_mode")
     array.flags.writeable = False
-    return ActionChunk(array, modes)
+    if clipped is not None:
+        clipped = np.array(clipped, copy=True)
+        if clipped.dtype != np.bool_ or clipped.shape != array.shape:
+            raise ValueError('clipped markers must be boolean with the action shape')
+        clipped.flags.writeable = False
+    return ActionChunk(array, modes, clipped)
+
+
+def normalize_result(response, control_mode=None):
+    payload = ({'actions': response['actions'], 'modes': response['modes']}
+               if 'modes' in response else response['actions'])
+    chunk = normalize_actions(payload, control_mode)
+    annotations = response.get('action_annotations')
+    if annotations is None:
+        return chunk
+    if not isinstance(annotations, dict) or set(annotations) != {'clipped'}:
+        raise ValueError('invalid action_annotations')
+    return normalize_actions(ActionChunk(chunk.actions, chunk.modes, annotations['clipped']), control_mode)

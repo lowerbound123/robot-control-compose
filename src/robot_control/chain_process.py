@@ -3,8 +3,9 @@ from collections import deque
 import copy
 import threading
 import time
+import numpy as np
 
-from rc_policy_sdk.actions import normalize_actions
+from rc_policy_sdk.actions import ActionChunk, normalize_actions, normalize_result
 from rc_policy_sdk.control import control_requests, merge_control_requests
 
 from .chain_config import chain_commands
@@ -376,9 +377,20 @@ class ChainProcess:
                         cell=index + 1, child_instance_id=identity, child_request_id=request['child']['request_id'])
             if response['type'] != 'result' or response.get('images_released') is not True:
                 raise RuntimeError(response.get('error', 'invalid child response'))
-            payload = ({'actions': response['actions'], 'modes': response['modes']}
-                       if 'modes' in response else response['actions'])
-            chunk = normalize_actions(payload, self.execution['control_mode'])
+            chunk = normalize_result(response, self.execution['control_mode'])
+            previous = request.get('annotated_chunk')
+            if chunk.clipped is not None:
+                request['annotation_owner'] = {'instance_id': identity, 'context_id': getattr(worker, 'context_id', None)}
+            elif previous is not None and previous.clipped is not None:
+                markers = np.zeros(chunk.actions.shape, bool)
+                for row in range(min(len(chunk.actions), len(previous.actions))):
+                    if chunk.modes[row] != previous.modes[row] or not np.array_equal(chunk.actions[row], previous.actions[row]):
+                        break
+                    markers[row] = previous.clipped[row]
+                chunk = ActionChunk(chunk.actions, chunk.modes, markers)
+            else:
+                request['annotation_owner'] = None
+            request['annotated_chunk'] = chunk
             controls = control_requests(response.get('control_requests', []))
             if controls:
                 request['control_requests'] = merge_control_requests(request['control_requests'], [
@@ -387,6 +399,9 @@ class ChainProcess:
                 self._finish('cancelled')
             elif index + 1 == len(self.config['policies']):
                 extras = {'control_requests': request['control_requests']} if request['control_requests'] else {}
+                extras.update(chunk.annotations())
+                if request.get('annotation_owner') is not None:
+                    extras['action_annotation_owner'] = request['annotation_owner']
                 self._finish('result', **chunk.payload(), **extras)
             else:
                 request['index'] += 1

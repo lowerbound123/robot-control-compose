@@ -131,7 +131,7 @@ def test_backend_monitor_failure_does_not_mask_inference_or_original_error():
     policy = implementation()(config(), backend=backend)
     try:
         result = step(policy, [], 0)
-        assert result.shape == (25, 14)
+        assert result.shape == (50, 14)
         snapshot = normalize_snapshot(policy.monitor())
         assert 'monitor-only failure' in snapshot['backend_monitor_error']
         assert snapshot['context_state'] == 'ready' and snapshot['inference_errors'] == 0
