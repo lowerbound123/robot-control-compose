@@ -4,6 +4,8 @@ RC 通过独立 connector 容器读取设备状态、请求图像和发送目标
 
 `lift2` 使用独立 ROS 1 Noetic Python 通信包 / CPython 3.10 镜像，支持双臂关节控制、末端状态查询与三路 RGB。包含 `epos` 的请求整条失败；配置、消息单位与定向验收见 [LIFT2 connector](lift2.md)。
 
+ACOne 和 LIFT2 的控制频率统一为 RC 的 `frequency_hz: 30`。connector 本身不管理控制周期，切换设备也不改变 RC 频率；已有配置修改后需重启 RC 生效。
+
 ## 配置和启动
 
 RC schema 3 的连接配置为：

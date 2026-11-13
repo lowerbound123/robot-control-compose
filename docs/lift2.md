@@ -4,6 +4,9 @@
 关节与末端状态、三路 RGB、预览和录制，使用现有 RC/connector SDK 接口。
 RC 与 policy 不加载 ROS。底盘、升降、头部和 VR 不在此适配器的控制范围内。
 
+控制周期由 RC 管理，LIFT2 与 ACOne 统一使用 `frequency_hz: 30`。切换 connector
+不会改变频率；已有 RC 配置修改后需重启 RC 生效。
+
 ## 配置与启动
 
 ```bash

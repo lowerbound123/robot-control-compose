@@ -57,7 +57,7 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     rc = read_config(ROOT / 'configs/rc.mock.yaml.example')
     rc['safety']['enabled'] = False
     rc.update(policy_directory=str(root.parent), startup_policy='qwen35_history',
-              outputs_directory=str(tmp_path / 'outputs'), frequency_hz=100,
+              outputs_directory=str(tmp_path / 'outputs'), frequency_hz=30,
               timeouts={'initialize_s': 5,'inference_s': 4,'release_s': 2})
     path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(rc))
@@ -99,3 +99,16 @@ def test_hot_task_discards_inflight_work_and_cold_reload_releases_instance(runni
     assert controller.status()['state'] == 'paused'
     assert worker.cleanup_confirmed and not worker.has_readers
     assert len(events(root,'close')) == 1 and len(events(root,'load')) == 2
+
+
+def test_hot_gripper_threshold_updates_robot_output_without_reset(running):
+    controller, root = running
+    assert completed(controller, 'resume')['status'] == 'succeeded'
+    wait(lambda: controller.status()['consumed'] >= 3)
+    worker = controller._worker
+    resets = len(events(root, 'reset'))
+    index = len(controller.robot.commands)
+    assert completed(controller, 'policy qwen35_history config set params.gripper_threshold -1.2')['status'] == 'succeeded'
+    wait(lambda: any(np.allclose(row[[6, 13]], .04) for row in controller.robot.commands[index:]))
+    assert controller._worker is worker and controller.status()['state'] == 'running'
+    assert len(events(root, 'reset')) == resets and len(events(root, 'load')) == 1

@@ -1,0 +1,51 @@
+services:
+  policy:
+    image: robot-control-compose-qwen35-history:local
+    build:
+      context: ../..
+      dockerfile: policy/qwen35_history_clip/Dockerfile
+      target: runtime
+      additional_contexts:
+        policy-deps: ./dependencies
+    restart: "no"
+    platform: linux/amd64
+    environment:
+      PYTHONPATH: /workspace/policy/qwen35_history_clip/src:/workspace/policy/qwen35_history_clip/vendor
+      RC_SOURCE_MODULES: '{"rc_qwen35_history_clip":"/workspace/policy/qwen35_history_clip/src","lerobot":"/workspace/policy/qwen35_history_clip/vendor"}'
+      USER: robot-control
+      LOGNAME: robot-control
+      HF_HOME: /data/huggingface
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history_clip/src
+        target: /workspace/policy/qwen35_history_clip/src
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history_clip/vendor
+        target: /workspace/policy/qwen35_history_clip/vendor
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RC_HOST_PROJECT_ROOT:?Run setup.sh first}/policy/qwen35_history_clip/vendor/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py
+        target: /usr/local/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MODELS_DIR:?Set deployment.env MODELS_DIR}
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HF_CACHE_DIR:?Set deployment.env HF_CACHE_DIR}
+        target: /data/huggingface
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE:-0}"]
+              capabilities: [gpu]

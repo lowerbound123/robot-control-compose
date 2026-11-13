@@ -4,7 +4,7 @@ import sys
 
 def prepare_control_threads():
     # RC owns this interpreter. Its socket/cache/serialization threads must
-    # yield often enough for the 100 Hz controller and 30 Hz recorder. This
+    # yield often enough for the 30 Hz controller and 30 Hz recorder. This
     # bounds the ideal CPython timeslice, not OS scheduling or native calls.
     sys.setswitchinterval(min(sys.getswitchinterval(), .001))
 

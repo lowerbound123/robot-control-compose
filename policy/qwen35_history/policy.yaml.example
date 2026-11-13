@@ -8,8 +8,10 @@ execution:
 params:
   model_config_path: model.json
   task:
+  gripper_threshold: -0.8
 hot_reloadable:
 - params.task
+- params.gripper_threshold
 - execution.on_connector_switch
 tui_commands:
   switch-task:
@@ -38,6 +40,9 @@ config_hints:
     params.task:
       type: str
       help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
+    params.gripper_threshold:
+      type: float
+      help: 夹爪预测值严格大于此阈值时输出 0.04；热更新不清空历史或重载模型
     execution.mode:
       type: enum
       choices:

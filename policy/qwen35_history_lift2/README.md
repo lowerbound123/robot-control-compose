@@ -14,8 +14,8 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 
 随后处理输出副本的两个夹爪列（从 0 开始的第 6、13 维）：
 
-- 原始预测值严格大于 `2.5`：输出 `4.9`。
-- 小于或等于 `2.5`：输出 `0`。
+- 原始预测值严格大于 `params.gripper_threshold`（默认 `2.5`）：输出 `4.9`。
+- 小于或等于配置阈值：输出 `0`。
 
 不调用原 history 的 `> -0.8 → 0.04` 处理。这个夹爪步骤不修改已反归一化的 12 个手臂关节，canonical 预测缓存不被阈值化；同步和流水线模式使用相同的输出规则。原 `qwen35_history` 继续使用 ACOne 统计量和夹爪规则。RC 的设备限速仍在后续发送阶段执行。
 
@@ -35,7 +35,14 @@ RC 中可独立选择和配置：
 policy switch qwen35_history_lift2
 policy qwen35_history_lift2 config show
 policy qwen35_history_lift2 config set params.task "新的任务"
+policy qwen35_history_lift2 config set params.gripper_threshold 3.5
+policy qwen35_history_lift2 config save
 ```
+
+夹爪阈值保存在本目录 `policy.yaml`，只接受有限数值。热更新不重载模型、不清空历史；
+RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，从新观测重新规划并应用新阈值。
+已经提交给 connector 的动作不撤回。重复实例使用精确实例名。
+ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 RC 频率需重启 RC。
 
 切换完成后保持暂停；确认设备、模型和任务后再显式 `resume`。`switch-task`、`switch-model`、monitor、重初始化和重载接口与原 history 相同，也可将本来源放入原生 chain。切换 connector 不会自动替换 policy。
 

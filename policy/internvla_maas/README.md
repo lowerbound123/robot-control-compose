@@ -30,7 +30,7 @@ setup 从示例生成私有 JSON 和 schema 3 的 `policy.yaml`，以 0600 写�
 
 连接位于策略容器中：地址中的 `localhost` 是该容器自身。访问宿主服务可使用 Compose 已配置的 `host.docker.internal`；访问远端则填写容器可达地址。客户端关闭环境变量代理自动发现，`wss://` 使用默认可信 CA 验证证书。不会创建 SSH 隧道。
 
-RC `frequency_hz` 必须手工设为服务的 `control_hz`，默认均为 30。特别是当前 Acone 模板为 100 Hz，接入此策略前需修改所用私有 RC 配置并重启 RC。客户端不插值，也不自动修改 RC 配置；SDK 没有暴露 RC 频率给策略，因此客户端只能校验服务与 `expected_control_hz`，不能代替这一步部署核对。
+RC `frequency_hz` 必须与服务的 `control_hz` 一致，ACOne、LIFT2 与当前 RC 模板统一为 30 Hz。已有部署修改所用私有 RC 配置后需重启 RC。客户端不插值，也不自动修改 RC 配置；SDK 没有暴露 RC 频率给策略，因此客户端只能校验服务与 `expected_control_hz`，不能代替这一步部署核对。
 
 RC 外层超时应留出余量。使用上述默认值时，建议 `timeouts.initialize_s >= 35`、`timeouts.inference_s >= 65`、`timeouts.release_s >= 8`；仓库默认初始化/释放期限已足够，但默认推理期限 60 秒应增加。保留现有 RC 安全限速配置；限速未完成目标时不消费动作行。
 

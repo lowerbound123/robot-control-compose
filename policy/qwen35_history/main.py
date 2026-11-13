@@ -62,7 +62,7 @@ def _configuration_value(raw):
 
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
-    allowed_params = {'model_config_path', 'task'}
+    allowed_params = {'model_config_path', 'task', 'gripper_threshold'}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)

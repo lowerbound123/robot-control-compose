@@ -5,7 +5,7 @@ global_state:
   path: global.env
   max_bytes: 1048576
   timeout_s: 2.0
-frequency_hz: 100
+frequency_hz: 30
 robot_profiles_directory: robots
 policy_directory: ../policy
 startup_policy: hold

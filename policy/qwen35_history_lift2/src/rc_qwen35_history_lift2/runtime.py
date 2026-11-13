@@ -23,6 +23,7 @@ def frame(value, name):
 
 class HistoryPolicy:
     robot_type = 'arx_acone'
+    default_gripper_threshold = -.8
 
     def __init__(self, config, *, policy_config=None, backend=None, project_root=None):
         self.config = copy.deepcopy(config)
@@ -36,6 +37,7 @@ class HistoryPolicy:
         self.transition = TemporalTransition('exponential', None, 5., .25)
         self.pending = self._request = None
         self._epoch = self._consumed = self._last_submission = None
+        self._config_version = None
         self._failure = None
         self._closed = False
         self.canonical = np.empty((0, 14), np.float32)
@@ -186,10 +188,10 @@ class HistoryPolicy:
                                        count, stale, len(self.canonical))
 
     @staticmethod
-    def _process(actions):
+    def _process(actions, threshold=-.8):
         result = actions.copy()
         grippers = result[:, [6, 13]]
-        result[:, [6, 13]] = np.where(grippers > -.8, .04, grippers)
+        result[:, [6, 13]] = np.where(grippers > threshold, .04, grippers)
         return result
 
     def step(self, state, action_chunk, images, *, runtime):
@@ -204,10 +206,23 @@ class HistoryPolicy:
                 self.instruction = instruction
                 action_chunk = []
             count, epoch = runtime.consumed_actions, runtime.control_epoch
+            version = getattr(runtime, 'config_version', 1)
             if self._epoch is None:
                 self._epoch, self._consumed = epoch, count
+                self._config_version = version
             if epoch != self._epoch:
-                raise RuntimeError('control epoch changed without reset_context')
+                # A committed no-reset config clears RC's queue and advances its
+                # generation once per version. Never carry a prediction across
+                # that boundary; preserve visual history and use fresh inputs.
+                if (version <= self._config_version
+                        or epoch - self._epoch != version - self._config_version
+                        or len(action_chunk) or count < self._consumed):
+                    raise RuntimeError('control epoch changed without reset_context')
+                self._drain()
+                self.canonical = np.empty((0, 14), np.float32)
+                self._last_submission = None
+                self._epoch = epoch
+            self._config_version = version
             delta = count-self._consumed
             if delta < 0:
                 raise RuntimeError('consumed action counter moved backwards')
@@ -238,7 +253,8 @@ class HistoryPolicy:
                         self._collect(count, epoch)
             self._record(history_tick=self.history.tick, history_frames=len(self.history.frames),
                          cached_actions=len(self.canonical), consumed_actions=count, control_epoch=epoch)
-            return self._process(self.canonical)
+            threshold = self.policy_config.get('params', {}).get('gripper_threshold', self.default_gripper_threshold)
+            return self._process(self.canonical, threshold=threshold)
         except Exception as exc:
             self._failure = exc
             self._record(context_state='failed', last_error=f'{type(exc).__name__}: {exc}'[:512])
@@ -262,6 +278,7 @@ class HistoryPolicy:
         self.history.reset()
         self.canonical = np.empty((0, 14), np.float32)
         self._epoch = self._consumed = self._last_submission = None
+        self._config_version = None
         with self._metrics_lock:
             self._metrics.update(history_tick=0, history_frames=0, context_slots=0,
                                  pending=0, last_trim=0, cached_actions=0, consumed_actions=0, control_epoch=-1,

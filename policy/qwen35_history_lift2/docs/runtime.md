@@ -39,7 +39,7 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 | `inference.use_prefix_graph` | true | 去噪图可用时，尝试捕获各视觉布局的前缀 |
 | `history.enabled` | true | 使用进程内头相机历史 |
 
-上述字段均为冷配置，编辑文件后通过 `switch-model` 重载实例；只有 `params.task` 热改。
+上述 model.json 字段均为冷配置，编辑文件后通过 `switch-model` 重载实例。policy.yaml 的 `params.task`、`params.gripper_threshold` 支持热改；后者默认 2.5，可用 `policy qwen35_history_lift2 config set params.gripper_threshold 3.5` 修改。阈值更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
 
 同步模式预测完整 50 步，只返回前 X 步。消费完 X 步后用新观测推理，等待期间不继续消费旧 chunk。
 
@@ -55,7 +55,7 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 
 共享图像在回调内复制，缩放后的历史拥有独立内存。后台推理仅持有自有当前图像与不可变历史快照；不保留共享 mmap、切片或旧 runtime。reset/release 清空历史，重复来源实例互相隔离。
 
-前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后夹爪大于 2.5 时置为 4.9，否则置为 0。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
+前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后夹爪严格大于 `params.gripper_threshold`（默认 2.5）时置为 4.9，否则置为 0。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
 
 
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
@@ -99,4 +99,4 @@ python3 scripts/test_scope.py --policy qwen35_history_lift2
 
 包含example基线、新策略调度/配置、真实本地host/worker及共享内存、CPU张量与部署静态检查。CPU模型测试需要Torch2.10、torchvision0.25、Transformers5.2；缺少时明确跳过。CUDA Graph回放测试需NVIDIA GPU。各层验证应独立报告，跳过不计通过。
 
-本次交付不包含Docker构建、真实checkpoint、GPU或硬件验收。原模型以30动作步/秒编码视频时间，而当前ACOne模板频率是100Hz；实际发送还会受RC限速与逐步回调开销影响，消费步数不等于控制周期或墙钟时间。部署时须单独核对RC频率、复位夹爪值和安全设置；策略不会自动修改这些RC参数。动作发送、限速、复位、控制权和清理仍由RC负责。
+ACOne 和 LIFT2 的 RC 控制频率统一为30Hz，切换 connector 时仍使用同一个 RC 频率。原模型以30动作步/秒编码视频时间；实际发送还会受RC限速与逐步回调开销影响，消费步数不等于控制周期或墙钟时间。修改已有部署的 RC 频率后需重启 RC。动作发送、设备限速、复位、控制权和清理仍由RC负责；未做真实checkpoint、GPU或硬件验收。

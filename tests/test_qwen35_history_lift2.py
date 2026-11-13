@@ -154,7 +154,7 @@ def HistoryPolicy(config, *, policy_config, project_root):
     config = read_config(ROOT / 'configs/rc.mock.yaml.example')
     config['safety']['enabled'] = False
     config.update(policy_directory=str(directory.parent), startup_policy='qwen35_history_lift2',
-                  outputs_directory=str(tmp_path / 'outputs'), frequency_hz=100,
+                  outputs_directory=str(tmp_path / 'outputs'), frequency_hz=30,
                   timeouts={'initialize_s': 5, 'inference_s': 4, 'release_s': 2})
     path = tmp_path / 'rc.yaml'
     path.write_text(json.dumps(config))
@@ -167,6 +167,22 @@ def HistoryPolicy(config, *, policy_config, project_root):
         controller.submit('exit')
         assert controller.done.wait(15), controller.read_events()
         assert controller.exit_code == 0 and controller._pool._bytes == 0
+
+
+def test_hot_gripper_threshold_updates_robot_output_without_reset(running_lift2):
+    from test_controller import until
+    from test_example_controller import command
+    from test_qwen35_history_worker import events
+    controller, directory = running_lift2
+    command(controller, 'resume')
+    until(lambda: controller.status()['consumed'] >= 3)
+    worker = controller._worker
+    resets = len(events(directory, 'reset'))
+    index = len(controller.robot.commands)
+    command(controller, 'policy qwen35_history_lift2 config set params.gripper_threshold 3.5')
+    until(lambda: any(np.allclose(row[[6, 13]], 0.) for row in controller.robot.commands[index:]))
+    assert controller._worker is worker and controller.status()['state'] == 'running'
+    assert len(events(directory, 'reset')) == resets and len(events(directory, 'load')) == 1
 
 
 def test_real_worker_then_example_self_chain_keep_lift2_grippers_and_independent_instances(running_lift2):

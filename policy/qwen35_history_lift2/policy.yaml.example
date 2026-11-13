@@ -6,7 +6,7 @@ help_details:
   description: >-
     独立的正常策略实例，本目录包含完整的模型、历史和调度实现。
     固定使用所选模型的 arx_lift2 状态和动作统计量进行归一化及反归一化。
-    输出夹爪第 6、13 维大于 2.5 时输出 4.9，否则输出 0。
+    输出夹爪第 6、13 维大于配置阈值（默认 2.5）时输出 4.9，否则输出 0。
   sections:
     - title: 模型配置
       body: 使用本目录独立的 model.json 和 deployment.env，要求 history 模型格式和 stats.json 中的 arx_lift2 统计量；不会自动替换模型或连接机器人。
@@ -23,8 +23,10 @@ execution:
 params:
   model_config_path: model.json
   task:
+  gripper_threshold: 2.5
 hot_reloadable:
 - params.task
+- params.gripper_threshold
 - execution.on_connector_switch
 tui_commands:
   switch-task:
@@ -53,6 +55,9 @@ config_hints:
     params.task:
       type: str
       help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
+    params.gripper_threshold:
+      type: float
+      help: 夹爪预测值严格大于此阈值时输出 4.9，否则输出 0；热更新不清空历史或重载模型
     execution.mode:
       type: enum
       choices:

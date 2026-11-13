@@ -1,0 +1,68 @@
+schema_version: 3
+id: qwen35_history_clip
+help: 临时 ACOne 历史策略；臂关节按上一条已消费指令逐关节裁剪至 ±0.1 rad
+execution:
+  mode: sync # RC回调边界；模型流水线由model.json execution.pipelined选择
+  call_every_actions: 1
+  control_mode: qpos
+  on_connector_switch: reinitialize_policy
+params:
+  model_config_path: model.json
+  task:
+  gripper_threshold: -0.8
+hot_reloadable:
+- params.task
+- params.gripper_threshold
+- execution.on_connector_switch
+tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [{name: task, type: str, help: 新的任务文本}]
+    help: 热更新任务并清空历史和旧动作，保留已加载模型
+    effect: update_config
+    timeout_s: 5
+  switch-model:
+    handler: switch_model
+    args: [{name: config_path, type: path, help: 模型配置文件, root: ., kind: file,
+          suffixes: [.json]}]
+    help: 验证配置后冷重载当前实例；完成后等待resume
+    effect: reload_policy
+    timeout_s: 30
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.model_config_path:
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
+    params.task:
+      type: str
+      help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
+    params.gripper_threshold:
+      type: float
+      help: 夹爪预测值严格大于此阈值时输出 0.04；热更新不清空历史或重载模型
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      help: 推理调度模式
+    execution.call_every_actions:
+      type: int
+      help: 每次调用之间的动作数；此策略固定为 1
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停
+    execution.on_connector_switch:
+      type: enum
+      choices:
+      - reset
+      - reinitialize_policy
+      help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换

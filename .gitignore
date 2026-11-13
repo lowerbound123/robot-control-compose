@@ -1,6 +1,8 @@
 .DS_Store
 .codex/
-**/global.env
+**/*.env
+**/.env
+**/.env.*
 **/.global.env.*
 .venv/
 __pycache__/
@@ -14,43 +16,55 @@ outputs/
 snapshot/
 /models/
 /cache/
-/.env
-/.env.local
-/.env.llm
-/.env.qwen
 ros_ws/build/
 ros_ws/install/
 ros_ws/log/
 
-# Local configuration and generated deployment artifacts
-/rc*.json
+# Actual deployment configuration stays local; ship *.example templates.
+/*.json
+/*.yaml
+/*.yml
+/*.toml
+/*.ini
+/*.cfg
+/*.conf
 /configs/**/*.json
+/configs/**/*.yaml
+/configs/**/*.yml
+/configs/**/*.toml
+/configs/**/*.ini
+/configs/**/*.cfg
+/configs/**/*.conf
 /policy/**/*.json
-/policy/**/.env
+/policy/**/*.yaml
+/policy/**/*.yml
+/policy/**/*.toml
+/policy/**/*.ini
+/policy/**/*.cfg
+/policy/**/*.conf
+/connector/**/*.json
+/connector/**/*.yaml
+/connector/**/*.yml
+/connector/**/*.toml
+/connector/**/*.ini
+/connector/**/*.cfg
+/connector/**/*.conf
 /.setup/
-/connector/*/devices/*.yaml
-/connector/*/devices/*.yml
-
 /policy/**/.runtime/
-/policy/**/deployment.env
 
-# Private YAML main configurations; JSON business/legacy rules above remain.
-/rc*.yaml
-/rc*.yml
-/configs/rc*.yaml
-/configs/rc*.yml
-/configs/robots/*.yaml
-/configs/robots/*.yml
-/policy/*/policy.yaml
-/policy/*/policy.yml
-
-# Private LLM provider profiles (including custom names). Ship *.yaml.example.
-/policy/llm_direction/**/*.yaml
-/policy/llm_direction/**/*.yml
-/policy/llm_failure/**/*.yaml
-/policy/llm_failure/**/*.yml
-!/policy/llm_direction/compose.yaml
-!/policy/llm_failure/compose.yaml
+# Versioned build definitions and immutable model schemas are source assets.
+!/compose.yaml
+!/compose.acone.yaml
+!/compose.ros-sim.yaml
+!/compose.webui.yaml
+!/pyproject.toml
+!/policy/*/compose.yaml
+!/policy/*/pyproject.toml
+!/connector/*/compose.yaml
+!/policy/*/vendor/pyproject.toml
+!/policy/*/vendor/lerobot/dataset_schemas/configs/*.yaml
+!/policy/qwen35_history_clip/vendor/SOURCE_MANIFEST.json
+!**/*.example
 
 # WebUI local credentials and build/test outputs
 /webui/config.json

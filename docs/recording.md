@@ -18,6 +18,8 @@ record stop
 
 路径位于配置的 `outputs_directory/logs/`，通常是项目的 `outputs/logs/`。每次开始录制都创建一个新的 `record_日期_时间_唯一标识/`，不会覆盖前一段。日期按 UTC+8 命名，JSONL 和 CSV 保留墙钟及单调时钟的数值时间。完整路径以 `record status` 的 `path` 为准。
 
+同一次 RC 运行中，依次执行 `record start → record stop → record start → record stop`，且每次停止均已完成，会生成两份独立的 `record_*` 会话目录；上一级的 `rc_<run_id>.jsonl` 仍为同一份追加日志。已经录制时重复 start、已经停止时重复 stop 都不会创建额外会话。前一段还在 stopping／排空时再次 start 会报告状态转换进行中，需要等停止完成。
+
 ## 文件与对齐规则
 
 | 文件 | 内容 |
@@ -63,6 +65,40 @@ record stop
 图像编码、序列化和磁盘写入由独立 writer 进程执行。默认采样内存额度为 512 MiB，附加诊断额度为 64 MiB，最多 60 个待处理采样。在途字节估算覆盖保留图像、IPC 和编码开销，因此不等于进程 RSS 或磁盘文件大小。附加诊断拥塞时记录丢弃数量；必需采样超过额度会停止该段录制并给出错误，保留已写数据。磁盘写入失败、writer 退出或停止排空超时也会形成明确错误。
 
 退出走 RC 的统一绝对期限清理。被迫终止 writer 属于强制清理，RC 返回非零；不能把只有目录存在、只有部分 PNG 或仍有 pending 数据当作成功停止。
+
+## 批量生成视频并删除原图
+
+`scripts/recording_videos.py` 是独立离线脚本，只依赖 Python 标准库以及 PATH 中的 `ffmpeg`、`ffprobe`，FFmpeg 需要支持 `libx264`。默认递归扫描项目的 `outputs/logs/`，也可指定日志根目录或单个 `record_*` 会话目录。
+
+先预览处理范围：
+
+```bash
+python3 scripts/recording_videos.py --dry-run
+```
+
+实际处理全部已正常停止的录制：
+
+```bash
+python3 scripts/recording_videos.py
+```
+
+指定其他位置、调整帧率或重新生成已有视频：
+
+```bash
+python3 scripts/recording_videos.py /data/robot-logs --dry-run
+python3 scripts/recording_videos.py /data/robot-logs
+python3 scripts/recording_videos.py /data/robot-logs --fps 30 --overwrite
+```
+
+每个会话输出 `videos/head.mp4`、`videos/left_wrist.mp4`、`videos/right_wrist.mp4`，以该会话实际存在的相机目录为准。视频采用 H.264 / yuv420p、CRF 18，默认 30 FPS；奇数尺寸在右侧／底部补齐到偶数。PNG 按数字采样编号排序，编号不连续也可处理，缺失编号会报告但不补帧。因此视频是已有图像的连续预览，存在缺帧时不能直接以视频时间对齐原始 CSV 时间轴。
+
+每个会话根目录还会保存 `initial.png`：从 `images/head/` 中选择数字采样编号最小的现有 PNG，逐字节独立复制并校验，不从视频截图，也不改变原图尺寸或像素。即使最早几个采样缺少 head 图像，也会选第一张实际存在的 head 图片。缺少 head 相机时报告错误并保留原始目录。
+
+脚本先在临时目录复制初始状态图片并转换视频，逐路解码核对视频帧数、尺寸及帧率，全部通过后发布并刷盘初始状态图片和 MP4，最后删除该会话的 `assets/` 和 `images/`。初始状态图片、视频、JSONL、CSV 和配置快照保留。正常结束会清理临时文件；复制、转换或校验失败会保留 `assets` 和 `images`，继续处理其他会话，并以非零退出码报告失败。
+
+只处理 `session.jsonl` 最后一条为无错误 `record.stopped` 的会话；仍在录制、异常退出或缺少停止记录的会话会跳过。有任一路目标 MP4 或 `initial.png` 已存在且原图仍保留时，默认跳过整个会话；显式使用 `--overwrite` 才会重新生成、验证并删除原图。原图目录已经删除的会话会直接跳过，重复运行不改动已有结果；若此前未保存初始状态图片，会提示无法补存无损原图。符号链接会话不会被递归跟随，符号链接输入／输出／assets 目录和初始状态图片目标会被拒绝。
+
+删除两份图像目录后，只额外保留 head 首帧的无损 PNG，日志中指向 `images/`、`assets/` 的图像路径会失效；JSONL 本身保持原样，不会被改写为视频或初始状态图片引用。视频采用有损压缩，且不包含仅存在于 `assets` 的额外策略观察图像，因此此结果用于视频回看，不能替代原始无损图像或完整策略输入数据集。
 
 ## 可复现验收和压测
 

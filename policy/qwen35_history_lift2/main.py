@@ -21,12 +21,13 @@ class HistoryPolicy(BaseHistoryPolicy):
     """Bind LIFT2 checkpoint statistics and threshold detached output grippers."""
 
     robot_type = ROBOT_TYPE
+    default_gripper_threshold = 2.5
 
     @staticmethod
-    def _process(actions):
+    def _process(actions, threshold=2.5):
         result = actions.copy()
         grippers = result[:, [6, 13]]
-        result[:, [6, 13]] = np.where(grippers > 2.5, np.float32(4.9), np.float32(0.0))
+        result[:, [6, 13]] = np.where(grippers > threshold, np.float32(4.9), np.float32(0.0))
         return result
 
 
@@ -82,7 +83,7 @@ def _configuration_value(raw):
 
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
-    allowed_params = {'model_config_path', 'task'}
+    allowed_params = {'model_config_path', 'task', 'gripper_threshold'}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)
