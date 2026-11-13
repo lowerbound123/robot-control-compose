@@ -8,11 +8,13 @@ import numpy as np
 
 PARTS = ('left_joint', 'left_gripper', 'right_joint', 'right_gripper')
 WIDTHS = (6, 1, 6, 1)
+LANGUAGE_FIELDS = ('Memory', 'Scene', 'Subtask')
 DEFAULTS = {
     'model': {'checkpoint': '', 'vlm_model_name_or_path': 'Qwen/Qwen3.5-4B'},
     'runtime': {'instruction': ''},
     'execution': {'replan_every_actions': 25, 'pipelined': False, 'inference_timeout_s': 60.},
-    'inference': {'num_inference_steps': None, 'use_cuda_graph': True, 'use_prefix_graph': True},
+    'inference': {'num_inference_steps': None, 'use_cuda_graph': True, 'use_prefix_graph': True,
+                  'generate_language': []},
     'history': {'enabled': True},
 }
 
@@ -115,6 +117,12 @@ def load_model_config(path, *, project_root, robot_type='arx_acone'):
         if section not in DEFAULTS or not isinstance(values, dict) or set(values) - set(DEFAULTS[section]):
             raise ValueError(f'unknown configuration fields in {section}')
         config[section].update(values)
+    language = config['inference']['generate_language']
+    if (not isinstance(language, list)
+            or any(type(field) is not str or field not in LANGUAGE_FIELDS for field in language)
+            or len(language) != len(set(language))):
+        raise ValueError('inference.generate_language must be a unique list of Memory, Scene and Subtask')
+    config['inference']['generate_language'] = [field for field in LANGUAGE_FIELDS if field in language]
     config['model']['checkpoint'] = str(resolve_path(config['model']['checkpoint'], path.parent))
     base = config['model']['vlm_model_name_or_path']
     if not isinstance(base, str) or not base.strip():

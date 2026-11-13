@@ -39,6 +39,7 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 | `inference.num_inference_steps` | null | 使用 checkpoint 的 Euler 步数，当前为 10 |
 | `inference.use_cuda_graph` | true | 尝试捕获专家去噪循环 |
 | `inference.use_prefix_graph` | true | 去噪图可用时，尝试捕获各视觉布局的前缀 |
+| `inference.generate_language` | 示例为 `["Memory", "Scene", "Subtask"]` | 生成所选语言字段；`[]` 关闭，旧配置缺少该字段时保持关闭 |
 | `history.enabled` | true | 使用进程内头相机历史 |
 
 上述 model.json 字段均为冷配置，编辑文件后通过 `switch-model` 重载实例。policy.yaml 的 `params.task`、`params.gripper_threshold` 支持热改。
@@ -71,7 +72,13 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
 
-首版不提供人类演示、语言段生成、FAST动作解码、IBQ未来图生成或历史拼图落盘。逐轮详情走 TRACE。
+`inference.generate_language` 只接受 `Memory`、`Scene`、`Subtask` 的无重复列表，按此顺序生成。
+语言段生成结束后重新编码进动作前缀，动作专家使用包含它的 KV cache；这会影响动作条件，不只是额外显示文本。
+开启任一语言字段时自动跳过前缀 CUDA Graph，去噪 CUDA Graph 仍可使用。
+三个字段每轮重新生成，不自动把上一轮 Subtask 回填为 Memory。
+修改本目录的 model.json 后，用 `policy <实例> switch-model model.json` 冷重载，完成后显式 resume。
+
+不提供人类演示、FAST动作解码、IBQ未来图生成或历史拼图落盘。逐轮详情走 TRACE。
 
 ## 策略监控
 
@@ -90,6 +97,7 @@ monitor qwen35_history_lift2
 | 执行状态 | `context_state`、`model_stage`、`model_stage_age_ms`、`context_uptime_s`、`pipelined`、`replan_every_actions`、`inference_timeout_s` |
 | 推理计数 | `inference_count`（已提交）、`inference_completed`（模型成功返回）、`inference_errors`、`inference_busy`、`reset_count` |
 | 请求等待 | `pending`、`pending_age_ms`、`pending_remaining_ms`、`last_submission_actions`、`last_prediction_age_s` |
+| 语言生成 | `generate_language`（逗号分隔的字段）、`subtask`（最近成功预测的 Subtask）、`prefix_graph_disabled_reason` |
 | 耗时 | `load_ms`、`warmup_ms`、`processor_ms`、`prefix_ms`、`denoise_ms`、`post_ms`、`predict_ms`、`predict_avg_ms`、`predict_max_ms` |
 | 历史与图像 | `history_enabled`、`history_tick`、`history_frames`、`history_capacity_frames`、`history_slot_count`、`history_slot_stride`、`context_slots`，以及三路 `*_image_shape` 和图像缩放配置 |
 | 动作缓存 | `chunk_size`、`cached_actions`、`consumed_actions`、`control_epoch`、`last_trim`、`trimmed_actions_total` |
@@ -101,6 +109,9 @@ monitor qwen35_history_lift2
 耗时为最近一次成功预测的墙钟耗时；平均/最大耗时、推理次数和裁剪累计值覆盖当前 context 生命周期，普通 reset 不清零，冷重载或重新初始化 context 后重新统计。历史与动作缓存指标随 reset 清零。毫秒字段以 `_ms` 结尾，秒字段以 `_s` 结尾；时间年龄为 `-1` 表示尚无成功预测。任务和错误文本最多显示 512 个字符。
 
 初始化完成前 SDK 尚未创建 monitor，初始化失败应查看日志；日志会补充失败的模型阶段。监控不触发初始化、重载或恢复运动。
+
+未启用 Subtask、尚无成功预测、当前生成段缺少 Subtask，以及 reset/release 后，`subtask` 均返回空字符串。
+预热产生的文本不作为当前任务展示；monitor 只读取缓存，不触发语言解码。
 
 ## 验证与部署边界
 

@@ -23,6 +23,10 @@ RC 的设备限速和完整目标发布确认仍然作用于裁剪后的目标�
 核对本目录自己的 `model.json` 和 `deployment.env`，使用 ACOne history checkpoint。
 RC 控制频率统一配置为30Hz；修改 RC 频率需重启 RC。
 
+`model.json` 的 `inference.generate_language` 可设为 `["Memory", "Scene", "Subtask"]`，设为 `[]` 关闭。
+修改后用 `switch-model model.json` 冷重载。开启语言生成时前缀采用普通执行，去噪 CUDA Graph 仍可使用。
+monitor 返回最近成功预测的 `subtask`；未启用、未生成、缺少该字段或 reset/release 后返回空字符串，预热文本不展示。
+
 ```text
 policy switch qwen35_history_clip
 policy qwen35_history_clip config set params.gripper_threshold -1.2

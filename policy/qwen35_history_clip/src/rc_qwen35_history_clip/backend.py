@@ -23,6 +23,8 @@ class HistoryBackend:
         self.device = None
         self._closed = False
         inference = config.get('inference', {})
+        self.generate_language = tuple(inference.get('generate_language', ()))
+        self._pending_subtask = ''
         self._monitor_lock = threading.Lock()
         self._stage_started = time.monotonic()
         self._monitor_data = dict(model_stage='not_loaded', robot_type=robot_type,
@@ -30,7 +32,9 @@ class HistoryBackend:
                                   prefix_graph_requested=int(inference.get('use_prefix_graph', True)),
                                   denoise_graph_ready=0, prefix_graph_layouts=0,
                                   prediction_path='not_run', prefix_tokens=0, max_prefix_tokens=0,
-                                  graph_error='')
+                                  graph_error='', subtask='',
+                                  generate_language=', '.join(self.generate_language),
+                                  prefix_graph_disabled_reason='language generation' if self.generate_language else '')
 
     def _monitor_update(self, **values):
         with self._monitor_lock:
@@ -121,7 +125,8 @@ class HistoryBackend:
         slots = [ContextSlot(images=(torch.from_numpy(item.image.copy()).float()/255.,),
                              source=ContextSource.HIST, frame_index=item.index) for item in contexts]
         return self.processor.build_inference(self.prepare_sample(qpos, images, instruction),
-            contexts=slots, include_task=True, inference_order='action_first', view_indices=(0,), language={}, generate=())
+            contexts=slots, include_task=True, inference_order='action_first', view_indices=(0,),
+            language={}, generate=self.generate_language)
 
     def load(self):
         self._monitor_update(model_stage='loading_config')
@@ -148,7 +153,7 @@ class HistoryBackend:
         config.inference_backend = 'standard'
         config.inference_order = 'action_first'
         config.inference_action_type = 'fm'
-        config.generate_subtask = False
+        config.generate_subtask = bool(self.generate_language)
         config.compile_model = False
         config.vlm_model_name_or_path = self.config['model']['vlm_model_name_or_path']
         if self.config['inference']['num_inference_steps'] is not None:
@@ -168,7 +173,8 @@ class HistoryBackend:
             raise ValueError(f'unsupported saved processor fields: {sorted(unknown)}')
         args = {key: value for key, value in saved.items() if key in fields and not key.startswith('_')}
         args.update(vlm_model_name_or_path=config.vlm_model_name_or_path,
-                    future_first_probability=0., inference_order='action_first', generate_subtask=False)
+                    future_first_probability=0., inference_order='action_first',
+                    generate_subtask=bool(self.generate_language))
         self.processor = Qwen3_5ContextVideoKIProcessorTransformFn(**args)
         self.processor._ensure_loaded()
         self._monitor_update(model_stage='loaded')
@@ -176,6 +182,8 @@ class HistoryBackend:
     def eager_prefix(self, model_input):
         import torch
         from .graphs import _inference_autocast
+        from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video import parse_language_segment
+        self._pending_subtask = ''
         batch = {}
         for key, value in model_input.items():
             if isinstance(value, str):
@@ -184,7 +192,10 @@ class HistoryBackend:
                 tensor = torch.as_tensor(value).unsqueeze(0).to(self.device)
                 batch[key] = tensor.to(torch.bfloat16) if tensor.is_floating_point() else tensor
         with torch.no_grad(), _inference_autocast(self.model):
-            _, kv, mask, _, anchor, _, _ = self.model._prefix_stage(batch, requested_order=0)
+            _, kv, mask, _, anchor, _, subtask_ids = self.model._prefix_stage(batch, requested_order=0)
+        if subtask_ids is not None and 'Subtask' in self.generate_language:
+            segment = parse_language_segment(self.model.decode_subtasks(subtask_ids)[0])
+            self._pending_subtask = segment.get('Subtask', '')[:512]
         return kv, mask, anchor, batch['observation.state'].float()
 
     def finalize_actions(self, prediction, qpos):
@@ -212,6 +223,7 @@ class HistoryBackend:
         if self._closed or self.model is None:
             raise RuntimeError('backend is not loaded')
         timings = {}
+        self._pending_subtask = ''
         with torch.no_grad():
             self._monitor_update(model_stage='preprocess')
             started = time.perf_counter()
@@ -219,7 +231,8 @@ class HistoryBackend:
             timings['processor_ms'] = (time.perf_counter()-started)*1000
             self._monitor_update(model_stage='prefix')
             started = time.perf_counter()
-            prepared = self.prefix_graph.prepare(model_input) if self.prefix_graph is not None else None
+            prepared = (self.prefix_graph.prepare(model_input)
+                        if self.prefix_graph is not None and not self.generate_language else None)
             graphed = prepared is not None and self.prefix_graph.run(prepared)
             if not graphed:
                 kv, mask, anchor, state = self.eager_prefix(model_input)
@@ -244,7 +257,7 @@ class HistoryBackend:
             started = time.perf_counter()
             result = self.finalize_actions(normalized, qpos)
             timings['post_ms'] = (time.perf_counter()-started)*1000
-        self._monitor_update(model_stage='idle')
+        self._monitor_update(model_stage='idle', subtask=self._pending_subtask)
         return result, timings
 
     def warmup(self):
@@ -270,6 +283,7 @@ class HistoryBackend:
                     euler_reference(self.model, self.model_config.num_inference_steps, kv, mask, anchor, state, noise)
                 longest = max(longest, mask.shape[1])
             if not self.config['inference']['use_cuda_graph']:
+                self._pending_subtask = ''
                 self._monitor_update(model_stage='idle')
                 return
             candidate = None
@@ -289,7 +303,8 @@ class HistoryBackend:
             except Exception as exc:
                 self._monitor_update(graph_error=f'denoise: {type(exc).__name__}: {exc}'[:512])
                 LOG.exception('denoise CUDA graph unavailable; retaining eager inference')
-            if self.sampler is not None and self.config['inference']['use_prefix_graph']:
+            if (self.sampler is not None and self.config['inference']['use_prefix_graph']
+                    and not self.generate_language):
                 try:
                     self._monitor_update(model_stage='capturing_prefix_graphs')
                     self.prefix_graph = capture_prefix_graphs(self.model, self.sampler,
@@ -298,6 +313,7 @@ class HistoryBackend:
                 except Exception as exc:
                     self._monitor_update(graph_error=f'prefix: {type(exc).__name__}: {exc}'[:512])
                     LOG.exception('prefix CUDA graphs unavailable; retaining eager prefix')
+        self._pending_subtask = ''
         self._monitor_update(model_stage='idle', denoise_graph_ready=int(self.sampler is not None),
                              prefix_graph_layouts=0 if self.prefix_graph is None else len(self.prefix_graph.graphs),
                              max_prefix_tokens=0 if self.sampler is None else getattr(self.sampler, 'max_prefix_len', 0))
@@ -305,6 +321,8 @@ class HistoryBackend:
                  0 if self.prefix_graph is None else len(self.prefix_graph.graphs))
 
     def reset_context(self):
+        self._pending_subtask = ''
+        self._monitor_update(subtask='')
         if self.policy is not None:
             self.policy.reset()
 
@@ -312,7 +330,8 @@ class HistoryBackend:
         if self._closed:
             return
         self._closed = True
-        self._monitor_update(model_stage='closed', denoise_graph_ready=0, prefix_graph_layouts=0)
+        self._pending_subtask = ''
+        self._monitor_update(model_stage='closed', denoise_graph_ready=0, prefix_graph_layouts=0, subtask='')
         self.prefix_graph = self.sampler = self.processor = self.model = self.policy = None
         import torch
         if torch.cuda.is_available():

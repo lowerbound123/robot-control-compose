@@ -1,0 +1,190 @@
+{
+  "source_commit": "314c3fcbcfeedc95b2899145dba5c34e4292eda4",
+  "source_root": "/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab",
+  "infer_a2_sha256": "90eb883e86a4a2d9840c52fecd90bdd0b8c5674314539c0c80464a9acbced321",
+  "files": [
+    {
+      "file": "lerobot/configs/policies.py",
+      "source": "vendor/qwen35/lerobot/configs/policies.py",
+      "source_sha256": "9bf1780fd796f1b730946f829788817dfc170aebac612dcb95532dc6724d43a2",
+      "sha256": "9bf1780fd796f1b730946f829788817dfc170aebac612dcb95532dc6724d43a2"
+    },
+    {
+      "file": "lerobot/configs/types.py",
+      "source": "vendor/qwen35/lerobot/configs/types.py",
+      "source_sha256": "1354e7d24b19d5d4970064104f76d8c85570c204bf2d09e2b4402f93a994ad99",
+      "sha256": "1354e7d24b19d5d4970064104f76d8c85570c204bf2d09e2b4402f93a994ad99"
+    },
+    {
+      "file": "lerobot/policies/pretrained.py",
+      "source": "vendor/qwen35/lerobot/policies/pretrained.py",
+      "source_sha256": "c4278b72a333400eab869d02e22602b7b1863a522d2c96acfe77a549d1365dbf",
+      "sha256": "9dd947de4de814a3013cb6fb798cb45c9fe22a340d239f0f2f6624576103e527"
+    },
+    {
+      "file": "lerobot/policies/utils.py",
+      "source": "vendor/qwen35/lerobot/policies/utils.py",
+      "source_sha256": "f408fe51eaa835c51968ae70300d79a6d5941d8c86dc609de144288e544e655e",
+      "sha256": "f408fe51eaa835c51968ae70300d79a6d5941d8c86dc609de144288e544e655e"
+    },
+    {
+      "file": "lerobot/utils/utils.py",
+      "source": "vendor/qwen35/lerobot/utils/utils.py",
+      "source_sha256": "da8a097ceca078eecc88dfd84b10ca64dabd8490445fb4d3bbb154c528ed3a6e",
+      "sha256": "da8a097ceca078eecc88dfd84b10ca64dabd8490445fb4d3bbb154c528ed3a6e"
+    },
+    {
+      "file": "lerobot/utils/hub.py",
+      "source": "vendor/qwen35/lerobot/utils/hub.py",
+      "source_sha256": "1981583e520bc73e221491459694d58ad1c1370537bf280968493b31c8e2c51f",
+      "sha256": "1981583e520bc73e221491459694d58ad1c1370537bf280968493b31c8e2c51f"
+    },
+    {
+      "file": "lerobot/dataset_schemas/presets.py",
+      "source": "vendor/qwen35/lerobot/dataset_schemas/presets.py",
+      "source_sha256": "e5ad4baa5816a2e17a27b614de9ac38114473309a027efa1fa267560ae2c7a79",
+      "sha256": "e5ad4baa5816a2e17a27b614de9ac38114473309a027efa1fa267560ae2c7a79"
+    },
+    {
+      "file": "lerobot/dataset_schemas/registry.py",
+      "source": "vendor/qwen35/lerobot/dataset_schemas/registry.py",
+      "source_sha256": "34ce93d687d8ceb6532ecd3279cc01cfd8d8c6ec0968f272524d2d32fb7acbbc",
+      "sha256": "34ce93d687d8ceb6532ecd3279cc01cfd8d8c6ec0968f272524d2d32fb7acbbc"
+    },
+    {
+      "file": "lerobot/dataset_schemas/__init__.py",
+      "source": "vendor/qwen35/lerobot/dataset_schemas/__init__.py",
+      "source_sha256": "75d8f8bb05900b1c421d2114966446b047f2d35fa7e868c27c55aec0d8a65548",
+      "sha256": "75d8f8bb05900b1c421d2114966446b047f2d35fa7e868c27c55aec0d8a65548"
+    },
+    {
+      "file": "lerobot/dataset_schemas/schema.py",
+      "source": "vendor/qwen35/lerobot/dataset_schemas/schema.py",
+      "source_sha256": "fb6f241ef417aa53ed06c64ca91fcd82eab05bfa3fbf733cc974ada81ed3b521",
+      "sha256": "fb6f241ef417aa53ed06c64ca91fcd82eab05bfa3fbf733cc974ada81ed3b521"
+    },
+    {
+      "file": "lerobot/dataset_schemas/configs/arx_acone.yaml",
+      "source": "vendor/qwen35/lerobot/dataset_schemas/configs/arx_acone.yaml",
+      "source_sha256": "d69bdf125cff4be0e25b7b5a04c021a3690e2b0f8d9558a02f7f981fef69fa84",
+      "sha256": "d69bdf125cff4be0e25b7b5a04c021a3690e2b0f8d9558a02f7f981fef69fa84"
+    },
+    {
+      "file": "lerobot/utils/constants.py",
+      "source": "src/lerobot/utils/constants.py",
+      "source_sha256": "237bfdef02bd7b82f078c53098640db54f1bafb81727a8fb9afd2b02ddc92fb0",
+      "sha256": "237bfdef02bd7b82f078c53098640db54f1bafb81727a8fb9afd2b02ddc92fb0"
+    },
+    {
+      "file": "lerobot/transforms/utils.py",
+      "source": "src/lerobot/transforms/utils.py",
+      "source_sha256": "c628a81d1f4bb9f08b1cb4946bf77e8aa9cda00d49ead1036c52e2639fd942e4",
+      "sha256": "c628a81d1f4bb9f08b1cb4946bf77e8aa9cda00d49ead1036c52e2639fd942e4"
+    },
+    {
+      "file": "lerobot/transforms/constants.py",
+      "source": "src/lerobot/transforms/constants.py",
+      "source_sha256": "d57b18704eb071445c31e43c706e11226c47f0a0d5830c872f5a82e6f407b990",
+      "sha256": "d57b18704eb071445c31e43c706e11226c47f0a0d5830c872f5a82e6f407b990"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5vla_ki/action_tokens.py",
+      "source": "src/lerobot/policies/qwen3_5vla_ki/action_tokens.py",
+      "source_sha256": "1e3d62082f55ecb1dcf7a2080d282562fa28f488b65a1cde281947e3d0eb06ff",
+      "sha256": "1e3d62082f55ecb1dcf7a2080d282562fa28f488b65a1cde281947e3d0eb06ff"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video/tokenization_qwen3_5_context_video.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video/tokenization_qwen3_5_context_video.py",
+      "source_sha256": "518774b14cc918708c3042d3475ae88f9c58a2108eb2559896160b1f2a9fcf1c",
+      "sha256": "518774b14cc918708c3042d3475ae88f9c58a2108eb2559896160b1f2a9fcf1c"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video/transform_qwen3_5_context_video.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video/transform_qwen3_5_context_video.py",
+      "source_sha256": "fc4271df51e492e1582bfe6f4a7fc7ff47ffac4b3056fa5f389f1f0114d75d41",
+      "sha256": "54970b1ae74bbba4a3ea1a2c31a5b95a6713122a650ea1bfcee3e248cfac28ef"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video_ki/attention.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video_ki/attention.py",
+      "source_sha256": "f80c16a0f30d0f988f7c595be403452a2b9e1583a9fc7760112122503722a9c0",
+      "sha256": "f80c16a0f30d0f988f7c595be403452a2b9e1583a9fc7760112122503722a9c0"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py",
+      "source": "src/lerobot/policies/qwen3_5vla/transformers_replace/models/qwen3_5/modeling_qwen3_5.py",
+      "source_sha256": "e4f8188b32b1297326fcadf70038d3902d1609f9fa11dc1b76841a079aa78244",
+      "sha256": "e40ab843c5f7460724003ce68badb1fa2fbbf99d2828ce46a510bb553d3295a1"
+    },
+    {
+      "file": "lerobot/transforms/core.py",
+      "source": "src/lerobot/transforms/core.py",
+      "source_sha256": "0c0cde69e810c0f724a638d7e230beffcee52b08421037f4819574b127b05cd2",
+      "sha256": "ef5a557b83bcab976de5c46770d4afd3c8ae0bcbfcd30ec6c9cbd48466680914"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_unified_cond/ibq_codec.py",
+      "source": "src/lerobot/policies/qwen3_5_unified_cond/ibq_codec.py",
+      "source_sha256": "12e71ecc0435faacb2ba31907618baed8cfaee076008c43a1ac2149d21bcfe9d",
+      "sha256": "69d0e251c025e9fb75d8f8f3d9edb345ca19d3e24e0c620a8df80c519feb9ed6"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_unified_cond/tokenization_qwen3_5_unified_cond.py",
+      "source": "src/lerobot/policies/qwen3_5_unified_cond/tokenization_qwen3_5_unified_cond.py",
+      "source_sha256": "9522a70e9768ff6c237c8363bbd79cda58e6a58a0919ac1f57525722f3aa8ab0",
+      "sha256": "d6059931f0a0bea91d846a3593262c0e504b754e46ae9cd29ea6c50d1f860509"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_unified_cond/transform_qwen3_5_unified_cond.py",
+      "source": "src/lerobot/policies/qwen3_5_unified_cond/transform_qwen3_5_unified_cond.py",
+      "source_sha256": "cc2d395095fa72efe923a5466894677a4d23c5111dd02c0213948881d5599356",
+      "sha256": "f34605e02eac54abe410792cdbd38581576d7d5a96a722a6f2cb4288351996ef"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video_ki/transform_qwen3_5_context_video_ki.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video_ki/transform_qwen3_5_context_video_ki.py",
+      "source_sha256": "c52a29d6e4d6180ee2b24b3d80edb52797b4f4271d77f30468feda9c6ba1f743",
+      "sha256": "0a118cf9b9ba9c06064e655014dad10c47267e3d0e5069680b5a4d8fd9092cfb"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_unified_cond/video_keys.py",
+      "source": "src/lerobot/policies/qwen3_5_unified_cond/modeling_qwen3_5_unified_cond.py",
+      "source_sha256": "1a315911263976b54ee7dfcc5a17e91174d4922501a129020b9348bab270ec18",
+      "sha256": "8d65eb72a9ec5da1e4e94f33c076f35e53663be837685c93908fdf685e260225"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_unified_cond/configuration_qwen3_5_unified_cond.py",
+      "source": "src/lerobot/policies/qwen3_5_unified_cond/configuration_qwen3_5_unified_cond.py",
+      "source_sha256": "9583b9fe99e566703cebaae0e8195095b9f7e72bddd25ddebcf055b49c740a11",
+      "sha256": "0a4e567a2bb97c96d4505c84aec367063d0406e9f47ca4c305b31d8ddd3f96d8"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video/configuration_qwen3_5_context_video.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video/configuration_qwen3_5_context_video.py",
+      "source_sha256": "fdddb91042e29185fc4eb1d83ac368325512e656592616cd63b041cbfca3bfb2",
+      "sha256": "e81e3ab5b323e59b657c7a001c95f16a8cce2162dc352da7b02f01c735e6dfe7"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video_ki/configuration_qwen3_5_context_video_ki.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video_ki/configuration_qwen3_5_context_video_ki.py",
+      "source_sha256": "0fe82a758801492632d7379b954a68a632f83a739ae03076a0833878931689d0",
+      "sha256": "7bb10dc134f2647de5373670741295fadc7a0d283b38387d905dfdc05ed13820"
+    },
+    {
+      "file": "lerobot/policies/qwen3_5_context_video_ki/modeling_qwen3_5_context_video_ki.py",
+      "source": "src/lerobot/policies/qwen3_5_context_video_ki/modeling_qwen3_5_context_video_ki.py",
+      "source_sha256": "a8ac4c33b59ca77aab6f7a426e2d41430cf324f932851c0771dad9af781639ad",
+      "sha256": "931d869a0fc97c298aabe893e05cd838250376ce796753a7c399061f9d89510a",
+      "language_generation_source_sha256": "a8ac4c33b59ca77aab6f7a426e2d41430cf324f932851c0771dad9af781639ad"
+    }
+  ],
+  "derived_files": [
+    {
+      "file": "policy/qwen35_history_lift2/src/rc_qwen35_history_lift2/graphs.py",
+      "source": "deploy/acone/infer_a2.py",
+      "source_sha256": "90eb883e86a4a2d9840c52fecd90bdd0b8c5674314539c0c80464a9acbced321",
+      "sha256": "a0125ffe3f934104476e356e9a8478312f1de616e20d4390899efc6088aad271"
+    }
+  ]
+}

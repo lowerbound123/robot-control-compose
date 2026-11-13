@@ -27,6 +27,10 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 
 核对本目录自己的 `deployment.env` 与 `model.json`。依赖使用已有的 `robot-control-compose-qwen35-history:local` 镜像，本目录自带 Dockerfile 和依赖锁文件，构建输入与原 history 相同；仅修改本策略入口不需要重新构建依赖镜像。
 
+`model.json` 支持 `inference.generate_language: ["Memory", "Scene", "Subtask"]`，设为 `[]` 关闭。
+这是模型冷配置，修改后用 `switch-model model.json` 重载当前实例。开启时前缀采用普通执行，去噪 CUDA Graph 仍可使用。
+monitor 的 `subtask` 显示最近成功预测的 Subtask；未启用、未生成、缺少该字段或 reset/release 后返回空字符串，预热文本不展示。
+
 本策略仍要求 `qwen3_5_context_video_ki` 类型的 history 模型，且其 `stats.json` 必须含 `arx_lift2`。历史采样和任务文本约定沿用原 history，不会自动更换模型或适配参考仓库中的旧 `qwen3_5vla_ki` 权重。依赖镜像可继续共用；源码仅挂载本目录的 `src/` 和 `vendor/`，无需为归一化切换安装新依赖。
 
 RC 中可独立选择和配置：

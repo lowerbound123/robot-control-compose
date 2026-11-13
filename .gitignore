@@ -63,6 +63,8 @@ ros_ws/log/
 !/connector/*/compose.yaml
 !/policy/*/vendor/pyproject.toml
 !/policy/*/vendor/lerobot/dataset_schemas/configs/*.yaml
+!/policy/qwen35_history/vendor/SOURCE_MANIFEST.json
+!/policy/qwen35_history_lift2/vendor/SOURCE_MANIFEST.json
 !/policy/qwen35_history_clip/vendor/SOURCE_MANIFEST.json
 !**/*.example
 

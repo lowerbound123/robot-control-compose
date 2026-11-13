@@ -29,7 +29,8 @@ from it on.
 * the suffix positions continue from the last visible token, not from the end
   of the padded training sequence.
 
-At inference the VLM is prefilled once (its ordinary KV cache); in future-first
+At inference optional language is decoded first and the closed segment is
+re-prefilled for action conditioning (its ordinary KV cache); in future-first
 order the cond blocks ride along in that prefill and the future bodies are then
 decoded autoregressively into the same cache.  The expert alone runs
 ``num_inference_steps`` Euler steps against that cache.  The expert
@@ -904,16 +905,156 @@ class Qwen3_5ContextVideoKIModel(nn.Module):  # noqa: N801
 
 
 
+    def _segment_logits(
+        self, hidden: Tensor, *, vocab_start: int, vocab_end: int, end_token: int | None = None
+    ) -> Tensor:
+        """Project onto one tied-table slice and, when needed, its end-token row."""
+        weight = self.qwen.get_output_embeddings().weight
+        logits = F.linear(hidden, weight[vocab_start:vocab_end])
+        if end_token is None:
+            return logits
+        end_logits = F.linear(hidden, weight[end_token : end_token + 1])
+        return torch.cat((logits, end_logits), dim=-1)
+
+
+    def _greedy_subtask_tokens(self, hidden: Tensor) -> Tensor:
+        """Argmax over Qwen text plus the deterministic subtask end sentinel."""
+        if not self.config.constrained_decoding:
+            return F.linear(hidden, self.qwen.get_output_embeddings().weight).argmax(dim=-1)
+        logits = self._segment_logits(
+            hidden, vocab_start=0, vocab_end=ACTION_TOKEN_MIN, end_token=self.special_tokens.subtask_end
+        )
+        choices = logits.argmax(dim=-1)
+        return torch.where(choices == ACTION_TOKEN_MIN, torch.full_like(choices, self.special_tokens.subtask_end), choices)
+
+
+    def _generate_subtask_ids(
+        self,
+        prepared: dict[str, Tensor],
+        semantic_ids: list[list[int]],
+        forced_ids: list[list[int]],
+        generate: list[bool],
+    ) -> list[list[int]]:
+        """Greedy decode of the segment's remaining fields after ``<subtask_start>`` and the forced ids.
+
+        Each row's ``[prompt, <subtask_start>, *forced]`` is prefilled left-padded
+        (the forced lengths differ per row), so the decode starts exactly where a
+        training sequence's teacher-forced body would continue.  Returns the
+        generated ids per row (empty for rows with ``generate`` off), without
+        ``<subtask_end>``.  The cache is not kept: in future-first order the cond
+        blocks must follow the segment inside one prefill (Qwen3.5's recurrent
+        layers only continue a cache one token at a time), so the caller
+        re-prefills with the closed segment.  A row still open after
+        ``max_subtask_tokens`` raises, as unified_cond's FSM does.
+        """
+        bsize = len(semantic_ids)
+        generated: list[list[int]] = [[] for _ in range(bsize)]
+        done = [not flag for flag in generate]
+        if all(done):
+            return generated
+        opened = [
+            [*prefix, self.special_tokens.subtask_start, *forced]
+            for prefix, forced in zip(semantic_ids, forced_ids, strict=True)
+        ]
+        device = prepared[f"{OBS_STR}.input_ids"].device
+        compact_ids, compact_mask = self._left_pad_prefixes(opened, device)
+        opened_batch = {**prepared, f"{OBS_STR}.input_ids": compact_ids, f"{OBS_STR}.attention_mask": compact_mask}
+        hidden, past_key_values, attention_mask, _, rope_deltas = self._prefill_generation(opened_batch)
+        for _ in range(self.config.max_subtask_tokens + 1):
+            next_ids = self._greedy_subtask_tokens(hidden)
+            for index in range(bsize):
+                if done[index]:
+                    continue
+                token = int(next_ids[index])
+                if token == self.special_tokens.subtask_end:
+                    done[index] = True
+                else:
+                    generated[index].append(token)
+            if all(done):
+                break
+            hidden, past_key_values, attention_mask = self._decode_generation_step(
+                token_ids=next_ids, past_key_values=past_key_values, attention_mask=attention_mask, rope_deltas=rope_deltas
+            )
+        else:
+            raise RuntimeError("Generation did not emit subtask_end within its token budget")
+        return generated
+
+
+    def decode_subtasks(self, subtask_ids: list[Tensor]) -> list[str]:
+        tokenizer = self.__dict__.get("_tokenizer")
+        if tokenizer is None:
+            raise RuntimeError("Subtask text decode requires the Qwen tokenizer")
+        return tokenizer.batch_decode(
+            [ids.tolist() for ids in subtask_ids], skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+
+
+    def _decode_generation_step(
+        self,
+        *,
+        token_ids: Tensor,
+        past_key_values: Any,
+        attention_mask: Tensor,
+        rope_deltas: Tensor,
+        ibq_positions: Tensor | None = None,
+    ) -> tuple[Tensor, Any, Tensor]:
+        """Feed one token per row through the cached language model.
+
+        ``ibq_positions`` (``[B, 3]``) overrides the vision planes for IBQ body
+        tokens; a negative entry keeps the plain decoding position.
+        """
+        if bool(((token_ids < 0) | (token_ids >= self.vocab_size)).any()):
+            raise ValueError("Generated token ids fall outside the model vocabulary")
+        inputs_embeds = self.qwen.get_input_embeddings()(token_ids).unsqueeze(1)
+        cache_position = torch.tensor([attention_mask.shape[1]], device=attention_mask.device, dtype=torch.long)
+        attention_mask = torch.cat(
+            (attention_mask, torch.ones((attention_mask.shape[0], 1), device=attention_mask.device, dtype=torch.bool)),
+            dim=1,
+        )
+        text_positions = (attention_mask.long().sum(dim=-1) - 1).view(1, attention_mask.shape[0], 1)
+        vision_positions = (cache_position[0] + rope_deltas[:, 0]).view(1, attention_mask.shape[0], 1).expand(3, -1, -1)
+        if ibq_positions is not None:
+            override = ibq_positions.t().unsqueeze(-1)
+            vision_positions = torch.where(override >= 0, override, vision_positions)
+        position_ids = torch.cat((text_positions, vision_positions), dim=0)
+        outputs = self.qwen.model.language_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            cache_position=cache_position,
+            use_cache=True,
+            return_dict=True,
+        )
+        if outputs.past_key_values is None:
+            raise RuntimeError("Qwen3.5 dropped its KV cache during AR decoding")
+        return outputs.last_hidden_state[:, -1], outputs.past_key_values, attention_mask
+
+
     def _prefix_stage(self, batch, *, requested_order):
         if requested_order != ORDER_ACTION_FIRST:
             raise ValueError("history deployment only supports action_first")
         prepared, semantic_ids = self._prepare_generation_prefix(batch, requested_order=requested_order)
-        forced, generate = self._language_request(batch, len(semantic_ids))
-        if any(forced) or any(generate):
-            raise ValueError("language generation is not enabled in history deployment")
+        subtask_ids = None
+        forced_ids, generate = self._language_request(batch, len(semantic_ids))
+        if any(forced_ids) or any(generate):
+            if not all(forced_ids[index] or generate[index] for index in range(len(semantic_ids))):
+                raise ValueError("Either every row of a batch carries a language segment or none does")
+            generated = self._generate_subtask_ids(prepared, semantic_ids, forced_ids, generate)
+            device = prepared[f"{OBS_STR}.input_ids"].device
+            subtask_ids = [
+                torch.tensor([*forced, *ids], dtype=torch.long, device=device)
+                for forced, ids in zip(forced_ids, generated, strict=True)
+            ]
+            semantic_ids = [
+                [*row, self.special_tokens.subtask_start, *ids.tolist(), self.special_tokens.subtask_end]
+                for row, ids in zip(semantic_ids, subtask_ids, strict=True)
+            ]
+            compact_ids, compact_mask = self._left_pad_prefixes(semantic_ids, device)
+            prepared = {**prepared, f"{OBS_STR}.input_ids": compact_ids, f"{OBS_STR}.attention_mask": compact_mask}
         hidden, past_key_values, attention_mask, _, rope_deltas = self._prefill_generation(prepared)
         anchor = self._cache_tail_positions(attention_mask, rope_deltas)
-        return hidden, past_key_values, attention_mask, rope_deltas, anchor, None, None
+        return hidden, past_key_values, attention_mask, rope_deltas, anchor, None, subtask_ids
 
 
     # ---- flow-matching inference ------------------------------------------------

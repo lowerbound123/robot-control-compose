@@ -94,6 +94,23 @@ def test_backend_monitor_is_a_detached_scalar_snapshot_without_any_torch_calls(m
     assert backend.monitor()['model_stage'] == 'not_loaded'
 
 
+@pytest.mark.parametrize('lift2', [False, True])
+@pytest.mark.parametrize('fields', [[], ['Memory', 'Scene'], ['Memory', 'Scene', 'Subtask']])
+def test_monitor_subtask_is_empty_unless_requested(lift2, fields):
+    cls = entry().HistoryPolicy if lift2 else implementation()
+    backend = Backend()
+    backend.monitor = lambda: {'subtask': 'Pick up the cup'}
+    settings = config()
+    settings['inference'] = {'generate_language': fields}
+    policy = cls(settings, backend=backend)
+    try:
+        snapshot = normalize_snapshot(policy.monitor())
+        assert snapshot['subtask'] == ('Pick up the cup' if 'Subtask' in fields else '')
+        assert backend.calls == []
+    finally:
+        policy.close()
+
+
 def test_failed_initialization_keeps_original_error_and_reports_stage(caplog):
     backend = Backend()
     error = RuntimeError('simulated model initialization failure')
@@ -129,6 +146,7 @@ def assert_worker_monitor(controller, robot_type):
     assert first['type'] == 'monitor_result', first
     assert first['result']['robot_type'] == robot_type
     assert first['result']['context_state'] == 'ready'
+    assert first['result']['subtask'] == ''
     assert completed(controller, 'resume')['status'] == 'succeeded'
     wait(lambda: controller.status()['consumed'] >= 5)
     assert completed(controller, 'pause')['status'] == 'succeeded'
@@ -138,6 +156,7 @@ def assert_worker_monitor(controller, robot_type):
     snapshot = normalize_snapshot(later['result'])
     assert snapshot['inference_count'] >= 1 and snapshot['inference_completed'] >= 1
     assert snapshot['predict_avg_ms'] > 0 and snapshot['head_image_shape'] == '4x5x3'
+    assert snapshot['subtask'] == ''
     assert worker is controller._worker and worker.runnable
 
 

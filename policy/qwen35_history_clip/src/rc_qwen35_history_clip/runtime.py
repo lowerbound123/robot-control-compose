@@ -119,7 +119,10 @@ class HistoryPolicy:
                         pending_age_ms=max(0., (now-pending_at)*1000) if pending_at else 0.,
                         pending_remaining_ms=max(0., (deadline-now)*1000) if deadline else 0.,
                         last_prediction_age_s=max(0., now-finished) if finished else -1.)
-        return {**self._backend_snapshot(), **snapshot}
+        result = {'subtask': '', **self._backend_snapshot(), **snapshot}
+        if 'Subtask' not in self.config.get('inference', {}).get('generate_language', []):
+            result['subtask'] = ''
+        return result
 
     def _predict(self, qpos, images, instruction, contexts):
         started = time.monotonic()

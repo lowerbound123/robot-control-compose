@@ -17,8 +17,8 @@ documented in that directory. They are not runtime dependencies of this copy.
 - Preserve checkpoint dataclass fields, token/marker IDs, prompt construction,
   resize/normalization/reorder numerics, image/video embedding, state projections,
   prefix cache, action expert and Euler inference.
-- Exclude training datasets/optimizers, loss computation, language generation,
-  FAST decoding and IBQ model implementation. Retain IBQ token geometry and
+- Exclude training datasets/optimizers, loss computation, FAST decoding
+  and IBQ model implementation. Retain IBQ token geometry and
   vocabulary layout because existing checkpoint weights and prompt headers need
   them even on the action-first route. Unsupported execution paths raise errors.
 - Extract only the required normalization/resize/reorder transforms. Parse the
@@ -52,3 +52,14 @@ CUDA graph support require separate target-GPU validation.
 
 
 This snapshot is owned by `policy/qwen35_history/vendor`. Historical `source` paths in SOURCE_MANIFEST.json record the original snapshot provenance; they are not runtime imports or mounts. Derived implementation paths point to this policy's own `src/rc_qwen35_history`.
+
+## Optional language generation (2026-11-13)
+
+Restored the action-first language segment helpers from the same designated
+reference checkout's `src/lerobot/policies/qwen3_5_context_video_ki/modeling_qwen3_5_context_video_ki.py`.
+The reference file SHA-256 is `a8ac4c33b59ca77aab6f7a426e2d41430cf324f932851c0771dad9af781639ad`.
+Only text-logit projection, greedy segment decoding, one-token cache continuation,
+text decoding, and the closed language segment before action prefill are retained.
+Future-image and FAST generation remain unsupported in this deployment subset.
+Language requests use eager prefix execution; the action denoise graph remains available.
+The runtime uses this directory's source only and does not import the reference checkout.

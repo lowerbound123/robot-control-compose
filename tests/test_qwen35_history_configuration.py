@@ -62,3 +62,34 @@ def test_manifest_uses_existing_contract_and_only_task_is_hot():
     config['hot_reloadable'].append('params.model_config_path')
     with pytest.raises(ValueError):
         implementation().validate_manifest(config)
+
+
+@pytest.mark.parametrize('package', ['rc_qwen35_history', 'rc_qwen35_history_lift2'])
+@pytest.mark.parametrize('fields', [[], ['Memory', 'Scene', 'Subtask'], ['Subtask'], ['Scene', 'Memory']])
+def test_language_generation_fields_are_explicit_and_canonical(tmp_path, package, fields):
+    path = model_file(tmp_path)
+    data = json.loads(path.read_text())
+    data['inference'] = {'generate_language': fields}
+    path.write_text(json.dumps(data))
+    module = importlib.import_module(package + '.configuration')
+    config = module.load_model_config(path, project_root=tmp_path)
+    assert config['inference']['generate_language'] == [name for name in ('Memory', 'Scene', 'Subtask') if name in fields]
+
+
+@pytest.mark.parametrize('package', ['rc_qwen35_history', 'rc_qwen35_history_lift2'])
+@pytest.mark.parametrize('fields', [True, None, 'Subtask', ['Other'], ['Subtask', 'Subtask'], [1], [{}]])
+def test_invalid_language_generation_is_rejected_before_model_load(tmp_path, package, fields):
+    path = model_file(tmp_path)
+    data = json.loads(path.read_text())
+    data['inference'] = {'generate_language': fields}
+    path.write_text(json.dumps(data))
+    module = importlib.import_module(package + '.configuration')
+    with pytest.raises(ValueError, match='generate_language'):
+        module.load_model_config(path, project_root=tmp_path)
+
+
+@pytest.mark.parametrize('package', ['rc_qwen35_history', 'rc_qwen35_history_lift2'])
+def test_legacy_model_config_keeps_language_generation_disabled(tmp_path, package):
+    path = model_file(tmp_path)
+    module = importlib.import_module(package + '.configuration')
+    assert module.load_model_config(path, project_root=tmp_path)['inference']['generate_language'] == []

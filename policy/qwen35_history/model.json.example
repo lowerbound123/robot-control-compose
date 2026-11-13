@@ -14,7 +14,12 @@
   "inference": {
     "num_inference_steps": null,
     "use_cuda_graph": true,
-    "use_prefix_graph": true
+    "use_prefix_graph": true,
+    "generate_language": [
+      "Memory",
+      "Scene",
+      "Subtask"
+    ]
   },
   "history": {
     "enabled": true
