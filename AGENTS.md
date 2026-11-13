@@ -3,6 +3,7 @@
 默认中文交流。独立项目，不从原 robot-control、deploydev 或训练仓库导入。
 
 - 用户说“提交并推送”时，默认提交当前项目全部待提交改动并推送当前分支的既有远端，不仅限于当前聊天产生的改动；只有用户明确指定范围时才做局部提交。仍须遵守忽略规则，不提交 `.codex`、运行产物、凭据或被忽略的本地配置。
+- 本项目的固定远程仓库为 `github.com/lowerbound123/robot-control-compose`，Git 远端名为 `origin`，SSH 地址为 `git@github.com:lowerbound123/robot-control-compose.git`。用户要求“推送”或“提交并推送”时，目的地即此仓库；除非用户明确要求，不更换远程仓库。
 
 - RC 与 mock connector 使用无 ROS 的 Python 3.10 镜像；ACOne connector 独占 ROS 2 Humble / Python 3.10 容器。hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
 - connector 仅查询设备状态和 FIFO 发送消息，不管理控制周期、控制权、动作过期或重发。take/pause/switch 不取消已提交动作；RC 按 Hz 提交并在设备完整发布确认后消费目标。图像仅在 get_images 请求后写入只读 POSIX 共享内存，socket 只传描述符；RC 复制并明确释放输入租约，policy 使用原 RC 图像池。
