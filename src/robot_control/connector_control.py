@@ -10,8 +10,9 @@ class ConnectorControl:
                                       'generation': self.buffer.generation}
 
     def _collect_publications(self):
-        if not getattr(self.robot, 'asynchronous', False): return
+        if not getattr(self.robot, 'asynchronous', False): return False
         failure = None
+        target_published = False
         for response in self.robot.poll_results():
             pending = self._publications.pop(response['id'], None)
             if pending is None: continue
@@ -29,11 +30,13 @@ class ConnectorControl:
             self._published_targets.update(copy.deepcopy(pending['targets']))
             if pending['generation'] != self.buffer.generation: continue
             token = pending.get('buffer_token')
-            if token is not None: self.buffer.confirm(token)
+            if token is not None and self.buffer.confirm(token):
+                target_published = True
             motion = pending.get('motion')
             if motion is not None and self._motion is motion:
                 self._complete_motion(motion)
         if failure: raise RuntimeError(failure)
+        return target_published
 
     def _complete_motion(self, motion):
         self._motion = None

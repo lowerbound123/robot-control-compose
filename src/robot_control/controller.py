@@ -1482,6 +1482,23 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._inflight = {"id": self._request_serial, "worker": self._worker, "token": token, "lease": lease}
         self._needs_request = False
 
+    def _submit_sync_prediction_after_publication(self):
+        """Use the time before the next send deadline for a due callback."""
+        if (self._state != 'running' or self.control_owner != 'policy'
+                or not self._connected or self._publish_fault or self._stop.is_set()
+                or self._return_requested or self._motion is not None
+                or self._operation is not None or self._inflight is not None
+                or self._worker is None or self._awaiting_member_retry()
+                or not getattr(self._worker, 'runnable', self._worker.alive)):
+            return
+        record = self.registry.get(self._identity)
+        if (record.execution['mode'] != 'sync'
+                or self.buffer.submission_state() in ('partial', 'awaiting_publication')):
+            return
+        if (self._needs_request or self.buffer.current() is None
+                or self.buffer.consumed_since_request >= record.execution['call_every_actions']):
+            self._submit_prediction(self._observe_tick())
+
     def _tick(self):
         self._collect_observation()
         if (self._operation is not None and self._operation['kind'] == 'connector_switch'
@@ -1818,7 +1835,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         urgent = None
                     if urgent:
                         self._dispatch(urgent)
-                    self._collect_publications()
+                    target_published = self._collect_publications()
                     self._poll_policy_commands()
                     self._handle_internal()
                     self._unload_command_fault()
@@ -1839,6 +1856,11 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                             command = None
                         if command:
                             self._dispatch(command)
+                    if target_published:
+                        # ACK wakeups may precede the next send tick. Start the
+                        # due callback now, after control/lifecycle decisions,
+                        # so it does not consume a separate sending period.
+                        self._submit_sync_prediction_after_publication()
                     now = time.monotonic()
                     if now >= deadline:
                         self._tick()
