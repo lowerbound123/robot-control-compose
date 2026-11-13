@@ -159,6 +159,9 @@ class HumanCommandSupport:
             return public_value({'active': self.config, 'draft': draft, 'changes': config_changes(self.config, draft)})
         if kind == 'policy_config_show':
             _, member = self._active_member(parsed.target)
+            exported = self._member_config_export(member)
+            if exported is not None:
+                return public_value({**exported['policy'], **exported['settings']})
             return public_value(member.runtime_config)
         if kind == 'policy_help':
             return self.policy_help(parsed.target, parsed.args[0] if parsed.args else None)

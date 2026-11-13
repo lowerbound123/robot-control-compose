@@ -32,7 +32,7 @@ def test_rc_submits_before_ack_and_consumes_only_after_publication(setup_control
     controller, robot, _ = setup_controller
     submitted, receipts = delayed_robot(monkeypatch, robot)
     worker = ready(controller)
-    controller.registry.get('first').config['execution']['call_every_actions'] = 100
+    controller.registry.get('first').config['execution'].update(mode='async', call_every_actions=100)
     controller.submit('resume')
     until(lambda: worker.requests)
     worker.finish(np.array([[i / 100.] * 14 for i in range(12)]))
@@ -56,7 +56,7 @@ def test_partial_failure_never_consumes_and_stops_new_submissions(setup_controll
     controller, robot, _ = setup_controller
     submitted, receipts = delayed_robot(monkeypatch, robot)
     worker = ready(controller)
-    controller.registry.get('first').config['execution']['call_every_actions'] = 100
+    controller.registry.get('first').config['execution'].update(mode='async', call_every_actions=100)
     controller.submit('resume')
     until(lambda: worker.requests)
     worker.finish(np.ones((12, 14)))
@@ -117,3 +117,53 @@ def test_exit_stops_new_hold_submissions_while_policy_release_is_pending(setup_c
         time.sleep(.06)
         assert len(robot.commands) == count
     finally: finish.set()
+
+
+def test_sync_waits_for_target_receipt_before_starting_next(setup_controller, monkeypatch):
+    controller, robot, _ = setup_controller
+    submitted, receipts = delayed_robot(monkeypatch, robot)
+    worker = ready(controller)
+    with controller._lock:
+        controller.registry.get('first').config['execution'].update(mode='sync', call_every_actions=1)
+        controller._state = 'running'
+        controller._needs_request = False
+        controller.buffer.install(np.ones((2, 14)))
+        monkeypatch.setattr(controller, '_observe_tick', lambda: None)
+        before = len(submitted)
+        controller._tick()
+        assert len(submitted) == before + 1
+        for _ in range(4): controller._tick()
+        assert len(submitted) == before + 1
+        assert not worker.requests and controller.buffer.consumed == 0
+        receipts.append(receipt(submitted[-1][0]))
+        controller._collect_publications()
+        controller._tick()
+        assert controller.buffer.consumed == 1
+        assert len(worker.requests) == 1 and len(submitted) == before + 1
+
+
+def test_sync_retry_finishes_protected_tail_instead_of_request_loop(setup_controller, monkeypatch):
+    controller, robot, _ = setup_controller
+    submitted, receipts = delayed_robot(monkeypatch, robot)
+    worker = ready(controller)
+    with controller._lock:
+        controller.registry.get('first').config['execution'].update(mode='sync', call_every_actions=1)
+        controller._state = 'running'
+        controller.buffer.install(np.ones((2, 14)))
+        first = controller.buffer.reserve()
+        controller.buffer.pin_current()
+        controller.buffer.confirm(first)
+        request = controller.buffer.begin_request()
+        assert not controller.buffer.accept(request, controller.buffer.remaining())
+        assert controller.buffer.last_trim == 1
+        controller._needs_request = True
+        monkeypatch.setattr(controller, '_observe_tick', lambda: None)
+        before = len(submitted)
+        controller._tick()
+        assert len(submitted) == before + 1
+        assert not worker.requests
+        receipts.append(receipt(submitted[-1][0]))
+        controller._collect_publications()
+        assert controller.buffer.consumed == 2 and not len(controller.buffer.remaining())
+        controller._tick()
+        assert len(worker.requests) == 1

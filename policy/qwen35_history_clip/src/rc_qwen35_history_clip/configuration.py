@@ -16,6 +16,8 @@ DEFAULTS = {
     'inference': {'num_inference_steps': None, 'use_cuda_graph': True, 'use_prefix_graph': True,
                   'generate_language': []},
     'history': {'enabled': True},
+    'transition': {'trunk_mode': 'tail', 'trunk_smoothing': True, 'max_smoothing_steps': -1,
+                   'exponential_factor': 5., 'exponential_smoothing': .25},
 }
 
 
@@ -109,14 +111,23 @@ def checkpoint_assets(directory, *, robot_type='arx_acone'):
     return config, dataset, composed
 
 
-def load_model_config(path, *, project_root, robot_type='arx_acone'):
-    path = resolve_path(path, project_root)
-    raw = read_json(path)
+def model_defaults(raw):
+    """Keep user path strings intact in the owned, saveable JSON snapshot."""
     config = copy.deepcopy(DEFAULTS)
     for section, values in raw.items():
         if section not in DEFAULTS or not isinstance(values, dict) or set(values) - set(DEFAULTS[section]):
             raise ValueError(f'unknown configuration fields in {section}')
-        config[section].update(values)
+        config[section].update(copy.deepcopy(values))
+    return config
+
+
+def load_model_config(path, *, project_root, robot_type='arx_acone', raw=None):
+    path = resolve_path(path, project_root)
+    config = model_defaults(read_json(path) if raw is None else raw)
+    from rc_policy_sdk.transitions import TrajectoryAddTransition
+    for name in ('exponential_factor', 'exponential_smoothing'):
+        positive(config['transition'][name], 'transition.' + name)
+    TrajectoryAddTransition(**config['transition'])
     language = config['inference']['generate_language']
     if (not isinstance(language, list)
             or any(type(field) is not str or field not in LANGUAGE_FIELDS for field in language)
@@ -153,14 +164,18 @@ def validate_manifest(config):
     if (execution.get('mode') != 'sync' or type(execution.get('call_every_actions')) is not int
             or execution['call_every_actions'] != 1 or execution.get('control_mode') != 'qpos'):
         raise ValueError('history requires sync callbacks every complete qpos action; use model.json pipelined')
-    if any(path not in ('params.task', 'params.gripper_threshold', 'execution.on_connector_switch')
+    if any(path not in ('params.task', 'params.gripper_threshold', 'params.arm_clip_enabled', 'params.arm_clip_max_delta_rad', 'execution.on_connector_switch')
            for path in config.get('hot_reloadable', [])):
-        raise ValueError('only params.task, params.gripper_threshold and execution.on_connector_switch are hot reloadable')
+        raise ValueError('only task, gripper/arm clipping settings and connector-switch mode are hot reloadable')
     params = config.get('params', {})
+    if type(params.get('arm_clip_enabled', True)) is not bool:
+        raise ValueError('params.arm_clip_enabled must be a boolean')
     if 'gripper_threshold' in params:
         threshold = params['gripper_threshold']
         if type(threshold) not in (int, float) or not math.isfinite(threshold):
             raise ValueError('params.gripper_threshold must be a finite number')
+    if 'arm_clip_max_delta_rad' in params:
+        positive(params['arm_clip_max_delta_rad'], 'params.arm_clip_max_delta_rad')
     task = config.get('params', {}).get('task')
     if task is not None and (not isinstance(task, str) or not task.strip()):
         raise ValueError('params.task must be null or nonempty text')

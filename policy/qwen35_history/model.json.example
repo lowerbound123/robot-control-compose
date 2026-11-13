@@ -23,5 +23,12 @@
   },
   "history": {
     "enabled": true
+  },
+  "transition": {
+    "trunk_mode": "tail",
+    "trunk_smoothing": true,
+    "max_smoothing_steps": -1,
+    "exponential_factor": 5.0,
+    "exponential_smoothing": 0.25
   }
 }

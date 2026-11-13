@@ -138,6 +138,16 @@ MCP 持有控制权时可用 `retry_reload(instance_id=...)` 或 `command("polic
 
 `policy a-0 config save` 保存该实例的有效配置到来源目录 `policy/a/`，保留 YAML 注释和顺序，并将落盘 ID 写为 a。不会创建实例目录或修改其他实例。重复来源必须指定实例，不能用 `policy a config save`。多个实例先后保存时，最后一次成功保存决定来源默认配置。链顺序通过本地 `policy manage save` 或 MCP `policy_chain(action="save", policies=[...])` 保存。
 
+## 可选配置导出
+
+策略可提供纯数据 `export_config(context, config)`，返回 `{"policy": manifest_projection, "settings": display_fields, "files": [{"path": "model.json", "data": model_snapshot}]}`。SDK 在初始化、配置提交和重新初始化确认时导出，RC 缓存结果供 `config show/save` 使用；查询和保存不临时调用策略。hook 不读写文件、不执行推理，不修改传入的配置或 context。
+
+`policy` 保持身份、execution 和元数据原值，只允许从 params 省略内部运行快照；`settings` 不得覆盖 manifest 顶层字段。`files` 为最多 32 个唯一 JSON 目标，内容必须是有限、普通 JSON 对象。优先使用来源目录相对路径；本地 host 使用源副本时可给出原来源内绝对路径，RC 始终检查目标不越出来源目录，拒绝符号链接、路径穿越和与 manifest 重复的目标。
+
+`config save` 在生命周期线程复核目标实例、版本和动作代次后，将保存投影写入来源 manifest，并保存附属 JSON；先预写临时文件，再原子替换，普通替换失败回滚已替换文件。失败及回滚失败会明确报告，保存不更新其他已加载实例，也不替换当前内存配置或版本。未实现 hook 的策略沿用原有保存方式。该能力需配套更新 RC 与 SDK。
+
+配置 set 的成功回执额外包含 `configuration_effect`（`ordinary`、`reset` 或 `reinitialize`），说明此次配置实际采用的生命周期方式。
+
 ## 结构化表格输出（0.18）
 
 命令 handler 可以显式返回 `TableOutput(result=..., tables=[...])`。`result` 放完整业务返回值，`tables` 放按显示顺序排列的表格。下面复用 example 已有的 `monitor(context)` 快照；原命令 `example(context)` 继续直接返回该字典：

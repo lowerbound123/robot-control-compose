@@ -718,3 +718,17 @@ Linux/Humble Python 3.10 中，元数据、host、补全分析/服务与 example
 最终冻结代码执行 `python3 scripts/test_scope.py --interface`：**1706 passed、76 skipped**，584.83 秒；13 条 Pillow 弃用警告及 1 条 multiprocessing resource_tracker 重启告警。跳过项不计通过。最终日志为 `/tmp/rc015-interface-complete.log`；此前因修复而中断的两轮不计完整验收。
 
 其他证据：`/tmp/rc015-example-docker/{result.json,container.log,cleanup.json}`、`/tmp/rc015-linux-ros.log`、`/tmp/rc015-webui-test-verified.log`、`/tmp/rc015-webui-build.log`、`/tmp/rc-input-ui-final.log`、`/tmp/rc015-path-quotes-green.log`。真实 PTY 已验收键码、中文输入、候选布局及方向键；桌面终端窗口的人工视觉复核因原生界面服务不可用未完成，不能用 SVG 导出代替该项。
+
+## 2026-11-13 history 调度、模型配置导出与保存
+
+本轮按授权只运行定向检查，未运行全量 `test_scope.py`、完整接口回归或 Docker smoke。RC 的同步目标提交现在等待完整发布确认后再进入下一目标；受保护尾目标不会被重复推理请求阻断。三个 history 来源支持实例内存模型快照、`model_config.*` 配置与原模型 JSON 保存；流水线融合改为 SDK 接近点拼接，全部 14 维参与。
+
+- RC 调度 RED 为两个可复现断言失败，修复后控制器与 connector 定向检查 **22 passed**。
+- 导出协议、保存回滚与配置事务检查 **39 passed**；example 自链/实例保存集成检查 **17 passed**。
+- 集中定向集：**271 passed、2 skipped，78.73 秒**。包括 RC 控制器、SDK 配置事务、导出与文件回滚、example 配置和自链、MCP 配置、SDK 接近点黄金样例、原 history/LIFT2 配置与生命周期。两项跳过为本机缺少 Torch 的 LIFT2 CPU 变换用例，跳过不计通过。
+- 相对来源路径和公开配置展示的收尾修复后，原 history/LIFT2 设置、真实测试 worker、example 配置/实例保存/MCP 的定向回归 **56 passed，31.76 秒**。
+- `qwen35_history_clip` 仅作源码/配置静态核查，未新增或运行其测试；未加载真实 GPU 模型或连接机器人。普通 reset 保留裁剪累计计数，实例重新初始化/重载清零；计数随后续策略消费反馈更新。
+
+日志位于 `/private/tmp/history-control-config-final.log`、`/private/tmp/history-path-view-green.log`，RED/GREEN 分阶段证据位于同目录的 `history-*.log`。真实配置继续被 Git 忽略，原有 pipelined/replan 值保持不变。本轮没有服务器操作、部署、重启、提交或推送。
+
+后续补充：clip 新增 `params.arm_clip_enabled` 布尔热开关，旧配置默认开启，monitor 显示开关状态。关闭期间继续跟踪已消费指令，重新开启时沿用最后已消费目标；关闭期间产生的动作不累计硬裁剪次数。按用户明确要求，此补充直接实现，未新增或运行测试；上述通过结果不作为此开关的测试证据。

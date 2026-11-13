@@ -10,6 +10,12 @@ from .policy_capabilities import PolicyCapabilities
 
 
 class PolicyCommandSupport(PolicyCapabilities):
+    def _member_config_export(self, member):
+        worker = self._worker
+        if hasattr(worker, 'member_workers'):
+            worker = worker.member_workers().get(member.instance_id)
+        return copy.deepcopy(getattr(worker, 'config_export', None))
+
     def _init_policy_commands(self):
         self._policy_calls = {}
         self._policy_reloads = {}
@@ -243,7 +249,8 @@ class PolicyCommandSupport(PolicyCapabilities):
         # Resolve inactive source files only on the lifecycle thread. Never
         # reinterpret this captured name as an instance after a queued switch.
         saved = PolicySaveTarget(identity) if target is None else PolicySaveTarget(
-            target.source_id, copy.deepcopy(target), worker, worker.config_version, self.buffer.generation)
+            target.source_id, copy.deepcopy(target), worker, worker.config_version, self.buffer.generation,
+            self._member_config_export(target))
         return ControlRequest(operation_id, line, origin, self._control_epoch, save_target=saved)
 
     def _save_target_current(self, target):

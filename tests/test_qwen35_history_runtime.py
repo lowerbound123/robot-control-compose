@@ -114,7 +114,7 @@ def test_history_indices_capacity_ownership_and_duplicate_counter(make):
 
 @pytest.mark.parametrize('jump', [False, True])
 def test_async_keeps_tail_copies_inputs_trims_and_uses_existing_blend(make, jump):
-    from rc_policy_sdk.transitions import TemporalTransition
+    from rc_policy_sdk.transitions import TrajectoryAddTransition
     policy, backend = make(25, True)
     chunk = step(policy, [], 0)
     assert len(chunk) == 50
@@ -138,10 +138,10 @@ def test_async_keeps_tail_copies_inputs_trims_and_uses_existing_blend(make, jump
     policy.pending.result(2)
     previous = chunk[1:].copy()
     chunk = step(policy, previous, 31)
-    expected = TemporalTransition('exponential', None, 5., .25).apply(previous, backend.output[6:])
+    expected = TrajectoryAddTransition(5., .25).apply(previous, backend.output[6:])
     expected[:, [6, 13]] = np.where(expected[:, [6, 13]] > -.8, .04, expected[:, [6, 13]])
     np.testing.assert_allclose(chunk, expected)
-    assert len(chunk) == 44 and policy.monitor()['last_trim'] == 6
+    assert len(chunk) == len(expected) and policy.monitor()['last_trim'] == 6
     assert len(backend.calls) == 2
     assert chunk[0, 6] == -1 and chunk[-1, 6] == pytest.approx(.04)
 
@@ -310,16 +310,16 @@ def test_reset_drains_and_discards_late_result_before_new_epoch(make):
     assert policy.monitor()['history_tick'] == 0 and backend.calls[-1][3] == ()
 
 
-def test_result_acceptance_rejects_fully_stale_chunk(make):
+def test_result_acceptance_discards_fully_stale_chunk_without_losing_tail(make):
     policy, backend = make(25,True)
     chunk = step(policy,[],0)
     for count in range(1,26): chunk = step(policy,chunk[1:],count)
     policy.pending.result(2)
     previous = policy.canonical.copy()
     # Exercise the result boundary independently of the per-step counter guard.
-    with pytest.raises(RuntimeError,match='fully stale'):
-        policy._collect(75,1)
+    policy._collect(75,1)
     np.testing.assert_array_equal(policy.canonical,previous)
+    assert policy.pending is None and policy._last_submission is None
 
 
 def test_monitor_exposes_only_sdk_scalar_types(make):

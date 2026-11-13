@@ -47,6 +47,15 @@ class ActionBuffer:
         with self.lock:
             return self._modes[self._submitted] if self._submitted < len(self._modes) else None
 
+    def submission_state(self):
+        """Distinguish a started target from publication debt and new work."""
+        with self.lock:
+            if self._pinned:
+                return 'partial'
+            if self._submitted > self._cursor:
+                return 'awaiting_publication'
+            return 'ready' if self._submitted < len(self._actions) else 'empty'
+
     def pin_current(self):
         """A partially submitted slew target cannot be replaced by inference."""
         with self.lock:

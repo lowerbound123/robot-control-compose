@@ -294,7 +294,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if words == ["show", "rc"]:
                 return public_value(self.config)
             if words == ["show", "policy"] and self._identity is not None:
-                return public_value(self.registry.get(self._identity).config)
+                record = self.registry.get(self._identity)
+                exported = None if record.is_chain else self._member_config_export(record)
+                return public_value({**exported['policy'], **exported['settings']}
+                                    if exported is not None else record.config)
             raise ValueError("unknown read command or no active policy")
 
     def _emit_query_result(self, command, result):
@@ -840,6 +843,26 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             with self._lock:
                 if cancel.is_set() or not self._save_target_current(target):
                     raise RuntimeError('policy instance/configuration changed before save')
+            if target.config_export is not None:
+                from contextlib import contextmanager
+                from .config_export import save_export
+                from .config import policy_config_path, validate_policy
+                from .yaml_config import load_yaml_config
+                if target.record.directory != self.registry.directory / target.record.source_id:
+                    raise ValueError('policy source directory differs')
+                exported = copy.deepcopy(target.config_export)
+                exported['policy']['id'] = target.record.source_id
+                path = policy_config_path(target.record.directory)
+                validate_policy(exported['policy'], target.record.source_id)
+                validate_policy(load_yaml_config(path), target.record.source_id)
+                @contextmanager
+                def current():
+                    with self._lock:
+                        if cancel.is_set() or not self._save_target_current(target):
+                            raise RuntimeError('policy instance/configuration changed before save')
+                        yield
+                paths = save_export(target.record.directory, path, exported, guard=current)
+                return {'saved_path': paths}
             path = (self.registry.save_record(target.record) if target.record is not None
                     else self.registry.save(target.identity))
             return {'saved_path': str(path)}
@@ -1258,7 +1281,16 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self.runtime.phase = "EMPTY"
                 if not job.get("preserve_state"):
                     self._state = "fault"
-            self.operations.update(job.get("public_id"), "succeeded", result=self.status())
+            receipt = self.status()
+            request = job.get('request')
+            if request is not None and request.config_edit is not None:
+                effect = job.get('action') or 'ordinary'
+                receipt['configuration_effect'] = effect
+                description = {'ordinary': '普通更新，保留执行上下文',
+                               'reset': '已重置执行上下文，保留加载资源；等待 resume',
+                               'reinitialize': '已重新初始化策略资源；等待 resume'}[effect]
+                emit('配置生效方式：' + description)
+            self.operations.update(job.get("public_id"), "succeeded", result=receipt)
             if command_table_output is not None:
                 self._emit_command_table(job['public_id'], *command_table_output)
 
@@ -1368,7 +1400,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self._emit(f"policy {source} 请求 {request['id']} 暂停：{control['reason']}；保持当前目标，等待 resume")
             return
         accepted = self.buffer.accept(request["token"], chunk)
-        self._needs_request = not accepted
+        self._needs_request = not accepted and self.buffer.submission_state() == 'empty'
         self._last_action_request = ActionRequestSnapshot(
             request['id'], request['token'].generation, self.buffer.last_trim, len(self.buffer.remaining()))
         self._emit(f"请求 {request['id']}：裁剪 {self.buffer.last_trim}，缓存 {self._last_action_request.cached}", 'trace')
@@ -1493,11 +1525,14 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         if self._state == "running" and self.control_owner == "policy" and not self._stop.is_set():
             self.robot.read_state()
             record = self.registry.get(self._identity)
-            if self._inflight is not None and record.execution["mode"] == "sync":
+            synchronous = record.execution['mode'] == 'sync'
+            progress = self.buffer.submission_state()
+            if synchronous and (progress == 'awaiting_publication'
+                                or (self._inflight is not None and progress != 'partial')):
                 self._observe_tick()
                 return
             due = self._needs_request or self.buffer.current() is None or self.buffer.consumed_since_request >= record.execution["call_every_actions"]
-            if due and record.execution["mode"] == "sync":
+            if due and synchronous and progress != 'partial':
                 # A hot patch can delay the callback at a completed target.
                 # Complete that decision before starting the next slew target.
                 if self._inflight is None and self._operation is None and self._worker is not None:
@@ -1517,6 +1552,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             elif self._hold is not None:
                 self._send_hold()
             snapshot = self._observe_tick()
+            if synchronous and self.buffer.submission_state() in ('partial', 'awaiting_publication'):
+                return
             due = self._needs_request or self.buffer.current() is None or self.buffer.consumed_since_request >= record.execution["call_every_actions"]
             if due and self._inflight is None and self._operation is None and self._worker is not None:
                 self._submit_prediction(snapshot)

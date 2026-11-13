@@ -57,3 +57,9 @@ ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 R
 `tests/test_qwen35_history_lift2.py` 覆盖阈值边界、手臂值保留、输入与 canonical 缓存不变、原策略隔离、同步/流水线调用、独立配置和镜像复用，以及替换 GPU 后端的真实 RC/worker/example 自链。
 
 `tests/test_qwen35_history_lift2_normalization.py` 使用刻意不同的 ACOne/LIFT2 状态与动作统计量，验证数据组选择、错误预检、模型切换以及真实 CPU 变换的归一化/逆重排/反归一化/delta 还原。测试不加载真实模型或连接硬件。
+
+## TUI 模型参数与保存
+
+所有模型 JSON 叶字段支持 `policy <实例> config set model_config.<section>.<field> <值>`。
+`config show` 展示本实例内存快照，`config save` 写回当前模型 JSON 和策略 manifest；其他实例的内存配置不受影响。
+参数生效方式、接近点融合和裁剪计数见[统一说明](../../docs/history-policy-configuration.md)。

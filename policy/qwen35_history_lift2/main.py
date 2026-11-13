@@ -8,6 +8,7 @@ import numpy as np
 
 from rc_qwen35_history_lift2.configuration import load_model_config as _load_model_config, validate_manifest
 from rc_qwen35_history_lift2.runtime import HistoryPolicy as BaseHistoryPolicy
+from rc_qwen35_history_lift2.settings import initial_settings, configure_model, export_settings, SNAPSHOT
 
 POLICY_ROOT = Path(__file__).resolve().parent
 ROBOT_TYPE = 'arx_lift2'
@@ -33,8 +34,15 @@ class HistoryPolicy(BaseHistoryPolicy):
 
 def initialize(config, *, runtime):
     validate_config(config)
-    model = load_model_config(config['params']['model_config_path'], project_root=POLICY_ROOT)
-    return HistoryPolicy(model, policy_config=config, project_root=POLICY_ROOT)
+    raw, model, model_file = initial_settings(config, POLICY_ROOT, ROBOT_TYPE)
+    context = HistoryPolicy(model, policy_config=config, project_root=POLICY_ROOT)
+    context.model_config_snapshot = raw
+    context.model_config_file = model_file
+    return context
+
+
+def export_config(context, config):
+    return export_settings(context, config)
 
 
 def policy(context, state, action_chunk, images, config, *, runtime):
@@ -83,6 +91,8 @@ def _configuration_value(raw):
 
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
+    if key.startswith('model_config.'):
+        return configure_model(context, config, key, _configuration_value(value), callback)
     allowed_params = {'model_config_path', 'task', 'gripper_threshold'}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
@@ -106,9 +116,10 @@ def configure(context, config, key, value, callback):
     validate_config(candidate)
     if key == 'params.model_config_path':
         load_model_config(candidate['params']['model_config_path'], project_root=POLICY_ROOT)
+        candidate['params'][SNAPSHOT] = None
     effect = ('reinitialize' if key in {'params.model_config_path', 'execution.control_mode',
                                      'execution.tui_command_workers'}
               else 'reset' if key == 'params.task' else None)
-    config.setdefault(section, {})[leaf] = candidate[section][leaf]
+    config[section] = candidate[section]
     if effect is not None:
         callback(effect)

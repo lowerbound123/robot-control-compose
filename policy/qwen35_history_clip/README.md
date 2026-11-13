@@ -7,7 +7,9 @@
 ## 动作裁剪
 
 沿用 ACOne 的 14 维双臂布局、归一化和历史推理，在输出前额外应用 `infer_a2.py`
-的臂关节裁剪：每个臂关节相对上一条裁剪指令最多变化 `±0.1 rad`，两个夹爪不参与裁剪。
+的臂关节裁剪：每个臂关节相对上一条裁剪指令最多变化 `±params.arm_clip_max_delta_rad`（默认 `0.1 rad`），两个夹爪不参与裁剪。
+`params.arm_clip_enabled` 控制是否启用硬裁剪，默认 `true`，支持布尔值热更新，不重载权重或清空累计计数。
+关闭时直接输出夹爪后处理后的动作，继续记录已消费目标；重新开启时从最后一条已消费指令继续裁剪。
 首条指令以本次 context 首轮观测的 `qpos` 为锚点，后续以已消费的裁剪指令为锚点。
 跨 chunk 保留这个锚点；没有消费动作的重复回调不会把锚点向前推进，reset 后重新使用反馈位置。
 
@@ -30,9 +32,20 @@ monitor 返回最近成功预测的 `subtask`；未启用、未生成、缺少�
 ```text
 policy switch qwen35_history_clip
 policy qwen35_history_clip config set params.gripper_threshold -1.2
+policy qwen35_history_clip config set params.arm_clip_enabled false
 policy qwen35_history_clip config save
 resume
 ```
 
 切换成功后保持暂停，使用明确实例名操作。该策略按临时需求提供，按用户要求没有新增或运行测试；
 本轮没有构建 Docker 镜像、加载真实模型或执行真机动作。
+
+## TUI 模型参数与保存
+
+所有模型 JSON 叶字段支持 `policy <实例> config set model_config.<section>.<field> <值>`。
+`config show` 展示本实例内存快照，`config save` 写回当前模型 JSON 和策略 manifest；其他实例的内存配置不受影响。
+参数生效方式、接近点融合和裁剪计数见[统一说明](../../docs/history-policy-configuration.md)。
+
+臂阈值通过 `params.arm_clip_max_delta_rad` 热更新。monitor 的 `arm_clip_count` 统计触发硬裁剪的已消费动作条数，
+`arm_clip_joint_count` 统计这些动作中被裁剪的关节总次数，重复回调不重复计数。普通 reset 保留累计计数，重初始化/重载清零。
+monitor 的 `arm_clip_enabled` 显示当前开关。关闭期间产生的动作不计入硬裁剪次数；关闭前已经返回且随后确认消费的裁剪动作仍按原标记计数。

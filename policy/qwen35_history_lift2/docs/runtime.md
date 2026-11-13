@@ -40,13 +40,13 @@ manifest 的 `execution.mode=sync`、`call_every_actions=1`、`control_mode=qpos
 | `inference.generate_language` | 示例为 `["Memory", "Scene", "Subtask"]` | 生成所选语言字段；`[]` 关闭，旧配置缺少该字段时保持关闭 |
 | `history.enabled` | true | 使用进程内头相机历史 |
 
-上述 model.json 字段均为冷配置，编辑文件后通过 `switch-model` 重载实例。policy.yaml 的 `params.task`、`params.gripper_threshold` 支持热改；后者默认 2.5，可用 `policy qwen35_history_lift2 config set params.gripper_threshold 3.5` 修改。阈值更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
+上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task`、`params.gripper_threshold` 支持热改；后者默认 2.5，可用 `policy qwen35_history_lift2 config set params.gripper_threshold 3.5` 修改。阈值更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
 
 同步模式预测完整 50 步，只返回前 X 步。消费完 X 步后用新观测推理，等待期间不继续消费旧 chunk。
 
-异步模式首轮等待完整预测；此后每累计消费 X 步提交新推理，旧 chunk 后半段可以继续执行。结果按观测之后实际消费的步数裁掉过时前缀，再复用 SDK 的指数融合：整个重叠区间、factor=5、smoothing=0.25，重叠区保留旧夹爪计划。没有原脚本的 replan_ahead/blend_steps 两套阈值。
+异步模式首轮等待完整预测；此后每累计消费 X 步提交新推理，旧 chunk 后半段可以继续执行。结果按观测之后实际消费的步数裁掉过时前缀，再复用 SDK 的 `TrajectoryAddTransition`：默认旧段尾点匹配新段最近点，14 维包含夹爪一起插值，factor=5、smoothing=0.25。融合缓存按实际长度消费。没有原脚本的 replan_ahead/blend_steps 两套阈值。
 
-同时最多一个在途请求。推理跨过多个触发点后只提交一次当前请求，不补发；队列耗尽则等待当前请求。超时、异常、非有限动作或全过时结果进入现有 policy 故障处理，不自动清除故障或冷重试。
+同时最多一个在途请求。推理跨过多个触发点后只提交一次当前请求，不补发；队列耗尽则等待当前请求。完全过时的结果丢弃并重新推理，保留有效旧缓存。超时、异常或非有限动作进入现有 policy 故障处理，不自动清除故障或冷重试。
 
 ## 历史、动作与模型
 

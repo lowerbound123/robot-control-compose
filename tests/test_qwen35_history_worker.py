@@ -112,3 +112,40 @@ def test_hot_gripper_threshold_updates_robot_output_without_reset(running):
     wait(lambda: any(np.allclose(row[[6, 13]], .04) for row in controller.robot.commands[index:]))
     assert controller._worker is worker and controller.status()['state'] == 'running'
     assert len(events(root, 'reset')) == resets and len(events(root, 'load')) == 1
+
+
+def test_model_settings_save_original_json_and_keep_loaded_model(running):
+    controller, root = running
+    path = root / 'model.json'
+    source = json.loads(path.read_text())
+    source['execution']['replan_every_actions'] = 49
+    path.write_text(json.dumps(source))
+    # The instance retains its initialization snapshot despite external edits.
+    shown = controller.query('policy qwen35_history config show')
+    assert shown['model_config']['execution']['replan_every_actions'] == 5
+    worker = controller._worker
+    reply = completed(controller, 'policy qwen35_history config set model_config.execution.replan_every_actions 7')
+    assert reply['status'] == 'succeeded'
+    assert reply['result']['configuration_effect'] == 'reset'
+    assert len(events(root, 'load')) == 1
+    assert controller.query('policy qwen35_history config show')['model_config']['execution']['replan_every_actions'] == 7
+    public = controller.show_active_policy_config()
+    assert public['model_config']['execution']['replan_every_actions'] == 7
+    assert '_model_config_snapshot' not in public['params']
+    assert completed(controller, 'policy qwen35_history config save')['status'] == 'succeeded'
+    assert json.loads(path.read_text())['execution']['replan_every_actions'] == 7
+    assert '_model_config_snapshot' not in read_config(root / 'policy.yaml')['params']
+    assert controller._worker is worker
+    saved = path.read_bytes()
+    path.write_text('external edit must not be read during candidate reinitialization')
+    reply = completed(controller, 'policy qwen35_history config set model_config.inference.num_inference_steps 5')
+    assert reply['status'] == 'succeeded', reply
+    assert reply['result']['configuration_effect'] == 'reinitialize'
+    assert len(events(root, 'load')) == 2
+    assert controller.query('policy qwen35_history config show')['model_config']['execution']['replan_every_actions'] == 7
+    assert controller.status()['state'] == 'paused'
+    # Explicit switch reloads from disk, instead of retaining the live candidate.
+    path.write_bytes(saved)
+    reply = completed(controller, f'policy qwen35_history switch-model "{path}"')
+    assert reply['status'] == 'succeeded', reply
+    assert controller.query('policy qwen35_history config show')['model_config']['inference']['num_inference_steps'] is None

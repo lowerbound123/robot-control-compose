@@ -8,13 +8,14 @@ help_details:
     固定使用所选模型的 arx_lift2 状态和动作统计量进行归一化及反归一化。
     输出夹爪第 6、13 维大于配置阈值（默认 2.5）时输出 4.9，否则输出 0。
   sections:
-    - title: 模型配置
-      body: 使用本目录独立的 model.json 和 deployment.env，要求 history 模型格式和 stats.json 中的 arx_lift2 统计量；不会自动替换模型或连接机器人。
+  - title: 模型配置
+    body: 使用本目录独立的 model.json 和 deployment.env，要求 history 模型格式和 stats.json 中的
+      arx_lift2 统计量；不会自动替换模型或连接机器人。
   examples:
-    - title: 加载策略
-      command: policy switch qwen35_history_lift2
-    - title: 查看配置
-      command: policy <实例> config show
+  - title: 加载策略
+    command: policy switch qwen35_history_lift2
+  - title: 查看配置
+    command: policy <实例> config show
 execution:
   mode: sync # RC回调边界；模型流水线由model.json execution.pipelined选择
   call_every_actions: 1
@@ -80,3 +81,55 @@ config_hints:
       - reset
       - reinitialize_policy
       help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换
+    model_config.model.checkpoint:
+      type: str
+      help: checkpoint 路径，相对于模型配置文件；重新初始化并重载权重
+    model_config.model.vlm_model_name_or_path:
+      type: str
+      help: VLM 模型名或路径；重新初始化并重载权重
+    model_config.runtime.instruction:
+      type: str
+      help: 默认任务，params.task 非空时覆盖此值；重置上下文，保留权重
+    model_config.execution.replan_every_actions:
+      type: int
+      help: 每消费 X 条触发推理，范围 1～50；清理旧上下文，保留权重
+    model_config.execution.pipelined:
+      type: bool
+      help: 后台推理期间继续消费剩余动作；清理旧上下文，保留权重
+    model_config.execution.inference_timeout_s:
+      type: float
+      help: 新推理请求的超时秒数；已有请求期限不变
+    model_config.inference.num_inference_steps:
+      type: json
+      help: 正整数或 null 使用 checkpoint 默认；重新初始化模型和图
+    model_config.inference.use_cuda_graph:
+      type: bool
+      help: 去噪图开关；重新初始化模型和图
+    model_config.inference.use_prefix_graph:
+      type: bool
+      help: 前缀图开关；重新初始化模型和图
+    model_config.inference.generate_language:
+      type: json
+      help: Memory/Scene/Subtask 的不重复 JSON 列表；重新初始化模型和处理器
+    model_config.history.enabled:
+      type: bool
+      help: 历史视频开关；清空上下文及历史，保留权重
+    model_config.transition.trunk_mode:
+      type: enum
+      help: 接近点选择；清理旧上下文，保留权重
+      choices:
+      - tail
+      - close
+      - now
+    model_config.transition.trunk_smoothing:
+      type: bool
+      help: 接近点拼接处是否插值；清理旧上下文，保留权重
+    model_config.transition.max_smoothing_steps:
+      type: int
+      help: 融合窗口上限，-1 表示不限制；清理旧上下文，保留权重
+    model_config.transition.exponential_factor:
+      type: float
+      help: 指数融合因子，必须为正数；清理旧上下文，保留权重
+    model_config.transition.exponential_smoothing:
+      type: float
+      help: 指数平滑系数，必须为正数；清理旧上下文，保留权重

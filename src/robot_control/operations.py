@@ -18,6 +18,7 @@ class PolicySaveTarget:
     worker: object = None
     version: int | None = None
     generation: int | None = None
+    config_export: dict | None = None
 
 
 @dataclass(frozen=True)

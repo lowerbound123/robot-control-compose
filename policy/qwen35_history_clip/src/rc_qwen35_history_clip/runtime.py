@@ -1,15 +1,18 @@
 """Per-target callbacks and one GPU executor; RC alone consumes actions."""
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import copy
+import json
 import logging
 from pathlib import Path
 import threading
 import time
 
 import numpy as np
-from rc_policy_sdk.transitions import TemporalTransition
+from rc_policy_sdk.transitions import TrajectoryAddTransition
 
 from .history import HistoryBuffer
+from .configuration import DEFAULTS
+from .settings import SNAPSHOT
 
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 
@@ -25,7 +28,6 @@ class HistoryPolicy:
     robot_type = 'arx_acone'
     default_gripper_threshold = -.8
     arm_columns = (0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12)
-    max_joint_step = .1
 
     def __init__(self, config, *, policy_config=None, backend=None, project_root=None):
         self.config = copy.deepcopy(config)
@@ -36,18 +38,22 @@ class HistoryPolicy:
         self.pipelined = config['execution']['pipelined']
         self.timeout = float(config['execution']['inference_timeout_s'])
         self.history_enabled = config['history']['enabled']
-        self.transition = TemporalTransition('exponential', None, 5., .25)
+        self.transition = TrajectoryAddTransition(**config.get('transition', DEFAULTS['transition']))
+        self.model_config_snapshot = copy.deepcopy(config)
+        self._settings_token = None
         self.pending = self._request = None
         self._epoch = self._consumed = self._last_submission = None
         self._config_version = None
         self._clip_anchor = self._clip_consumed = None
         self._clip_output = np.empty((0, 14), np.float32)
+        self._clip_mask = np.empty((0, 12), bool)
         self._failure = None
         self._closed = False
         self.canonical = np.empty((0, 14), np.float32)
         self._metrics_lock = threading.Lock()
         self._created_at = time.monotonic()
         self._metrics = dict(context_state='initializing', robot_type=self.robot_type,
+                             arm_clip_count=0, arm_clip_joint_count=0,
                              checkpoint=str(config.get('model', {}).get('checkpoint', 'injected backend')),
                              pipelined=int(self.pipelined), history_enabled=int(self.history_enabled),
                              replan_every_actions=self.x, inference_timeout_s=self.timeout,
@@ -120,9 +126,31 @@ class HistoryPolicy:
                         pending_remaining_ms=max(0., (deadline-now)*1000) if deadline else 0.,
                         last_prediction_age_s=max(0., now-finished) if finished else -1.)
         result = {'subtask': '', **self._backend_snapshot(), **snapshot}
+        result['arm_clip_enabled'] = self.policy_config.get('params', {}).get('arm_clip_enabled', True)
+        result['arm_clip_max_delta_rad'] = self.policy_config.get('params', {}).get('arm_clip_max_delta_rad', .1)
         if 'Subtask' not in self.config.get('inference', {}).get('generate_language', []):
             result['subtask'] = ''
         return result
+
+    def _refresh_settings(self):
+        raw = self.policy_config.get('params', {}).get(SNAPSHOT)
+        if raw is None or raw == self._settings_token:
+            return
+        token = raw
+        raw = json.loads(raw)
+        # Model/processor changes use reinitialize; these leaves only change
+        # execution at a committed callback/reset boundary, never reread disk.
+        for section in ('execution', 'runtime', 'history', 'transition'):
+            self.config[section] = copy.deepcopy(raw[section])
+        self.model_config_snapshot = copy.deepcopy(raw)
+        self._settings_token = token
+        self.x = raw['execution']['replan_every_actions']
+        self.pipelined = raw['execution']['pipelined']
+        self.timeout = float(raw['execution']['inference_timeout_s'])
+        self.history_enabled = raw['history']['enabled']
+        self.transition = TrajectoryAddTransition(**raw['transition'])
+        self._record(replan_every_actions=self.x, pipelined=int(self.pipelined),
+                     inference_timeout_s=self.timeout, history_enabled=int(self.history_enabled))
 
     def _predict(self, qpos, images, instruction, contexts):
         started = time.monotonic()
@@ -181,9 +209,13 @@ class HistoryPolicy:
         if request_epoch != epoch:
             raise RuntimeError('stale inference epoch')
         stale = count-submitted
-        if not 0 <= stale < len(new):
-            raise RuntimeError('inference chunk is fully stale or counter moved backwards')
+        if stale < 0:
+            raise RuntimeError('consumed action counter moved backwards')
         self.pending = self._request = None
+        if stale >= len(new):
+            self._last_submission = None
+            self._record(pending=0, last_trim=stale, _pending_at=0., _deadline=0.)
+            return
         if self.pipelined:
             self.canonical = self.transition.apply(self.canonical, new[stale:])
         else:
@@ -202,13 +234,7 @@ class HistoryPolicy:
         return result
 
     def _clip_arm_targets(self, actions, qpos, count):
-        """Replace arm targets, anchored only to previously consumed outputs.
-
-        Like infer_a2, clip each joint independently and leave grippers alone.
-        The first target starts at feedback; subsequent targets start at the
-        last clipped command. A callback without consumption must not advance
-        that anchor, and a new chunk must not jump to its raw predecessor.
-        """
+        """Clip returned futures; count only previously returned, consumed rows."""
         if self._clip_anchor is None:
             self._clip_anchor = np.array(qpos, dtype=np.float32, copy=True)
         else:
@@ -217,15 +243,26 @@ class HistoryPolicy:
                 raise RuntimeError('clipped action consumption moved outside the returned plan')
             if consumed:
                 self._clip_anchor = self._clip_output[consumed - 1].copy()
+                applied = self._clip_mask[:consumed]
+                with self._metrics_lock:
+                    self._metrics['arm_clip_count'] += int(np.count_nonzero(applied.any(axis=1)))
+                    self._metrics['arm_clip_joint_count'] += int(np.count_nonzero(applied))
         result = actions.copy()
         columns = list(self.arm_columns)
-        previous = self._clip_anchor
-        for action in result:
-            action[columns] = previous[columns] + np.clip(
-                action[columns] - previous[columns], -self.max_joint_step, self.max_joint_step)
-            previous = action
+        params = self.policy_config.get('params', {})
+        mask = np.zeros((len(result), len(columns)), bool)
+        if params.get('arm_clip_enabled', True):
+            maximum = params.get('arm_clip_max_delta_rad', .1)
+            previous = self._clip_anchor
+            for index, action in enumerate(result):
+                delta = action[columns] - previous[columns]
+                mask[index] = np.abs(delta) > maximum
+                action[columns] = previous[columns] + np.clip(delta, -maximum, maximum)
+                previous = action
+        # Track consumed outputs even while disabled, so re-enabling starts
+        # from the last consumed command and disabled rows never count as clips.
         self._clip_consumed = count
-        self._clip_output = result.copy()
+        self._clip_output, self._clip_mask = result.copy(), mask
         return result
 
     def step(self, state, action_chunk, images, *, runtime):
@@ -234,6 +271,7 @@ class HistoryPolicy:
         if self._failure is not None:
             raise self._failure
         try:
+            self._refresh_settings()
             instruction = self._instruction()
             if instruction != self.instruction:
                 self.reset()
@@ -279,8 +317,8 @@ class HistoryPolicy:
                 self._collect(count, epoch)
             if self.pending is None:
                 due = (not len(self.canonical) or
-                       (self.pipelined and self._last_submission is not None
-                        and count-self._last_submission >= self.x))
+                       (self.pipelined and (self._last_submission is None
+                        or count-self._last_submission >= self.x)))
                 if due:
                     self._launch(state, images, count, epoch)
                     if not len(self.canonical):
@@ -309,6 +347,8 @@ class HistoryPolicy:
         if self._failure is not None:
             raise self._failure
         self._drain()
+        self._refresh_settings()
+        self.instruction = self._instruction()
         self._executor.submit(self.backend.reset_context).result()
         self.history.reset()
         self.canonical = np.empty((0, 14), np.float32)
@@ -316,6 +356,7 @@ class HistoryPolicy:
         self._config_version = None
         self._clip_anchor = self._clip_consumed = None
         self._clip_output = np.empty((0, 14), np.float32)
+        self._clip_mask = np.empty((0, 12), bool)
         with self._metrics_lock:
             self._metrics.update(history_tick=0, history_frames=0, context_slots=0,
                                  pending=0, last_trim=0, cached_actions=0, consumed_actions=0, control_epoch=-1,
@@ -345,4 +386,11 @@ class HistoryPolicy:
         from .configuration import load_model_config, resolve_path
         path = resolve_path(path, self.project_root)
         load_model_config(path, project_root=self.project_root, robot_type=self.robot_type)
-        return {'params.model_config_path': str(path)}
+        try:
+            selected = path.relative_to(self.project_root).as_posix()
+        except ValueError:
+            selected = str(path)
+        patch = {'params.model_config_path': selected}
+        if SNAPSHOT in self.policy_config.get('params', {}):
+            patch['params.' + SNAPSHOT] = None
+        return patch

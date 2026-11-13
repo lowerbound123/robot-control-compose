@@ -90,3 +90,28 @@ def test_pause_after_config_publish_is_not_overwritten_by_success_result(example
     assert reply['status'] in ('succeeded', 'cancelled'), reply
     assert rc.status()['state'] == 'paused'
     assert rc.query('policy example config show')['params']['message'] == 'paused-after-publish'
+
+
+def test_example_export_is_cached_and_saved_without_changing_other_instances(example_rc):
+    rc = example_rc
+    path = rc.registry.directory / 'example' / 'main.py'
+    path.write_text(path.read_text() + '''
+def export_config(context, config):
+    data = {"message": config["params"]["message"]}
+    return {"policy": config, "settings": {"model_config": data},
+            "files": [{"path": "model.json", "data": data}]}
+''')
+    copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
+    command(rc, 'policy switch example_chain')
+    before = copy.deepcopy(rc.query('policy example-1 config show'))
+    command(rc, 'policy example-0 config set params.message saved-model')
+    view = rc.query('policy example-0 config show')
+    assert view['model_config'] == {'message': 'saved-model'}
+    worker = rc._worker.member_workers()['example-0']
+    version, live = worker.config_version, copy.deepcopy(worker.config)
+    command(rc, 'policy example-0 config save')
+    assert json.loads(path.with_name('model.json').read_text()) == {'message': 'saved-model'}
+    assert worker.config == live and worker.config_version == version
+    assert rc.query('policy example-1 config show') == before
+    command(rc, 'policy example-0 config set params.chunk_size 7')
+    assert rc.query('policy example-0 config show')['model_config'] == {'message': 'saved-model'}

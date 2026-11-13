@@ -9,6 +9,7 @@ import uuid
 
 from rc_policy_sdk.commands import COMMAND_EFFECTS, check_command_effects, command_specs, validate_arguments
 from rc_policy_sdk.configuration import apply_candidate, apply_patch, prepare_patch, same_config, validate_candidate
+from rc_policy_sdk.config_export import validate_export
 from rc_policy_sdk.control import RUNTIME_TOOLS, control_requests, runtime_tools
 from rc_policy_sdk.wire import encode_message
 from .host_client import HostClient
@@ -72,6 +73,7 @@ class PolicyProcess(MonitorClient):
                 raise ValueError('policy timeout must be positive and finite')
         encode_message(config)
         self.policy_dir, self.config, self.config_version = Path(policy_dir), config, config_version
+        self.config_export = self._configure_export = None
         self.init_timeout_s, self.inference_timeout_s, self.release_timeout_s = init_timeout_s, inference_timeout_s, release_timeout_s
         self.on_log = on_log
         self.on_log_event = on_log_event
@@ -319,6 +321,7 @@ class PolicyProcess(MonitorClient):
                     self._record_failure('upgrade rc-policy-sdk: missing TUI commands'); return
                 try:
                     check_command_effects(self.command_specs, message)
+                    self.config_export = validate_export(message.get('config_export'), self.config)
                 except ValueError as exc:
                     self._record_failure(str(exc)); return
                 self._ready = True
@@ -628,8 +631,9 @@ class PolicyProcess(MonitorClient):
             if (self._configure_prepared is None or not same_config(self._configure_prepared[0], config)
                     or self._configure_applied_version != version):
                 raise ValueError('configure commit differs from applied candidate')
-        self._configure_operation('configure_commit', dict(new_config_version=version), cancel)
+        response = self._configure_operation('configure_commit', dict(new_config_version=version), cancel)
         with self._condition:
+            self._configure_export = validate_export(response.get('config_export'), config)
             self._configure_committed = True
 
     def publish_config(self, config, version):
@@ -639,6 +643,8 @@ class PolicyProcess(MonitorClient):
                     or not same_config(self._configure_prepared[0], config) or self._configure_applied_version != version):
                 raise RuntimeError('configure commit is not confirmed')
             apply_candidate(self.config, config)
+            self.config_export = self._configure_export
+            self._configure_export = None
             self.config_version = version
             self._log_pending_version = None
             self._configure_prepared = None
@@ -690,6 +696,7 @@ class PolicyProcess(MonitorClient):
                                         or response['config_version'] != extras['config_version']):
                                     raise RuntimeError('hot config acknowledgement version mismatch')
                                 apply_patch(self.config, extras["patch"])
+                                self.config_export = validate_export(response.get('config_export'), self.config)
                                 self.config_version = extras["config_version"]
                                 self._log_pending_version = None
                             self._commands_blocked = False
@@ -795,7 +802,8 @@ class PolicyProcess(MonitorClient):
                 cancel, self.init_timeout_s)
             if type(response.get('observe')) is not bool or type(response.get('monitor')) is not bool:
                 raise RuntimeError('invalid reinitialization capabilities')
-            return {'observe': response['observe'], 'monitor': response['monitor']}
+            return {'observe': response['observe'], 'monitor': response['monitor'],
+                    'config_export': validate_export(response.get('config_export'), candidate_runtime_config)}
         except BaseException:
             self.revoke_context()
             raise
@@ -816,6 +824,7 @@ class PolicyProcess(MonitorClient):
             self.command_specs = command_specs(config)
             self.supports_observe = flags['observe']
             self.supports_monitor = flags['monitor']
+            self.config_export = flags.get('config_export')
             self._reinitializing = False
             self._configure_prepared = None
             self._configure_applied_version = None

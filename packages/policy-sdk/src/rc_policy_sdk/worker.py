@@ -18,6 +18,7 @@ from .control import RUNTIME_TOOLS, runtime_tools
 from .actions import CONTROL_MODES, normalize_actions
 
 from .configuration import ConfigureCallback, apply_candidate, apply_patch, same_config, validate_candidate
+from .config_export import export_config
 from .catalog import validate_connector_switch_settings
 from .images import map_images
 from .lifecycle import become_subreaper, cleanup_worker_children
@@ -141,6 +142,7 @@ def run_session(connection, policy_dir, namespace):
         if callable(getattr(module,'wants_observations',None)):
             supported=supported and module.wants_observations(context)
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
+                      "config_export": export_config(module, context, config),
                       "configure": configure_enabled, "context_id": channel.context_id,
                       "table_output_v1": channel.table_output_v1,
                       "connector_switch_v1": message.get("connector_switch_v1") is True,
@@ -212,10 +214,11 @@ def run_session(connection, policy_dir, namespace):
                     elif kind == "configure_commit":
                         if not configure_applied:
                             raise ValueError("configure has not been applied")
+                        exported = export_config(module, context, config)
                         prepared_config = None
                         configure_applied = False
                         configure_committed = True
-                        channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version, "context_id": channel.context_id})
+                        channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version, "context_id": channel.context_id, "config_export": exported})
                     elif kind == "configure_abort":
                         if configure_applied:
                             raise ValueError("applied configure cannot be aborted")
@@ -292,7 +295,8 @@ def run_session(connection, policy_dir, namespace):
                         raise ValueError("unknown reinitialization operation")
                     ack = {"type": "ack", "operation_id": message["operation_id"], "config_version": message["config_version"], "context_id": message["context_id"]}
                     if kind == "reinit_initialize":
-                        ack.update(observe=bool(supported), monitor=monitor.callback is not None)
+                        ack.update(observe=bool(supported), monitor=monitor.callback is not None,
+                                   config_export=export_config(module, context, config))
                     channel.send(ack)
                 elif kind == "infer":
                     if not active or channel.configure_fenced:
@@ -329,7 +333,8 @@ def run_session(connection, policy_dir, namespace):
                     channel.config_version = version
                     commands.resume()
                     monitor.resume()
-                    channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version})
+                    channel.send({"type": "ack", "operation_id": message["operation_id"], "config_version": version,
+                                  "config_export": export_config(module, context, config)})
                 elif kind == "reset_context":
                     monitor.barrier()
                     commands.barrier()
