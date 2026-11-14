@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 from .direct_commands import MOTION_AXES, Step
 from .safety import ARMS, interpolate_pose, rotation_gap
 
-from .direct_config import DEFAULTS, control_settings
+from .direct_config import control_settings
 
 class DirectMotion:
     def __init__(self, config, frequency_hz, operations, send, robot, *, emit=None):

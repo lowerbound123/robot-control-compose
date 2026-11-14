@@ -9,7 +9,7 @@ from textual.widgets import Static
 
 _FIELDS = (
     'state', 'policy', 'control_owner', 'in_flight', 'consumed', 'last_action_request',
-    'runtime', 'target', 'runtime_error', 'recording_state', 'recording_error',
+    'runtime', 'target', 'runtime_error', 'recording_state', 'recording_auto', 'recording_error',
     'connector_source', 'connector_config',
 )
 
@@ -28,7 +28,7 @@ def statusbar_rows(snapshot):
             text = (f"请求 {_display(request.get('request_id'))}："
                     f"裁剪 {_display(request.get('trim'))}，缓存 {_display(request.get('cached'))}")
         else:
-            text = _display(value)
+            text = ('on' if value else 'off') if key == 'recording_auto' and isinstance(value, bool) else _display(value)
             if key in ('runtime_error', 'recording_error'):
                 text = ' '.join(text.splitlines())
                 if not text.strip():

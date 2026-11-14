@@ -118,14 +118,34 @@ class RecordingVideosTests(unittest.TestCase):
         for path, data in logs.items():
             self.assertEqual(path.read_bytes(), data)
 
-    def test_running_session_is_not_processed(self):
-        session = self.session(stopped=False)
+    def test_session_metadata_does_not_gate_conversion(self):
+        contents = {
+            'running': '{"event":"record.started"}\n',
+            'failed': '{"event":"record.error","error":"mandatory recording budget exceeded"}\n',
+            'stopped_with_error': '{"event":"record.stopped","error":"writer failed"}\n',
+            'missing': None,
+            'incomplete': '{"event":',
+        }
+        sessions = {}
+        for name, content in contents.items():
+            session = sessions[name] = self.session('record_' + name, stopped=False)
+            if content is None:
+                (session / 'session.jsonl').unlink()
+            else:
+                (session / 'session.jsonl').write_text(content)
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((session / 'assets').exists())
-        self.assertTrue((session / 'images/head/2.png').exists())
-        self.assertFalse((session / 'videos').exists())
-        self.assertIn('SKIP', result.stdout)
+        self.assertIn('converted=5', result.stdout)
+        for name, session in sessions.items():
+            with self.subTest(name=name):
+                self.assertFalse((session / 'assets').exists())
+                self.assertFalse((session / 'images').exists())
+                self.assertEqual(self.probe(session / 'videos/head.mp4')['nb_read_frames'], '2')
+                self.assertEqual((session / 'initial.png').read_bytes(), png((240, 0, 0)))
+                if contents[name] is None:
+                    self.assertFalse((session / 'session.jsonl').exists())
+                else:
+                    self.assertEqual((session / 'session.jsonl').read_text(), contents[name])
 
     def test_corrupt_camera_preserves_all_assets_and_publishes_no_videos(self):
         session = self.session(cameras=('head', 'left_wrist'))

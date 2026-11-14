@@ -425,16 +425,20 @@ def create_server(controller):
                             expected_control=expected_control.model_dump() if expected_control is not None else None)
 
     @server.tool(annotations=write)
-    async def record(action: Literal['status', 'on', 'off', 'toggle'] = 'status',
+    async def record(action: Literal['status', 'on', 'off', 'toggle', 'auto_on', 'auto_off', 'auto_toggle'] = 'status',
                      wait: bool = False, timeout_s: Timeout = 30,
                      expected_control: ControlGuard | None = None) -> CallToolResult:
         """Query/control recording without take, independently of policy execution and control ownership.
 
         off succeeds only after accepted data is flushed. Waiting timeout never cancels the operation.
+        auto_on ensures recording; auto_off keeps the current session. Successful
+        resets/rebuilds rotate in the background without delaying their receipts.
         """
         if action == 'status':
             return await query('record status')
-        return await manage('record', controller.submit, 'record' if action == 'toggle' else 'record ' + {'on':'start', 'off':'stop'}[action],
+        line = {'toggle':'record', 'on':'record start', 'off':'record stop',
+                'auto_on':'record auto on', 'auto_off':'record auto off', 'auto_toggle':'record auto'}[action]
+        return await manage('record', controller.submit, line,
                             origin='mcp', mcp_tool='record', wait=wait, timeout_s=timeout_s,
                             expected_control=expected_control.model_dump() if expected_control is not None else None)
 

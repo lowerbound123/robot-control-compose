@@ -6,7 +6,7 @@ from rich.text import Text
 from rc_policy_sdk.tables import normalize_table_document, table_cell_text
 
 from .literal_text import clean_boundaries
-from .structured_log import DisplayRow, DisplaySpan, FormattedRecord, _log_text, _reject_constant, _rows, gutter_width
+from .structured_log import DisplayRow, FormattedRecord, _log_text, _reject_constant, _rows, gutter_width
 from .table_layout import SourceCell, cell_rows, layout_table
 
 

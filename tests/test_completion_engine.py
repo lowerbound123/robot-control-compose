@@ -199,3 +199,9 @@ def test_primitive_metadata_choices_remain_typed_suggestions(catalog):
     line = 'policy example-1 config set enabled '
     result = analyze(line, len(line), catalog)
     assert [item.insert_text for item in result.items] == ['true']
+
+
+def test_record_auto_mode_completions():
+    from robot_control.completion import analyze
+    result=analyze('record auto ',len('record auto '),{})
+    assert {item.insert_text for item in result.items}=={'on','off'}

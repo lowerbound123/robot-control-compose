@@ -1,6 +1,5 @@
 """Named connection settings; validation is safe in the setup interpreter."""
 import copy
-import math
 from pathlib import Path
 import re
 

@@ -94,7 +94,7 @@ def test_timeout_unloads_worker_cancels_peers_and_requires_switch(command_contro
     until(lambda: controller._worker is None, 8)
     assert not worker.alive
     assert controller.status()["state"] == "paused"
-    assert controller.local_commands() == []
+    assert not controller._local_specs()
     assert completed(controller, controller.submit("resume"))["status"] == "failed"
 
 
@@ -202,7 +202,7 @@ def test_worker_crash_settles_call_and_removes_commands(command_controller):
     call = controller.submit("policy first die")
     assert completed(controller, call)["status"] == "failed"
     until(lambda: controller._worker is None, 5)
-    assert controller.local_commands() == []
+    assert not controller._local_specs()
 
 
 @pytest.mark.parametrize("command_controller", [SOURCE.replace('context["barrier"].wait(3)\n    return [[0] * 14]', 'return [[0] * 14]')], indirect=True)

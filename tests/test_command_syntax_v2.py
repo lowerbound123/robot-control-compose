@@ -52,3 +52,9 @@ def test_completion_uses_full_command_paths_and_instance_targets():
     assert 'policy example-0 config set' in complete_command('policy example-0 config s', instances=['example-0'])
     assert 'monitor example-0' in complete_command('monitor ex', instances=['example-0'])
     assert 'example-0' not in complete_command('ex', instances=['example-0'])
+
+
+def test_auto_record_completion_includes_explicit_mode_arguments():
+    assert complete_command('record auto ') == ['record auto off','record auto on']
+    for line in ('record auto yes','record auto on extra','record auto status'):
+        with pytest.raises(ValueError): parse_command(line)

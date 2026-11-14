@@ -10,9 +10,6 @@ import os
 import queue
 import re
 import shlex
-import signal
-import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -28,14 +25,13 @@ from .buffer import ActionBuffer
 from .yaml_config import save_yaml_config
 from .config import PolicyRegistry, atomic_json, load_rc, validate_entry
 from .process import PolicyProcess
-from .robots import make_robot
 from .safety import ModeLimiter, finite_qpos, arm_targets
 from .policy_commands import PolicyCommandSupport
 from .member_reload import MemberReloadSupport
 from .chain_management import ChainManagement
 from .policy_results import PolicyResultSupport
 from .global_state_control import GlobalStateControl
-from .recording_control import RecordingControl, RECORD_HELP
+from .recording_control import RecordingControl
 from .connector_lifecycle import ConnectorLifecycle
 from .connector_control import ConnectorControl
 from .connector import ImagesPending
@@ -48,7 +44,7 @@ from .policy_configuration import PolicyConfigurationSupport
 from .operations import ControlRequest, Operations
 from .terminal_batches import TerminalBatches
 from .direct import DirectMotion
-from rc_policy_sdk.actions import normalize_actions, normalize_result
+from rc_policy_sdk.actions import normalize_result
 from rc_policy_sdk.control import control_requests
 
 
@@ -239,6 +235,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self._thread.start()
             except Exception:
                 self.exit_code = 1
+                self._stop.set()
+                self._close_record_auto(self._cleanup_deadline())
                 if self._manager is not None and self._manager.is_alive():
                     self._jobs.put(None)
                     self._manager.join(5)
@@ -257,6 +255,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         with self._lock:
             if self._thread is not None:
                 raise RuntimeError("running controller must be closed through exit")
+            self._stop.set()
+            self._close_record_auto(self._cleanup_deadline())
             try:
                 self.robot.close()
                 self._external.close()
@@ -290,7 +290,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if words and words[0] == 'help' and len(words) in (1, 2):
                 return HELP if len(words) == 1 else self.local_help(words[1])
             if words == ['record', 'status']:
-                return self._recorder.status()
+                return self._record_status()
             if words == ["show", "rc"]:
                 return public_value(self.config)
             if words == ["show", "policy"] and self._identity is not None:
@@ -569,6 +569,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 return
             if self._motion is not None and self._motion is not previous_motion:
                 self._motion["public_id"] = identity
+                if word in ('reset', 'r', 'load'):
+                    self._record_auto_mark(identity, 'pose.restore' if word == 'load' else 'reset')
                 return
             if word in ("exit", "quit"):
                 self._exit_operations.append(identity)
@@ -614,7 +616,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 "control_owner": self.control_owner, "control_epoch": self._control_epoch,
                 "returning": self._return_requested, "direct": self.direct.progress(),
                 "policy_wait_operation_id": self._policy_wait['operation_id'] if self._policy_wait else None,
-                "recording": self._recorder.status(),
+                "recording": self._record_status(),
             }
 
     def _statusbar_snapshot(self):
@@ -622,7 +624,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         with self._lock:
             source, config = self.robot._binding_metadata() if self._connected else (None, None)
             runtime = self.runtime.snapshot() if self.runtime else {}
-            recording = self._recorder.status()
+            recording = self._record_status()
             request = self._last_action_request
             return {
                 'state': self._state, 'policy': self._identity, 'control_owner': self.control_owner,
@@ -631,7 +633,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                                         and request.generation == self.buffer.generation else None),
                 'runtime': runtime.get('phase'), 'target': runtime.get('target'),
                 'runtime_error': runtime.get('error'),
-                'recording_state': recording.get('state'), 'recording_error': recording.get('error'),
+                'recording_state': recording.get('state'), 'recording_auto': recording['auto'],
+                'recording_error': recording.get('error') or recording.get('auto_error'),
                 'connector_source': source, 'connector_config': config,
             }
 
@@ -701,6 +704,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         job = {"id": self._job_serial, "kind": kind, "cancel": threading.Event(),
                "public_id": self._dispatch_id, 'origin': self._dispatch_origin or 'tui',
                'epoch': self._control_epoch, 'source_generation': self.buffer.generation, **payload}
+        reasons = {'switch': 'policy.chain.apply' if payload.get('chain_ids') is not None else
+                   'policy.reload_all' if payload.get('commit') else 'policy.switch',
+                   'reload_member': 'policy.reinitialize' if payload.get('in_place') else 'policy.reload',
+                   'connector_switch': 'connector.switch', 'connector_member_retry': 'connector.retry'}
+        if kind in reasons:
+            self._record_auto_mark(job.get('public_id'), reasons[kind])
         if self._stop.is_set() and kind != "shutdown":
             job["cancel"].set()
         job["launched"] = not (wait_inflight and self._inflight is not None)
@@ -1297,6 +1306,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             request = job.get('request')
             if request is not None and request.config_edit is not None:
                 effect = job.get('action') or 'ordinary'
+                if effect in ('reset', 'reinitialize'):
+                    self._record_auto_mark(job.get('public_id'), 'policy.configure.' + effect)
                 receipt['configuration_effect'] = effect
                 description = {'ordinary': '普通更新，保留执行上下文',
                                'reset': '已重置执行上下文，保留加载资源；等待 resume',
@@ -1817,6 +1828,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             raise ValueError("未知命令或参数，请输入 help")
 
     def _finish_shutdown(self):
+        self._close_record_auto(self._cleanup_deadline())
         self.policy_monitors.close(wait=False)
         self._clear_finished_lease()
         if self._observe_inflight and not self._shutdown_failed:

@@ -1,14 +1,12 @@
 """Policy-owned candidate parsing with controller-owned guarded publication."""
 import copy
 import time
-from dataclasses import replace
 
 from rc_policy_sdk.configuration import same_config
 
 from .config import PolicyRecord, validate_policy
 from .member_reload import ReloadCandidate
 from .operations import ControlRequest, PolicyConfigEdit
-from .process import CandidateRejected
 
 
 class PolicyConfigurationSupport:

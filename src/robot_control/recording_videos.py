@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Convert stopped RC recordings to MP4, then remove assets and images.
+"""Convert static RC PNG/MKV recordings to MP4, then remove verified sources.
 
 Requires ffmpeg (with libx264) and ffprobe on PATH; Python uses only stdlib.
-Videos, a separate first-head-frame PNG, and structured logs are retained. PNGs are packed in
-numeric sample order at a fixed frame rate; missing samples are not padded.
+Videos, a valid first-head-frame PNG, and structured logs/indexes are retained.
+Legacy PNG gaps stay unpadded; MKV preserves the complete 30 Hz slot timeline.
 """
 from __future__ import annotations
 
 import argparse
 from contextlib import suppress
 import filecmp
+import hashlib
 from fractions import Fraction
 import json
 import os
@@ -20,6 +21,11 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+if __package__:
+    from .recording_media import SessionLock, INDEX, STORAGE, segments, decode_segment, safe_video_path, pixel_hash
+else:
+    from recording_media import SessionLock, INDEX, STORAGE, segments, decode_segment, safe_video_path, pixel_hash
 
 
 DEFAULT_LOGS = Path(__file__).resolve().parents[2] / 'outputs' / 'logs'
@@ -48,21 +54,6 @@ def sessions(root: Path):
             yield path
         else:
             names[:] = sorted(name for name in names if not (path / name).is_symlink())
-
-
-def is_stopped(session: Path):
-    path = session / 'session.jsonl'
-    if path.is_symlink():
-        raise ValueError(f'拒绝符号链接文件：{path}')
-    if not path.is_file():
-        return False
-    last = None
-    with path.open(encoding='utf-8') as stream:
-        for line in stream:
-            if line.strip():
-                last = json.loads(line)
-    return (isinstance(last, dict) and last.get('event') == 'record.stopped'
-            and not last.get('error'))
 
 
 def camera_images(session: Path):
@@ -162,9 +153,19 @@ def sync_directory(path):
 
 def process_session(session, args, ffmpeg, ffprobe):
     real_directory(session)
-    if not is_stopped(session):
-        print(f'[SKIP] {session}：没有正常停止标记，可能仍在录制或异常退出', flush=True)
+    try:
+        lock = SessionLock(session, create=not args.dry_run)
+    except BlockingIOError:
+        print(f'[SKIP] {session}：活动 writer 持有会话锁', flush=True)
         return 'skipped'
+    with lock:
+        if (session / INDEX).exists() or (session / 'video_raw').exists():
+            return process_mkv(session, args, ffmpeg, ffprobe)
+        return process_png(session, args, ffmpeg, ffprobe)
+
+
+def process_png(session, args, ffmpeg, ffprobe):
+    real_directory(session)
     assets, images, videos = session / 'assets', session / 'images', session / 'videos'
     initial = session / 'initial.png'
     real_directory(assets, optional=True)
@@ -231,9 +232,170 @@ def process_session(session, args, ffmpeg, ffprobe):
     return 'converted'
 
 
+def encode_rgb(frames, destination, dimensions, fps, ffmpeg, *, crf=28, preset='medium'):
+    command = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-xerror',
+               '-f', 'rawvideo', '-pixel_format', 'rgb24', '-video_size', f'{dimensions[0]}x{dimensions[1]}',
+               '-framerate', str(fps), '-i', 'pipe:0', '-an', '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+               '-c:v', 'libx264', '-preset', preset, '-crf', str(crf), '-pix_fmt', 'yuv420p',
+               '-threads', '2', '-movflags', '+faststart', '-n', str(destination)]
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errors)
+        try:
+            for frame in frames: process.stdin.write(frame)
+            process.stdin.close()
+            if process.wait():
+                errors.seek(0)
+                raise RuntimeError(f'FFmpeg encode failed: {errors.read(4000)!r}')
+        finally:
+            if process.poll() is None: process.kill()
+            process.wait()
+            with suppress(BrokenPipeError): process.stdin.close()
+            if hasattr(frames, 'close'): frames.close()
+
+
+def process_mkv(session, args, ffmpeg, ffprobe):
+    if args.fps != 30:
+        raise ValueError('MKV 主视频固定 30 FPS，不能改变采样时间线')
+    raw, videos, initial = session/'video_raw', session/'videos', session/'initial.png'
+    real_directory(raw, optional=True); real_directory(videos, optional=True)
+    entries = segments(session)
+    if not entries: raise ValueError('没有已封口视频片段，保留原始素材')
+    paths = {entry['file']:safe_video_path(session,entry['file']) for entry in entries}
+    receipt = session/'video_reduction.json'
+    for target in (initial,receipt):
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise ValueError(f'拒绝非普通输出文件：{target}')
+    index_digest = hashlib.sha256(json.dumps(entries,sort_keys=True).encode()).hexdigest()
+    if receipt.is_file() and not all(path.exists() for path in paths.values()):
+        # A cancellation may interrupt unlinking after outputs became durable.
+        # Resume only from an exact receipt and independently intact outputs.
+        completed = json.loads(receipt.read_text())
+        if completed.get('index_sha256') != index_digest or completed.get('files') != list(paths):
+            raise ValueError('转换回执不匹配完成索引；保留剩余素材')
+        expected_outputs = {'initial.png'} | {f"videos/{entry['camera']}.mp4" for entry in entries
+                                              if entry['stream']=='samples'}
+        outputs = completed.get('outputs')
+        if not isinstance(outputs,dict) or set(outputs) != expected_outputs:
+            raise ValueError('转换回执缺少输出验证记录；保留剩余素材')
+        for relative, expected in outputs.items():
+            if relative != 'initial.png' and (not relative.startswith('videos/') or len(Path(relative).parts)!=2):
+                raise ValueError('无效转换回执输出路径')
+            output = session/relative
+            if output.is_symlink() or not output.is_file() or file_hash(output) != expected:
+                raise ValueError(f'已发布输出缺失或损坏：{output}；保留剩余素材')
+        remaining = [entry for entry in entries if paths[entry['file']].exists()]
+        if args.dry_run:
+            print(f'[PLAN] {session}：输出验证通过，可清理剩余 {len(remaining)} 个已转换片段',flush=True)
+            return 'planned' if remaining else 'skipped'
+        for entry in remaining:
+            for _ in decode_segment(session,entry,ffmpeg=ffmpeg): pass
+        for entry in remaining: paths[entry['file']].unlink()
+        for folder in {paths[entry['file']].parent for entry in remaining}: sync_directory(folder)
+        print(f'[SKIP] {session}：转换回执与输出验证通过，原始片段已清理；未封口素材保留', flush=True)
+        return 'skipped'
+    for path in paths.values():
+        if not path.is_file(): raise ValueError(f'missing sealed video segment: {path}')
+    unknown = sorted(path for path in raw.rglob('*') if path.is_file() and str(path.relative_to(session)) not in paths)
+    for path in unknown:
+        print(f'[WARN] unsealed 素材保留，不参与转换：{path}', flush=True)
+    cameras = {}
+    for entry in entries:
+        if entry['stream'] not in ('samples','observations'):
+            raise ValueError('未知视频流类型')
+        if entry['stream'] == 'samples': cameras.setdefault(entry['camera'], []).append(entry)
+    if 'head' not in cameras: raise ValueError('没有有效 head 视频；保留所有原始素材')
+    for name, rows in cameras.items():
+        expected = 0
+        dimensions = (rows[0]['width'],rows[0]['height'])
+        for row in rows:
+            if row['first_frame'] != expected or (row['width'],row['height']) != dimensions:
+                raise ValueError(f'缺失片段或尺寸变化：{name}')
+            expected += row['frames']
+    head_reference = None
+    with (session/'samples.jsonl').open() as source:
+        for line in source:
+            try: sample = json.loads(line)
+            except ValueError:
+                if not line.endswith('\n'): break
+                raise
+            ref = sample.get('images',{}).get('head',{})
+            if ref.get('file') in paths and not ref.get('placeholder') and not ref.get('missing') and ref.get('valid',True):
+                head_reference = ref; break
+    if head_reference is None: raise ValueError('没有已封口的有效非占位 head 帧；保留所有原始素材')
+    targets = [videos/(name+'.mp4') for name in cameras]
+    for target in [initial,*targets,receipt]:
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise ValueError(f'拒绝非普通输出文件：{target}')
+    if not args.overwrite and any(path.exists() for path in [initial,*targets]):
+        print(f'[SKIP] {session}：已有输出，使用 --overwrite 重做；保留原始素材', flush=True)
+        return 'skipped'
+    for name, rows in cameras.items():
+        print(f'[PLAN] {name}.mp4：{sum(row["frames"] for row in rows)} 帧，30 FPS，包含占位帧', flush=True)
+    print(f'[PLAN] {initial}：首个有效 head 帧；全部验证后删除 {len(entries)} 个已封口片段', flush=True)
+    if args.dry_run: return 'planned'
+    with tempfile.TemporaryDirectory(prefix='.recording-videos-', dir=session) as temporary:
+        staging = Path(temporary)
+        first_rgb = None
+        first_size = None
+        def pixels(rows):
+            nonlocal first_rgb, first_size
+            for row in rows:
+                for index, rgb in enumerate(decode_segment(session,row,ffmpeg=ffmpeg)):
+                    if row['file'] == head_reference['file'] and index == head_reference['frame_index']:
+                        if pixel_hash(rgb,row['width'],row['height']) != head_reference['sha256']:
+                            raise ValueError('head 观察引用像素哈希不匹配')
+                        first_rgb, first_size = rgb, (row['width'],row['height'])
+                    yield rgb
+        for name, rows in cameras.items():
+            dimensions = (rows[0]['width'],rows[0]['height'])
+            output = staging/(name+'.mp4')
+            encode_rgb(pixels(rows),output,dimensions,30,ffmpeg,crf=args.crf,preset=args.preset)
+            verify_video(output,sum(row['frames'] for row in rows),dimensions,30,ffprobe)
+            with output.open('rb') as stream: os.fsync(stream.fileno())
+        # Auxiliary policy inputs are also verified before deleting their only
+        # lossless source, but never inserted into the 30 Hz sample timeline.
+        for entry in entries:
+            if entry['stream'] == 'observations':
+                for _ in decode_segment(session,entry,ffmpeg=ffmpeg): pass
+        if first_rgb is None: raise ValueError('有效 head 引用不在已封口帧范围内')
+        staged_initial = staging/'initial.png'
+        result = subprocess.run([ffmpeg,'-v','error','-f','rawvideo','-pix_fmt','rgb24',
+            '-s',f'{first_size[0]}x{first_size[1]}','-i','pipe:0','-frames:v','1','-threads','1',
+            '-update','1',str(staged_initial)], input=first_rgb, capture_output=True)
+        if result.returncode: raise RuntimeError(f'initial.png encode failed: {result.stderr!r}')
+        decoded = subprocess.run([ffmpeg,'-v','error','-i',str(staged_initial),'-f','rawvideo',
+            '-pix_fmt','rgb24','pipe:1'],capture_output=True,check=True).stdout
+        if decoded != first_rgb: raise ValueError('initial.png 无损像素验证失败')
+        with staged_initial.open('rb') as stream: os.fsync(stream.fileno())
+        videos.mkdir(exist_ok=True)
+        for target in [initial,*targets]:
+            source = staging/target.name
+            if args.overwrite: os.replace(source,target)
+            else: os.link(source,target)
+        sync_directory(videos); sync_directory(session)
+        staged_receipt = staging/receipt.name
+        with staged_receipt.open('w') as stream:
+            json.dump({'storage':STORAGE,'files':list(paths),'index_sha256':index_digest,
+                       'outputs':{str(path.relative_to(session)):file_hash(path) for path in [initial,*targets]},
+                       'initial_sha256':head_reference['sha256']},stream)
+            stream.flush(); os.fsync(stream.fileno())
+        os.replace(staged_receipt,receipt); sync_directory(session)
+        for path in paths.values(): path.unlink()
+        for folder in {path.parent for path in paths.values()}: sync_directory(folder)
+    print(f'[OK] {session}：视频与 initial.png 验证成功，已删除对应已封口原始片段', flush=True)
+    return 'converted'
+
+
+def file_hash(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(1024*1024), b''): digest.update(block)
+    return digest.hexdigest()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=(
-        '批量将已正常停止的 RC 录制转为 MP4，独立保存 head 首帧为initial.png。'
+        '批量将静态 RC PNG/MKV 录制转为 MP4，跳过活动 writer，保存有效 head 首帧为 initial.png。'
         '验证后删除 assets 和 images，保留初始状态、视频和其他日志。'))
     parser.add_argument('logs', nargs='?', type=Path, default=DEFAULT_LOGS,
                         help='日志根目录或单个 record_* 会话目录（默认项目 outputs/logs）')

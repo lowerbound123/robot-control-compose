@@ -22,7 +22,7 @@ python3 scripts/test_scope.py
 `setup` 会准备 example 的 Python 3.14 依赖镜像和 [example_chain 的清单](../example_chain/policy.yaml.example)，不会为链另建镜像。已有本地配置会保留；从旧版升级时核对 [模板](policy.yaml.example) 的新命令与参数。
 
 ```text
-help policy example
+policy help example
 policy switch example
 monitor example
 resume

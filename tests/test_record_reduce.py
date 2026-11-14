@@ -50,7 +50,7 @@ def test_named_reduce_only_changes_selected_log_and_keeps_policy_running(example
         copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
         command(rc, 'policy switch example_chain')
     logs = rc.outputs / 'logs'
-    selected = recording(logs, 'record_selected 中文')
+    selected = recording(logs, 'record_selected 中文', stopped=False)
     untouched = recording(logs, 'record_untouched')
     first = (selected / 'images/head/0.png').read_bytes()
     command(rc, 'resume')
@@ -70,20 +70,30 @@ def test_named_reduce_only_changes_selected_log_and_keeps_policy_running(example
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'), reason='FFmpeg required')
-def test_reduce_all_skips_active_and_already_reduced_logs(example_rc):
+def test_reduce_all_skips_active_and_converts_failed_static_logs(example_rc, monkeypatch):
     rc = example_rc
     logs = rc.outputs / 'logs'
     one = recording(logs, 'record_one')
     two = recording(logs, 'archive/record_two')
+    failed = recording(logs, 'record_failed', stopped=False)
+    failure = '{"event":"record.error","error":"mandatory recording budget exceeded"}\n'
+    (failed / 'session.jsonl').write_text(failure)
+    # Active writer is excluded by its lock, even with no sealed video yet.
+    monkeypatch.setattr(rc._recorder, 'HZ', .1)
     active = command(rc, 'record start')
     until(lambda: rc.status()['recording']['samples_written'] > 0)
     result = command(rc, 'record reduce all')
-    assert result['converted'] == 2 and result['skipped'] == 1
-    assert (one / 'initial.png').exists() and (two / 'initial.png').exists()
-    assert (Path(active['path']) / 'images').is_dir()
+    assert result['converted'] == 3 and result['skipped'] == 1 and result['failed'] == 0
+    for folder in (one, two, failed):
+        assert (folder / 'initial.png').is_file() and (folder / 'videos/head.mp4').is_file()
+        assert not (folder / 'images').exists() and not (folder / 'assets').exists()
+    assert (failed / 'session.jsonl').read_text() == failure
     assert rc.status()['recording']['session_id'] == active['session_id']
+    assert rc.status()['recording']['state'] == 'recording'
+    events = [json.loads(line) for line in (Path(active['path']) / 'session.jsonl').read_text().splitlines()]
+    assert not any(row['event'] in ('record.stopped', 'record.error') for row in events)
     result = command(rc, 'record reduce all')
-    assert result['converted'] == 0 and result['skipped'] == 3
+    assert result['converted'] == 0 and result['skipped'] == 4
     command(rc, 'record stop')
 
 
@@ -228,3 +238,25 @@ def test_busy_reducer_rejects_overlap_and_shutdown_reaps_encoder_without_deletin
         assert not list(folder.glob('.recording-videos-*'))
     finally:
         reducer.close(time.monotonic()+6)
+
+
+@pytest.mark.parametrize('chain', [False, True])
+def test_example_record_mkv_start_stop_and_exit(example_rc, chain):
+    rc=example_rc
+    if chain:
+        copy_templates(ROOT/'policy/example_chain',rc.registry.directory/'example_chain')
+        command(rc,'policy switch example_chain')
+    command(rc,'record start')
+    command(rc,'resume')
+    until(lambda:rc.buffer.consumed>0)
+    until(lambda:rc.status()['recording']['samples_written']>=5)
+    status=command(rc,'record stop')
+    assert not status['pending_samples'] and not status.get('video_pending_frames',0)
+    from robot_control.recording_media import segments,decode_segment
+    root=Path(status['path'])
+    entries=segments(root)
+    assert {e['camera'] for e in entries if e['stream']=='samples'}=={'head','left_wrist','right_wrist'}
+    for entry in entries: assert len(list(decode_segment(root,entry)))==entry['frames']
+    command(rc,'record start')
+    until(lambda:rc.status()['recording']['samples_written']>=3)
+    # Fixture exits with recording active and checks the shared cleanup result.

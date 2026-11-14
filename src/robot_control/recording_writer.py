@@ -1,5 +1,4 @@
-"""Disk/PNG work lives only in the recorder subprocess."""
-from concurrent.futures import ThreadPoolExecutor
+"""Text persistence and asynchronous lossless video in the recorder subprocess."""
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict, deque
 import ast
@@ -16,6 +15,7 @@ import time
 from rc_policy_sdk.tables import normalize_table_document, table_document_text
 from .secret_config import public_value
 from .table_output import _SecretMatcher, _hide_strings
+from .recording_media import VideoStore, SessionLock, STORAGE
 
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 STREAMS = ('state', 'control', 'events', 'policy', 'llm_failure', 'session')
@@ -340,9 +340,11 @@ class SessionFiles:
         self.open_requests = OrderedDict()
         self._recent_llm = OrderedDict()
         self._closed = False
-        self.encoders = None
+        self.videos = self.session_lock = None
         try:
-            self.encoders = ThreadPoolExecutor(max_workers=3, thread_name_prefix='record-png')
+            self.session_lock = SessionLock(self.root)
+            self.videos = VideoStore(self.root)
+            metadata = {**metadata, 'image_storage': STORAGE}
             for name in STREAMS + ('samples',):
                 self.files[name] = (self.root/(name+'.jsonl')).open('a', encoding='utf-8')
             for name in ('epos','qpos','control_epos','control_qpos'):
@@ -351,7 +353,7 @@ class SessionFiles:
                 self.csv[name] = csv.writer(stream)
                 self.csv[name].writerow(COLUMNS)
             self.config('initial', metadata)
-            self.event('session', dict(event='record.started', session_id=identity, timestamp_ns=time.time_ns(), hz=30))
+            self.event('session', dict(event='record.started', session_id=identity, timestamp_ns=time.time_ns(), hz=30, image_storage=STORAGE))
             self.flush()
             sync_directory(self.root)
             sync_directory(self.root.parent)
@@ -466,54 +468,18 @@ class SessionFiles:
             self._track(key, tracked)
         self._write('llm_failure', data)
 
-    def image(self, camera, frame, sample_id=None):
-        from PIL import Image
-        pixels = frame['image']
-        # Content address includes shape and type; no raw-image dedup index is retained.
-        digest = hashlib.sha256(str((pixels.shape, str(pixels.dtype))).encode())
-        digest.update(memoryview(pixels).cast('B'))
-        key = digest.hexdigest()
-        folder = self.root/'assets'/camera
-        folder.mkdir(parents=True, exist_ok=True)
-        asset = folder/(key+'.png')
-        if not asset.exists():
-            temporary = folder/(key+'.part')
-            try:
-                with temporary.open('xb') as stream:
-                    Image.fromarray(pixels).save(stream, format='PNG', compress_level=1, optimize=False)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                # link refuses replacement even if another producer races us.
-                try:
-                    os.link(temporary, asset)
-                except FileExistsError:
-                    pass
-            finally:
-                temporary.unlink(missing_ok=True)
-            sync_directory(folder)
-        destination = asset
-        if sample_id is not None:
-            folder = self.root/'images'/camera
-            folder.mkdir(parents=True, exist_ok=True)
-            destination = folder/f'{sample_id:09d}.png'
-            os.link(asset, destination)
-            sync_directory(folder)
-            sync_directory(folder.parent)
-            sync_directory(self.root)
-        return {k:v for k,v in frame.items() if k != 'image'} | {
-            'file':str(destination.relative_to(self.root)), 'width':pixels.shape[1], 'height':pixels.shape[0], 'sha256':key}
-
     def frames(self, frames, sample_id=None):
-        futures = {camera:self.encoders.submit(self.image, camera, frame, sample_id)
-                   for camera,frame in frames.items() if frame.get('valid', True) and frame.get('image') is not None}
-        return {camera:future.result() for camera,future in futures.items()}
+        return (self.videos.observation(frames) if sample_id is None
+                else self.videos.sample(frames, sample_id))
+
+    def stats_snapshot(self):
+        return {**self.stats, **self.videos.stats()}
 
     def sample(self, payload):
-        images = self.frames(payload['frames'], payload['sample_id'])
+        images, pending = self.frames(payload['frames'], payload['sample_id'])
         for camera in CAMERAS:
             frame = payload['frames'].get(camera, {})
-            if camera not in images:
-                images[camera] = {k:v for k,v in frame.items() if k != 'image'} | {'missing': True, 'file':None}
+            if images[camera].get('missing'):
                 self.stats['missing_frames'] += 1
             else:
                 source = (frame.get('sequence'), frame.get('timestamp'))
@@ -532,14 +498,16 @@ class SessionFiles:
                 values += list(target['values']) if target and target['mode']==mode else ['']*7
             self.csv[name].writerow(prefix + values)
         self.event('state', {k:v for k,v in payload.items() if k not in ('frames','controls')})
-        # Every referenced record is durable before the sample becomes visible.
+        # Text is durable before sample_commit. Video acceptance is separate
+        # from durability, which is proven by video_segments.jsonl.
         for name in ('epos', 'qpos', 'control_epos', 'control_qpos', 'state'):
             stream = self.files[name]
             stream.flush()
             os.fsync(stream.fileno())
         commit = {k:v for k,v in payload.items() if k not in ('frames','state','controls')} | {
             'images':images, 'control_events':payload.get('controls', {}),
-            'event':'sample_commit', 'record_session_id':self.identity, 'rc_run_id':self.run_id}
+            'event':'sample_commit', 'record_session_id':self.identity, 'rc_run_id':self.run_id,
+            'image_storage': STORAGE}
         stream = self.files['samples']
         stream.flush()
         fd = stream.fileno()
@@ -563,24 +531,30 @@ class SessionFiles:
             raise
         self.stats['samples_written'] += 1
         self.stats['missed_samples'] += int(payload.get('missed', False))
+        return pending
 
     def flush(self):
         for stream in self.files.values():
             stream.flush()
             os.fsync(stream.fileno())
 
-    def close(self, error=None):
+    def close(self, error=None, *, deadline=None):
         if self._closed:
             return
         failure = None
         try:
+            try:
+                self.videos.close(deadline if deadline is not None else time.monotonic()+30)
+            except Exception as exc:
+                failure = exc
+                error = error or str(exc)
             for value in self.open_requests.values():
                 if value.get('kind') == 'llm_failure':
                     self._write('llm_failure', {**value, 'event': 'llm_failure.recording_incomplete',
                                               'reason': 'recording_error' if error else 'recording_stopped',
                                               'end_outside_recording': True})
             self.event('session', dict(event='record.error' if error else 'record.stopped', error=error,
-                timestamp_ns=time.time_ns(), unfinished_requests=[list(k) for k in self.open_requests], **self.stats))
+                timestamp_ns=time.time_ns(), unfinished_requests=[list(k) for k in self.open_requests], **self.stats_snapshot()))
             self.flush()
         except BaseException as exc:
             failure = exc
@@ -596,16 +570,16 @@ class SessionFiles:
 
     def _close_handles(self):
         failure = None
-        if self.encoders is not None:
-            try:
-                self.encoders.shutdown(wait=True, cancel_futures=True)
-            except BaseException as exc:
-                failure = exc
+        if self.videos is not None:
+            try: self.videos.cancel()
+            except BaseException as exc: failure = exc
         for stream in self.files.values():
             try:
                 stream.close()
             except BaseException as exc:
                 failure = failure or exc
+        if self.session_lock is not None:
+            self.session_lock.close()
         return failure
 
 
@@ -613,6 +587,9 @@ def writer_main(receiver, responder, directory, run_id):
     """Only this process opens log files. Parent may terminate it on a deadline."""
     base = session = None
     stopping = deque()
+    pending_acks = {}
+    input_closed = False
+    eof_deadline = None
     processed = ProcessedTokens()
     credentials = Credentials()
     try:
@@ -626,10 +603,17 @@ def writer_main(receiver, responder, directory, run_id):
         responder.send({'kind':'ready'})
         last_flush = time.monotonic()
         while True:
-            if receiver.poll(.05):
-                packet = receiver.recv()
+            packet = None
+            try:
+                if not input_closed and receiver.poll(.005 if pending_acks or stopping else .05):
+                    packet = receiver.recv()
+            except EOFError:
+                input_closed = True
+                eof_deadline = time.monotonic() + 5
+            if packet is not None:
                 kind, token = packet['kind'], packet['token']
                 error = None
+                accepted = []
                 try:
                     if kind == 'start':
                         if session is not None:
@@ -648,7 +632,9 @@ def writer_main(receiver, responder, directory, run_id):
                     elif kind == 'abort':
                         if session is not None and session.identity == packet['session']:
                             closing, session = session, None
-                            closing.close(packet['error'])
+                            closing.videos.cancel()
+                            try: closing.close(packet['error'], deadline=packet.get('deadline', time.monotonic()+1))
+                            except Exception: pass  # Abort already reports the explicit recording failure.
                         responder.send({'kind':'aborted','session':packet['session'],'error':packet['error']})
                     elif kind == 'gap':
                         data = {'event':'diagnostic_gap', 'count':packet['count'],
@@ -668,35 +654,60 @@ def writer_main(receiver, responder, directory, run_id):
                             session.event('events', packet['data'])
                     elif session is not None and packet.get('session') == session.identity:
                         if kind == 'sample':
-                            session.sample(packet['data'])
+                            accepted = session.sample(packet['data'])
                         elif kind == 'event':
                             data = packet['data']
                             if packet.get('frames'):
-                                data = {**data, 'image_files':session.frames(packet['frames'])}
+                                images, accepted = session.frames(packet['frames'])
+                                data = {**data, 'image_files':images}
                             session.event(packet['stream'], data)
                 except Exception as exc:
                     error = clean(f'{type(exc).__name__}: {exc}', credentials.secrets)
                     if session is not None:
                         failed = session.identity
                         closing, session = session, None
-                        try: closing.close(error)
+                        try:
+                            closing.videos.cancel()
+                            closing.close(error, deadline=time.monotonic()+1)
                         except Exception: pass
                         responder.send({'kind':'failed','session':failed,'error':error})
                     if kind == 'start':
                         responder.send({'kind':'request_error','request':packet['request'],'error':error})
                     elif kind in ('stop', 'shutdown'):
                         responder.send({'kind':'stopped','request':packet['request'],'error':error,'stats':{}})
-                processed.add(token)
-                responder.send({'kind':'ack','token':token, 'stats':session.stats.copy() if session else None})
+                pending_acks[token] = accepted
+                accepted = None
                 # In particular, do not retain the last acknowledged RGB sample
                 # while poll() waits for another packet.
                 packet = None
                 data = None
+            if session is not None:
+                try: session.videos.check()
+                except Exception as exc:
+                    error = clean(f'{type(exc).__name__}: {exc}', credentials.secrets)
+                    closing, session = session, None
+                    try:
+                        closing.videos.cancel()
+                        closing.close(error, deadline=time.monotonic()+1)
+                    except Exception: pass
+                    responder.send({'kind':'failed','session':closing.identity,'error':error})
+            for ack_token, futures in list(pending_acks.items()):
+                if all(future.done() for future in futures):
+                    processed.add(ack_token)
+                    responder.send({'kind':'ack','token':ack_token,
+                                    'stats':session.stats_snapshot() if session else None})
+                    del pending_acks[ack_token]
+            futures = None
             shutdown = False
             while stopping and processed.covers(stopping[0]['pending']):
+                if session is not None:
+                    boundary = stopping[0]
+                    session.videos.begin_close(boundary.setdefault('deadline', time.monotonic()+30))
+                    if not session.videos.closed():
+                        break  # Keep accepting/flushing ordinary logs during sealing.
                 boundary = stopping.popleft()
                 error = None
-                stats = session.stats.copy() if session else {}
+                stats = session.stats_snapshot() if session else {}
                 try:
                     final_entry = boundary.get('final_entry')
                     if session is not None:
@@ -704,7 +715,8 @@ def writer_main(receiver, responder, directory, run_id):
                             session.event('events', {**final_entry, 'event':'rc.shutdown_summary',
                                 'phase':'data_drained_before_writer_close'})
                         closing, session = session, None
-                        closing.close()
+                        closing.close(deadline=boundary.get('deadline', time.monotonic()+30))
+                        stats = closing.stats_snapshot()
                     if base is not None:
                         if final_entry is not None:
                             line(base, {**final_entry, 'rc_run_id':run_id, 'writer_drained':True}, credentials.secrets)
@@ -715,6 +727,9 @@ def writer_main(receiver, responder, directory, run_id):
                 shutdown = shutdown or boundary['kind'] == 'shutdown'
             if shutdown:
                 break
+            if input_closed:
+                if (not pending_acks and not stopping) or time.monotonic() >= eof_deadline: break
+                time.sleep(.001)
             if time.monotonic()-last_flush >= 1:
                 try:
                     if base is not None:

@@ -1,6 +1,6 @@
 # History 策略配置与执行
 
-适用于 `qwen35_history`、`qwen35_history_lift2`、`qwen35_history_clip`。重复来源使用确切实例名，例如 `qwen35_history-0`。
+适用于 `qwen35_history`、`qwen35_history_lift2`。重复来源使用确切实例名，例如 `qwen35_history-0`。
 
 ## TUI 修改与保存
 
@@ -21,7 +21,7 @@ policy qwen35_history config save
 | 设置 | 生效方式 |
 | --- | --- |
 | `execution.mode`、`execution.call_every_actions` | RC 调用调度更新，保留动作缓存、动作代次和策略上下文；仍确认配置版本 |
-| `params.gripper_threshold`、clip 的 `params.arm_clip_enabled` / `params.arm_clip_max_delta_rad` | 普通提交，保留模型及历史；已提交动作不撤回 |
+| `params.gripper_threshold` | 普通提交，保留模型及历史；已提交动作不撤回 |
 | `model_config.execution.inference_timeout_s` | 普通提交，用于后续请求，原请求期限不变 |
 | `model_config.execution.pipelined`、`replan_every_actions`、`model_config.transition.*` | reset，排空旧推理、清空动作及历史，保留权重 |
 | `params.task`、`model_config.runtime.instruction`、`model_config.history.enabled` | reset，保留权重 |
@@ -41,7 +41,7 @@ policy 每次查看传入的剩余动作数量：大于 `50-X` 时原样返回�
 
 `pipelined=false` 直接返回完整新预测；`true` 将请求中收到的旧 chunk 与新预测融合后返回。这个开关不再启动另一套后台调度。需要推理的 policy 调用会等待本轮结果；外层 async 时 RC 同时继续消费旧缓存，sync 时等待返回。
 
-policy 使用 SDK `TrajectoryAddTransition` 寻找接近点并融合，默认用旧段尾点寻找新段最近点，全部 14 维（包含夹爪）参与距离和插值；之后执行夹爪处理和 clip 的臂关节裁剪。回包保留请求时的起点，由 RC 单独裁掉已经消费的前缀、保留已提交目标并更新缓存，不重复裁剪。融合后的缓存长度可能超过 50，按实际长度消费。
+policy 使用 SDK `TrajectoryAddTransition` 寻找接近点并融合，默认用旧段尾点寻找新段最近点，全部 14 维（包含夹爪）参与距离和插值；之后执行夹爪处理。回包保留请求时的起点，由 RC 单独裁掉已经消费的前缀、保留已提交目标并更新缓存，不重复裁剪。融合后的缓存长度可能超过 50，按实际长度消费。
 
 | `transition` 字段 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -52,26 +52,3 @@ policy 使用 SDK `TrajectoryAddTransition` 寻找接近点并融合，默认用
 | `exponential_smoothing` | `0.25` | 正数，指数平滑系数 |
 
 RC 同时只保留一个在途策略请求。返回结果全部过时时，由 RC 丢弃结果并保留有效缓存；缓存耗尽时等待新结果。超时、非有限输出和真实推理异常仍进入故障处理。历史由独立 observe 通道更新，模型使用请求消费时刻的历史快照。
-
-## Clip 的阈值与计数
-
-```text
-policy qwen35_history_clip config set params.arm_clip_enabled false
-policy qwen35_history_clip config set params.arm_clip_enabled true
-policy qwen35_history_clip config set params.arm_clip_max_delta_rad 0.08
-policy qwen35_history_clip config save
-monitor qwen35_history_clip
-```
-
-阈值默认 `0.1 rad`，要求有限且大于零；只裁剪 12 个臂关节。monitor 提供：
-
-- `arm_clip_enabled`：硬裁剪开关，默认 `true`，支持热更新；关闭期间新产生的动作不触发硬裁剪。
-- `arm_clip_max_delta_rad`：当前阈值。
-- `arm_clip_count`：已消费动作中至少一个臂关节超过阈值的动作条数。
-- `arm_clip_joint_count`：已消费动作中超过阈值的关节总次数。
-
-硬裁剪在 policy 内完成：首条以请求时的 qpos 为参考，随后按返回 chunk 内上一条目标裁剪。只保证返回 chunk 内部的限幅，不承诺 RC 裁掉前缀后的接续首条仍相对上一条实际执行目标满足阈值；RC 不进行第二次硬裁剪，设备限速仍有效。
-
-policy 为返回动作附带裁剪标记，RC 在实际消费时按实例/context 累计，再通过观测反馈给 monitor。丢弃的预测前缀不计数，原样返回保留旧标记，重复确认不重复累计。普通 reset 保留累计值，实例重新初始化/重载后清零。裁剪改变目标本身，不追加动作补回原预测终点。
-
-切换硬裁剪开关保留模型、历史和累计计数。关闭时新预测附带的裁剪标记全为 false，开启后对后续新预测恢复 chunk 内限幅。

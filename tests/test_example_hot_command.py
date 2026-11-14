@@ -47,7 +47,7 @@ def test_hot_command_rejects_a_cold_leaf_without_changing_context(example_rc):
     manifest['hot_reloadable'].remove('params.message')
     path.write_text(json.dumps(manifest))
     command(rc, 'policy switch example')
-    assert 'policy example set-message' in rc.local_commands()
+    assert 'set-message' in rc.completion_snapshot()['instances']['example']['commands']
     worker, version = rc._worker, rc._worker.config_version
     before = command(rc, 'policy example example')
     command(rc, 'policy example set-message rejected', status='failed')

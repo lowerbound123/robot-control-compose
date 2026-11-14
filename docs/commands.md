@@ -34,6 +34,7 @@ record
 record start
 record stop
 record status
+record auto [on|off]
 record reduce <日志文件夹名|all>
 
 camera
@@ -75,7 +76,7 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 | --- | --- |
 | `status` | RC 运行标识、队列、请求原始摘要、代次、已消费计数、配置版本与待提交配置、重试实例与命令、保持姿态、退出码、控制权与归还状态、等待操作、direct 进度，以及完整 runtime、connector 和 recording 对象。 |
 | `connector status` | 当前与目标 profile、连接代次、是否连接、连接阶段、错误、可重试状态及每个实例的适配记录。 |
-| `record status` | 录制状态、会话 ID、输出路径、错误、待写入字节与样本数，以及采样、丢帧、重复帧和写入统计。 |
+| `record status` | 录制状态、auto／auto_pending／auto_error、会话 ID、输出路径、错误、待写入字节与样本数，以及采样、丢帧、重复帧和写入统计。 |
 
 `help status`、`help connector status` 和 `help record status` 可查看相应查询说明。
 
@@ -94,7 +95,7 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 
 `resume` 只恢复 policy 拥有控制权时的运行，不隐式归还 MCP 控制权。本地接管/归还使用 `mcp take` / `mcp return`；HTTP 的结构化工具名仍为 take/return。MCP 工具参数只能是 JSON 对象，无参数工具可省略对象。`mcp help` 显示工具目录。
 
-裸 `record` 切换录制，start/stop/status 分别开始、停止和查询；on/off/toggle 仅属于结构化 MCP record 工具的 action 值。`record reduce <日志文件夹名>` 在后台缩减当前 `outputs/logs` 下的指定目录，`record reduce all` 扫描全部。补全提供文件夹名，含空格的名称需要引号；不接受任意路径。转换并验证视频后删除原图，保留 `initial.png`、视频和其他日志；进行中的会话自动跳过。录制与日志缩减均不改变控制归属或运动。MCP 的录制开关仍无需 take；经 MCP `command` 执行 reduce 属于文件写操作，需要先 take。详情见[录制说明](recording.md)。
+`record auto [on|off]` 控制本次运行的自动模式，默认关闭。开启后确保正在录制，重置／重建类操作成功后后台换段；关闭 auto 保留当前录制。手动 stop 不关闭 auto，但会阻止旧操作的延迟重开。输入框上方显示 recording_auto，完整状态包括 auto、auto_pending、auto_error。裸 `record` 切换录制，start/stop/status 分别开始、停止和查询；on/off/toggle 仅属于结构化 MCP record 工具的 action 值。`record reduce <日志文件夹名>` 在后台缩减当前 `outputs/logs` 下的指定目录，`record reduce all` 扫描全部。补全提供文件夹名，含空格的名称需要引号；不接受任意路径。转换并验证视频后删除原图，保留 `initial.png`、视频和其他日志；活动 writer 持锁时跳过，异常停止或缺少停止记录的静态目录仍可处理。兼容旧 PNG 和新五秒无损 MKV，保留未封口素材与文本索引。录制与日志缩减均不改变控制归属或运动。MCP 的录制开关仍无需 take；经 MCP `command` 执行 reduce 属于文件写操作，需要先 take。详情见[录制说明](recording.md)。
 
 `monitor` 切换机器人面板，`monitor <实例>` 切换该实例面板；不接受 on/off 参数。
 

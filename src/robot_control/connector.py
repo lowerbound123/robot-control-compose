@@ -52,7 +52,6 @@ class ConnectorRobot:
         self._state_error = 'connector has not connected'
         self._state_received = 0.
         self._frames = {}
-        self._images_checked_at = 0.
         self._images_generation = 0
         self._required_image_generation = None
         self._feedback_errors = {}
@@ -196,7 +195,6 @@ class ConnectorRobot:
                 self._history[arm].extend(rows)
             if copied is not None:
                 self._frames.update(copied)
-                self._images_checked_at = time.monotonic()
                 self._images_generation += 1
 
     def _collect(self):

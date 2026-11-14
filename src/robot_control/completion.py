@@ -235,8 +235,10 @@ def analyze(text, cursor, catalog):
     elif previous == ['pose', 'restore']:
         spec = {'name': 'pose', 'type': 'path', 'root': '.', 'kind': 'file', 'suffixes': ['.json']}
         path_request = {'instance': None, 'spec': spec, 'base_dir': catalog.get('pose_root', '.'), 'pose': True}
+    elif previous == ['record', 'auto']:
+        choices.update({value: CompletionItem(value, value, '自动换段开关；off 保留当前录制') for value in ('on', 'off')})
     elif previous == ['record', 'reduce']:
-        choices['all'] = CompletionItem('all', 'all', '处理全部已正常停止的日志')
+        choices['all'] = CompletionItem('all', 'all', '处理全部静态日志，跳过活动录制，可处理异常停止会话')
         spec = {'name': '日志文件夹名或 all', 'type': 'path', 'root': '.', 'kind': 'directory',
                 'help': '转视频并校验后删除原图；保留 initial.png 和其他日志'}
         path_request = {'instance': None, 'spec': spec, 'base_dir': catalog.get('logs_root', '.'), 'record_reduce': True}

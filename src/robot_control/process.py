@@ -16,7 +16,6 @@ from .host_client import HostClient
 
 
 from .monitor_client import MonitorClient
-from rc_policy_sdk.outbox import PriorityOutbox
 
 
 def _trace_payload(value):

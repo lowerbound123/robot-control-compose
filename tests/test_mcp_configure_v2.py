@@ -78,3 +78,22 @@ async def test_native_group_show_and_exact_instance_config_remain_distinct(examp
     assert first.structured_content['result']['id'] == 'example-0'
     ambiguous = await server.call_tool('policy_config', {'instance_id': 'example', 'wait': True})
     assert ambiguous.is_error
+
+
+@pytest.mark.asyncio
+async def test_native_record_auto_controls_do_not_take_or_reset(example_rc):
+    server=create_server(example_rc)
+    owner,generation=example_rc.control_owner,example_rc.buffer.generation
+    enabled=await server.call_tool('record',{'action':'auto_on','wait':True})
+    assert not enabled.is_error,enabled
+    first=enabled.structured_content['result']
+    assert first['auto'] and first['state']=='recording'
+    disabled=await server.call_tool('record',{'action':'auto_off','wait':True})
+    assert not disabled.is_error,disabled
+    assert disabled.structured_content['result']['session_id']==first['session_id']
+    assert not disabled.structured_content['result']['auto']
+    toggled=await server.call_tool('record',{'action':'auto_toggle','wait':True})
+    assert not toggled.is_error and toggled.structured_content['result']['auto']
+    stopped=await server.call_tool('record',{'action':'off','wait':True})
+    assert stopped.structured_content['result']['auto'] and stopped.structured_content['result']['state']=='idle'
+    assert example_rc.control_owner==owner and example_rc.buffer.generation==generation

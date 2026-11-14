@@ -258,7 +258,8 @@ def test_real_write_failure_preserves_committed_samples_and_baseline_logging(mon
     committed = commits_path.read_bytes()
     commits = read_jsonl(commits_path)
     image_path = folder / commits[0]["images"]["head"]["file"]
-    image_bytes = image_path.read_bytes()
+    # Text commit is durable before the short video tail is sealed.
+    assert not image_path.exists()
     assert service.event("policy", {"event": "write-over-limit", "padding": "x" * 262144})
     wait_for(lambda: service.status()["state"] == "error")
     assert "File too large" in service.status()["error"] or str(errno.EFBIG) in service.status()["error"]
@@ -267,7 +268,7 @@ def test_real_write_failure_preserves_committed_samples_and_baseline_logging(mon
     item.release.set()
     assert not service.shutdown(time.monotonic() + 3)
     assert commits_path.read_bytes() == committed
-    assert image_path.read_bytes() == image_bytes
+    assert not image_path.exists()  # Failed tail must never appear sealed.
     assert folder.is_dir()
     messages = read_jsonl(item.root / "rc_faults.jsonl")
     assert [entry["message"] for entry in messages] == ["before-write-failure", "after-write-failure"]
@@ -467,3 +468,94 @@ def test_shutdown_settles_the_first_off_future_while_its_data_is_still_queued(re
     policy = read_jsonl(Path(status["path"]) / "policy.jsonl")
     assert [entry["event"] for entry in policy] == ["first", "second"]
     assert not item.process.is_alive()
+
+
+def stalled_video_writer(receiver,responder,directory,run_id):
+    from robot_control.recording_media import VideoStream
+    from robot_control.recording_writer import writer_main
+    original=VideoStream._write_pixels
+    def stall(self,pixels):
+        if not (Path(directory)/'encoder.pid').exists():
+            (Path(directory)/'encoder.pid').write_text(str(self._process.pid))
+            os.kill(self._process.pid,signal.SIGSTOP)
+        return original(self,pixels)
+    VideoStream._write_pixels=stall
+    writer_main(receiver,responder,directory,run_id)
+
+
+def test_stop_deadline_kills_writer_and_stalled_encoder_group(monkeypatch,recorder):
+    import robot_control.recording as recording
+    import subprocess
+    monkeypatch.setattr(recording,'writer_main',stalled_video_writer)
+    item=recorder(stop_timeout=.4)
+    service=item.service
+    status=service.command('on').result(3)
+    assert item.entered.wait(1)
+    payload=sample()
+    payload['frames']={'head':{'image':np.zeros((480,640,3),np.uint8),'valid':True}}
+    assert service._enqueue('sample',payload)
+    wait_for(lambda:(item.root/'encoder.pid').exists())
+    encoder=int((item.root/'encoder.pid').read_text())
+    began=time.monotonic()
+    with pytest.raises(RuntimeError,match='deadline'):
+        service.command('off').result(3)
+    assert time.monotonic()-began<2
+    item.release.set()
+    assert service.shutdown(time.monotonic()+2)
+    assert not item.process.is_alive()
+    def encoder_gone():
+        status=subprocess.run(['ps','-p',str(encoder),'-o','stat='],capture_output=True,text=True).stdout.strip()
+        return not status or status.startswith('Z')
+    wait_for(encoder_gone)
+    assert not list(Path(status['path']).rglob('*.mkv'))
+
+
+def gated_seal_writer(receiver,responder,directory,run_id):
+    from robot_control.recording_media import VideoStream
+    from robot_control.recording_writer import writer_main
+    original=VideoStream._finish_segment
+    def seal(self):
+        if self._process is not None:
+            (Path(directory)/'seal-blocked').touch()
+            while not (Path(directory)/'release-seal').exists(): time.sleep(.005)
+        return original(self)
+    VideoStream._finish_segment=seal
+    writer_main(receiver,responder,directory,run_id)
+
+
+def test_waiting_for_tail_seal_keeps_processing_baseline_logs(monkeypatch,recorder):
+    import robot_control.recording as recording
+    monkeypatch.setattr(recording,'writer_main',gated_seal_writer)
+    item=recorder(stop_timeout=5)
+    service=item.service
+    service.command('on').result(3)
+    assert item.entered.wait(1)
+    payload=sample();payload['frames']={'head':{'image':np.zeros((7,9,3),np.uint8),'valid':True}}
+    assert service._enqueue('sample',payload)
+    wait_for(lambda:service.status()['pending_samples']==0)
+    future=service.command('off')
+    try:
+        wait_for(lambda:(item.root/'seal-blocked').exists())
+        assert not future.done()
+        assert service.log({'message':'log-during-tail-sealing'})
+        wait_for(lambda:'log-during-tail-sealing' in (item.root/'rc_faults.jsonl').read_text(),timeout=2)
+        assert not future.done()
+    finally:
+        (item.root/'release-seal').touch();item.release.set()
+        future.result(3)
+    assert not service.shutdown(time.monotonic()+3)
+
+
+def test_zombie_group_permission_error_uses_exit_sentinel(monkeypatch):
+    from robot_control.recording import _signal_writer_group
+    read_fd,write_fd=os.pipe()
+    process=SimpleNamespace(pid=1,sentinel=read_fd,is_alive=lambda:True)
+    def denied(*args): raise PermissionError(errno.EPERM,'zombie process group')
+    monkeypatch.setattr(os,'killpg',denied)
+    try:
+        with pytest.raises(PermissionError): _signal_writer_group(process,signal.SIGTERM)
+        os.close(write_fd);write_fd=None
+        _signal_writer_group(process,signal.SIGTERM)
+    finally:
+        os.close(read_fd)
+        if write_fd is not None: os.close(write_fd)

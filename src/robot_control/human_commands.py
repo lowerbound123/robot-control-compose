@@ -47,7 +47,7 @@ def execution_line(command):
     if kind in ('pose_save', 'pose_restore'):
         return shlex.join(['save' if kind == 'pose_save' else 'load', target])
     if kind == 'record':
-        if args and args[0] == 'reduce':
+        if args and args[0] in ('reduce', 'auto'):
             return shlex.join(['record', *args])
         return 'record' + ((' ' + {'start':'on', 'stop':'off', 'status':'status'}[args[0]]) if args else '')
     return kind

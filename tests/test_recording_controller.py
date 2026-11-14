@@ -141,8 +141,9 @@ def test_inference_records_actual_leased_frame_when_image_pool_is_full(setup_con
         policy = [json.loads(row) for row in (Path(status['path'])/'policy.jsonl').read_text().splitlines()]
         observation = next(row for row in policy if row.get('observation_id') == runtime['observation_id'])
         frame = observation['image_files']['head']
-        with Image.open(Path(status['path'])/frame['file']) as image:
-            np.testing.assert_array_equal(np.asarray(image), expected)
+        from robot_control.recording_media import read_rgb
+        rgb, size = read_rgb(Path(status['path']), frame)
+        np.testing.assert_array_equal(np.frombuffer(rgb,np.uint8).reshape(size[1],size[0],3), expected)
         assert frame['timestamp'] == 3.0
         assert before == [slot['leases'] for slots in controller._pool._slots.values() for slot in slots]
     finally:

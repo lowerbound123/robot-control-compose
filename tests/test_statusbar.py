@@ -48,7 +48,7 @@ async def test_statusbar_keeps_only_the_fixed_fields_in_operator_order():
         'in_flight': False, 'consumed': 0,
         'last_action_request': {'request_id': 7, 'trim': 0, 'cached': 4},
         'runtime': 'INITIALIZING', 'target': 'example', 'runtime_error': 'first\nsecond',
-        'recording_state': 'failed', 'recording_error': 'disk\r\nfull',
+        'recording_state': 'failed', 'recording_auto': True, 'recording_error': 'disk\r\nfull',
         'connector_source': 'mock', 'connector_config': 'devices/[bold]相机.yaml',
         'queue_remaining': 999, 'direct': {'phase': 'secret'}, 'future_field': 'hidden',
     }
@@ -62,7 +62,7 @@ async def test_statusbar_keeps_only_the_fixed_fields_in_operator_order():
             ('state', 'paused'), ('policy', 'example'), ('control_owner', 'mcp'),
             ('in_flight', 'False'), ('consumed', '0'), ('last_action_request', '请求 7：裁剪 0，缓存 4'),
             ('runtime', 'INITIALIZING'), ('target', 'example'), ('runtime_error', 'first second'),
-            ('recording_state', 'failed'), ('recording_error', 'disk full'),
+            ('recording_state', 'failed'), ('recording_auto', 'on'), ('recording_error', 'disk full'),
             ('connector_source', 'mock'), ('connector_config', 'devices/[bold]相机.yaml'),
         )
         for column in bar.content.columns:
@@ -86,7 +86,7 @@ async def test_statusbar_reserves_every_chunk_when_information_is_absent(snapsho
         assert status_rows(app.query_one('#status', Static)) == (
             ('state', '—'), ('policy', '—'), ('control_owner', '—'), ('in_flight', '—'), ('consumed', '—'),
             ('last_action_request', '请求 —：裁剪 —，缓存 —'), ('runtime', '—'), ('target', '—'),
-            ('runtime_error', '—'), ('recording_state', '—'), ('recording_error', '—'),
+            ('runtime_error', '—'), ('recording_state', '—'), ('recording_auto', '—'), ('recording_error', '—'),
             ('connector_source', '—'), ('connector_config', '—'),
         )
 
@@ -214,7 +214,7 @@ async def test_fifty_column_status_keeps_log_space_and_last_field_reachable(path
         await pilot.pause(.12)
         bar = app.query_one('#status', Static)
         viewport = app.query_one('#status-area')
-        assert len(status_rows(bar)) == 13 and viewport.size.height <= 8
+        assert len(status_rows(bar)) == 14 and viewport.size.height <= 8
         assert app.query_one('#output').content_size.height >= 8
         assert viewport.max_scroll_y > 0
         viewport.scroll_end(animate=False, immediate=True)
@@ -358,6 +358,7 @@ def test_controller_snapshot_is_local_and_detached_from_public_status(rc, monkey
     assert snapshot['runtime'] == 'FAILED' and snapshot['target'] == 'example'
     assert snapshot['runtime_error'] == 'runtime\nerror'
     assert snapshot['recording_state'] == 'failed' and snapshot['recording_error'] == 'recording\nerror'
+    assert snapshot['recording_auto'] is False
     assert snapshot['last_action_request'] == {'request_id': 23, 'generation': 0, 'trim': 0, 'cached': 4}
     snapshot['last_action_request']['cached'] = 100
     snapshot['state'] = 'mutated'
@@ -377,7 +378,7 @@ async def test_actual_status_queries_keep_all_hidden_details(rc):
         rc._recorder._path = '/outputs/recordings/full-path'
         rc._recorder._stats['samples_written'] = 42
     originals = {'status': rc.status(), 'connector status': rc.connector_status(),
-                 'record status': rc._recorder.status()}
+                 'record status': rc._record_status()}
     app = RobotControlApp(rc, start_controller=False)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(.08)
@@ -388,7 +389,7 @@ async def test_actual_status_queries_keep_all_hidden_details(rc):
         # Command replies themselves enqueue recorder log data. Read the full
         # reference immediately before each query, including those live counts.
         for line, read in (('status', rc.status), ('connector status', rc.connector_status),
-                           ('record status', rc._recorder.status)):
+                           ('record status', rc._record_status)):
             expected = read()
             receipt = rc.get_operation(app.router.submit(line))
             assert receipt['status'] == 'succeeded'

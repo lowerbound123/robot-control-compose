@@ -68,8 +68,6 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 
 另有正式来源 [`qwen35_history_lift2`](../qwen35_history_lift2/README.md)：独立配置和执行实例，各自持有 history 实现与配置，并使用同一依赖镜像，固定使用所选 checkpoint 的 `stats.json["arx_lift2"]` 分别做状态归一化、动作反归一化，并按 LIFT2 schema 重排和还原。输出夹爪严格大于本实例配置阈值（默认 2.5）时输出 4.9、否则输出 0；该夹爪步骤保留手臂值和原始预测缓存。缺少 LIFT2 统计量会在初始化或模型切换预检时报错。本来源仍使用 ACOne 统计量与原夹爪规则；两者都要求 history 模型格式。
 
-临时来源 [`qwen35_history_clip`](../qwen35_history_clip/README.md) 另行复制了完整实现，额外将臂关节目标按上一条已消费输出逐关节裁剪至 ±0.1 rad，允许最终目标改变。原 ACOne、LIFT2 history 不启用这层裁剪。
-
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
 
 `inference.generate_language` 只接受 `Memory`、`Scene`、`Subtask` 的无重复列表，按此顺序生成。

@@ -17,20 +17,32 @@ import pytest
     ('mcp move_eef {"targets":{"left":{"end_pos":[0,0,0,0,0,0]}}}',
      ("move_eef", {"targets": {"left": {"end_pos": [0, 0, 0, 0, 0, 0]}}})),
 ])
-def test_parse_mcp_preserves_arguments(line, expected):
-    from robot_control.terminal_commands import parse_mcp_command
-    assert parse_mcp_command(line) == expected
+def test_router_preserves_mcp_arguments(line, expected):
+    from robot_control.terminal_commands import TerminalCommandRouter
+    controller, service = RecordingController(), DeferredService()
+    router = TerminalCommandRouter(controller, service)
+    try:
+        router.submit(line)
+        assert service.calls == [expected]
+    finally:
+        router.close()
 
 
 @pytest.mark.parametrize("line", [
-    "mcp", "status", "mcp state true", "mcp state []",
+    "mcp", "mcp state true", "mcp state []",
     "mcp show rc", "mcp get_operation op-12", "mcp send_command left:open", "mcp command status",
     'mcp send_command {"commands":', 'mcp state {"wait_for_new":NaN}',
 ])
-def test_parse_mcp_rejects_invalid_argument_forms(line):
-    from robot_control.terminal_commands import parse_mcp_command
-    with pytest.raises(ValueError):
-        parse_mcp_command(line)
+def test_router_rejects_invalid_mcp_argument_forms(line):
+    from robot_control.terminal_commands import TerminalCommandRouter
+    controller, service = RecordingController(), DeferredService()
+    router = TerminalCommandRouter(controller, service)
+    try:
+        with pytest.raises(ValueError):
+            router.submit(line)
+        assert service.calls == []
+    finally:
+        router.close()
 
 
 class RecordingController:

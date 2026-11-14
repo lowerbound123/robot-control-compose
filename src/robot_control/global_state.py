@@ -2,18 +2,14 @@
 from collections import OrderedDict
 from concurrent.futures import Future
 from contextlib import nullcontext
-import math
 from pathlib import Path
 import queue
 import threading
 import time
 
-from rc_policy_sdk.global_state import (GlobalStateConflict, GlobalStateProxy, MAX_BYTES,
+from rc_policy_sdk.global_state import (GlobalStateConflict, GlobalStateProxy,
                                         SharedState, decode, encode, validate_key)
 from .global_state_file import read_state, save_state
-
-
-from .global_state_config import settings
 
 
 class GlobalStateService:

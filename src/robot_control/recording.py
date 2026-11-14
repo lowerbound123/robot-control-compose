@@ -4,6 +4,9 @@ from concurrent.futures import Future
 import copy
 from datetime import datetime
 import multiprocessing
+from multiprocessing.connection import wait as wait_connections
+import os
+import signal
 from pathlib import Path
 import threading
 import time
@@ -28,6 +31,25 @@ def estimated_bytes(value):
 
 def completed(value=None):
     future = Future(); future.set_result(value); return future
+
+
+def _writer_entry(function, *args):
+    # FFmpeg inherits this dedicated group, allowing deadline cleanup even if
+    # the writer is stopped or has already crashed.
+    os.setsid()
+    function(*args)
+
+
+def _signal_writer_group(process, signum):
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # Darwin returns EPERM for a group containing only an unreaped zombie.
+        # is_alive() can briefly be stale while another thread reaps waitpid;
+        # the spawn sentinel independently proves that the writer has exited.
+        if not wait_connections([process.sentinel], timeout=0): raise
 
 
 class RecordingService:
@@ -264,13 +286,13 @@ class RecordingService:
         self._state, self._error = 'error', message
         self._stop_deadline = time.monotonic()+self.stop_timeout
         self._flush_gap()
-        self._packet('abort', session=self._session, error=message)
+        self._packet('abort', session=self._session, error=message, deadline=self._stop_deadline)
 
     def _spawn(self):
         context = multiprocessing.get_context('spawn')
         incoming, sender = context.Pipe(duplex=False)
         receiver, outgoing = context.Pipe(duplex=False)
-        process = context.Process(target=writer_main, args=(incoming,outgoing,str(self.directory),self.run_id),
+        process = context.Process(target=_writer_entry, args=(writer_main,incoming,outgoing,str(self.directory),self.run_id),
                                   name='rc-record-writer', daemon=True)
         process.start()
         incoming.close(); outgoing.close()
@@ -339,8 +361,9 @@ class RecordingService:
                 request = uuid.uuid4().hex
                 self._futures[request] = future
                 pending = [token for token,entry in self._pending.items() if entry[2]==self._session]
-                self._packet('stop', request=request, session=self._session, pending=pending)
                 self._stop_deadline = time.monotonic()+self.stop_timeout
+                self._packet('stop', request=request, session=self._session, pending=pending,
+                             deadline=self._stop_deadline)
 
     def _message(self, message):
         future = None
@@ -434,12 +457,18 @@ class RecordingService:
             self._worker_ready = False; self._writer_failed = True
             self._state, self._error = 'error', reason
             self._stop_deadline = None
-        if process and process.is_alive():
+        if process:
             remaining = lambda cap: cap if deadline is None else min(cap,max(0,deadline-time.monotonic()))
             grace = .2 if deadline is None else min(.05,max(0,deadline-time.monotonic())/4)
-            process.terminate(); process.join(grace)
-            if process.is_alive(): process.kill(); process.join(remaining(.5))
-            self._forced = True
+            _signal_writer_group(process, signal.SIGTERM)
+            if process.is_alive():
+                process.terminate(); process.join(grace)
+                self._forced = True
+            # The leader can exit before its encoders. Kill the owned group
+            # unconditionally, including orphaned encoders after writer exit.
+            _signal_writer_group(process, signal.SIGKILL)
+            if process.is_alive(): process.kill()
+            process.join(remaining(.5))
         with self._lock:
             for lane in self._lanes.values(): lane.clear()
             self._pending.clear()
@@ -520,7 +549,8 @@ class RecordingService:
                 future = Future(); request = uuid.uuid4().hex
                 self._shutdown_future = future
                 self._futures[request] = future
-                self._packet('shutdown', request=request, session=self._session, pending=list(self._pending), final_entry=final_entry)
+                self._packet('shutdown', request=request, session=self._session, pending=list(self._pending),
+                             final_entry=final_entry, deadline=deadline-cleanup_margin)
             else:
                 future = self._shutdown_future
         try:

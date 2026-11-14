@@ -19,7 +19,8 @@ class ConnectorServer:
         self.runtime_id = uuid.uuid4().hex
         self.stop = threading.Event()
         self.commands = queue.Queue(maxsize=max_pending)
-        self.threads, self.listeners, self.connections = [], [], []
+        self.threads, self.listeners, self.connections = set(), [], {}
+        self._connections_lock = threading.Lock()
         self.pool = None
         self.leases = {}
         self._images_lock = threading.RLock()
@@ -66,11 +67,12 @@ class ConnectorServer:
                         'events': self._events, 'feedback_watermarks': watermarks}
             try: send_message(connection, response)
             except OSError: pass  # Receipt loss does not cancel already admitted work.
-            finally: self.commands.task_done()
+            finally:
+                self._release_connection(connection)
+                self.commands.task_done()
 
     def _command_connection(self, connection):
         if not self._command_lock.acquire(blocking=False):
-            connection.close()
             return
         try:
             while not self.stop.is_set():
@@ -78,9 +80,22 @@ class ConnectorServer:
                 if message.get('method') != 'send_targets' or type(message.get('id')) is not int:
                     raise ValueError('invalid connector command')
                 # Backpressure only; never evict an older accepted command.
-                while not self.stop.is_set():
-                    try: self.commands.put((connection, message), timeout=.05); break
-                    except queue.Full: continue
+                # The publisher owns a reference until the receipt is sent,
+                # including when the peer has half-closed its sending side.
+                with self._connections_lock:
+                    if connection not in self.connections:
+                        return
+                    self.connections[connection] += 1
+                queued = False
+                try:
+                    while not self.stop.is_set():
+                        try:
+                            self.commands.put((connection, message), timeout=.05)
+                            queued = True
+                            break
+                        except queue.Full: continue
+                finally:
+                    if not queued: self._release_connection(connection)
         except (EOFError, OSError, ValueError):
             pass
         finally:
@@ -156,16 +171,49 @@ class ConnectorServer:
                     return
         except (EOFError, OSError, ValueError): pass
 
+    def _release_connection(self, connection):
+        with self._connections_lock:
+            owners = self.connections.get(connection)
+            if owners is None:
+                return
+            if owners > 1:
+                self.connections[connection] = owners - 1
+                return
+            del self.connections[connection]
+        connection.close()
+
+    def _serve_connection(self, connection, handler):
+        try:
+            handler(connection)
+        finally:
+            self._release_connection(connection)
+            with self._connections_lock:
+                self.threads.discard(threading.current_thread())
+
     def _accept(self, listener, handler):
-        while not self.stop.is_set():
-            try: connection, _ = listener.accept()
-            except socket.timeout: continue
-            except OSError: return
-            connection.settimeout(None)
-            self.connections.append(connection)
-            thread = threading.Thread(target=handler, args=(connection,), daemon=True)
-            self.threads.append(thread)
-            thread.start()
+        try:
+            while not self.stop.is_set():
+                try: connection, _ = listener.accept()
+                except socket.timeout: continue
+                except OSError: return
+                connection.settimeout(None)
+                thread = threading.Thread(target=self._serve_connection, args=(connection, handler), daemon=True)
+                with self._connections_lock:
+                    if self.stop.is_set():
+                        connection.close()
+                        return
+                    self.connections[connection] = 1
+                    self.threads.add(thread)
+                    try:
+                        thread.start()
+                    except BaseException:
+                        self.threads.discard(thread)
+                        del self.connections[connection]
+                        connection.close()
+                        raise
+        finally:
+            with self._connections_lock:
+                self.threads.discard(threading.current_thread())
 
     def serve(self):
         try:
@@ -185,7 +233,8 @@ class ConnectorServer:
                 listener.settimeout(.1)
                 self.listeners.append(listener)
                 thread = threading.Thread(target=self._accept, args=(listener, handler), daemon=True)
-                self.threads.append(thread)
+                with self._connections_lock:
+                    self.threads.add(thread)
                 thread.start()
             # bind() creates a socket path before listen() can accept a peer.
             # Publish readiness only after both channels are listening.
@@ -204,11 +253,14 @@ class ConnectorServer:
                 self._driver_closed = True
         finally:
             self.stop.set()
-            for connection in self.connections:
+            for listener in self.listeners: listener.close()
+            with self._connections_lock:
+                connections = tuple(self.connections)
+                self.connections.clear()
+            for connection in connections:
                 try: connection.shutdown(socket.SHUT_RDWR)
                 except OSError: pass
                 connection.close()
-            for listener in self.listeners: listener.close()
             for path in self._bound_paths:
                 Path(path).unlink(missing_ok=True)
             if self.pool is not None:

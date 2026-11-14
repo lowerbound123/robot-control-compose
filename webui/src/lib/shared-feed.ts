@@ -2,13 +2,15 @@
  * Four long HTTP/1 streams must not become eight when a second tab opens.
  * Each follower has one unacknowledged packet; slow/frozen followers cannot grow a queue.
  */
+import { sessionId } from './session-log'
+
 type Packet<T> = { type: 'packet'; from: string; to: string; sequence: number; epoch: number; value?: T; error?: string }
 type Message<T> = Packet<T> | { type: 'join' | 'leave' | 'ack'; from: string; sequence?: number }
 type Peer = { seen: number; pending: boolean; sent: number }
 type Producer<T> = (signal: AbortSignal, publish: (value: T) => Promise<void>, fail: (error: string) => void) => Promise<void>
 
 export class SharedFeed<T> {
-  private id = crypto.randomUUID()
+  private id = sessionId()
   private controller = new AbortController()
   private channel?: BroadcastChannel
   private timer?: ReturnType<typeof setInterval>

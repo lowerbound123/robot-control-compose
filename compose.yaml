@@ -92,7 +92,7 @@ services:
         bind: {create_host_path: false}
       - type: bind
         source: ./snapshot
-        target: /data/snapshot
+        target: /workspace/snapshot
         bind: {create_host_path: false}
     stop_grace_period: 125s
     restart: "no"

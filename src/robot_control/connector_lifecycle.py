@@ -7,8 +7,7 @@ import threading
 import time
 
 from .connector_access import ConnectorAccess
-from .connector_profiles import ConnectorProfiles, profile_name, validate_robot
-from .config import PolicyRecord
+from .connector_profiles import ConnectorProfiles, profile_name
 from .robots import make_robot
 from .safety import ModeLimiter
 from .safety_config import safety_settings
@@ -352,13 +351,18 @@ class ConnectorLifecycle:
                     raise RuntimeError(recording_error or 'policy connector adaptation failed: ' + ', '.join(self._connector_failures))
             return {}
         finally:
-            if candidate is not None:
-                self._close_connector_candidate(candidate, deadline=min(job['deadline'],
-                    time.monotonic() + config.get('close_timeout_s', 5), self._shutdown_deadline or float('inf')))
-            with self._lock:
-                self._connector_record_transition = False
-                if record and record.is_chain:
-                    group.end_connector_switch(set(self._connector_failures))
+            try:
+                if candidate is not None:
+                    self._close_connector_candidate(candidate, deadline=min(job['deadline'],
+                        time.monotonic() + config.get('close_timeout_s', 5), self._shutdown_deadline or float('inf')))
+            finally:
+                try:
+                    with self._lock:
+                        self._connector_record_transition = False
+                        if record and record.is_chain:
+                            group.end_connector_switch(set(self._connector_failures))
+                finally:
+                    self._record_auto_connector_release(job)
 
     @contextmanager
     def _connector_reader_barrier(self, job, members, workers, deadline):
@@ -500,6 +504,7 @@ class ConnectorLifecycle:
         self._emit_command(error or 'connector 切换完成；保持暂停，等待 resume', 'error' if error else 'info')
 
     def _connector_stop_recording(self, job):
+        self._record_auto_connector_wait(job)
         with self._lock:
             self._check_connector_job(job)
             if not self._connector_record_transition:
@@ -520,3 +525,5 @@ class ConnectorLifecycle:
                                               profile=self._connector_profile, generation=self.robot.generation)
             future = self._recorder.command('on', metadata)
         self._connector_wait(job, future)
+        with self._lock:
+            self._record_auto_handled(job.get('public_id'))

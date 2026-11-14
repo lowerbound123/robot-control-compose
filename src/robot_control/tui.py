@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from .secret_config import public_value, reject_secret_edit
-
 from queue import Empty
 import asyncio
 import time

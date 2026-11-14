@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-import copy
 import fcntl
 import json
 import math
@@ -10,7 +9,6 @@ import os
 from pathlib import Path
 import subprocess
 import signal
-import threading
 import time
 import uuid
 

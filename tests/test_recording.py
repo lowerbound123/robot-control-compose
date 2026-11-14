@@ -24,7 +24,7 @@ def snapshot():
             for name in ('head','left_wrist','right_wrist')}}
 
 
-def test_recording_png_csv_append_and_no_stale_send(tmp_path):
+def test_recording_mkv_csv_append_and_no_stale_send(tmp_path):
     from robot_control.recording import RecordingService
     service = RecordingService(tmp_path, 'test', snapshot)
     service.start()
@@ -48,8 +48,10 @@ def test_recording_png_csv_append_and_no_stale_send(tmp_path):
         assert len(commits) == len(tables['qpos'])-1
         assert commits[-1]['images']['head']['repeated']
         for camera in ('head','left_wrist','right_wrist'):
-            with Image.open(folder/commits[0]['images'][camera]['file']) as image:
-                np.testing.assert_array_equal(np.asarray(image), snapshot()['frames'][camera]['image'])
+            from robot_control.recording_media import read_rgb
+            rgb, size = read_rgb(folder, commits[0]['images'][camera])
+            np.testing.assert_array_equal(np.frombuffer(rgb,np.uint8).reshape(size[1],size[0],3),
+                                          snapshot()['frames'][camera]['image'])
         original = (folder/'qpos.csv').read_bytes()
         service.command('on').result(5)
         wait(lambda: service.status()['samples_written'] >= 2)

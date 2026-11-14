@@ -24,14 +24,6 @@ MANAGE_HELP = 'policy manage [apply|save|close]：本地 TUI 链编排；进入�
 SNAPSHOT_HELP = "snapshot：后台保存三路原始相机 PNG 和完整 state 到当前工作目录 snapshot/<时间戳>/；支持本地 TUI/headless。"
 
 
-def parse_mcp_command(line: str) -> tuple[str, dict]:
-    """Use the shared grammar; tool arguments are exclusively JSON objects."""
-    parsed = parse_command(line)
-    if parsed.kind != 'mcp_tool':
-        raise ValueError('用法：mcp <工具> [JSON对象]；mcp help 查看帮助')
-    return parsed.target, parsed.args[0]
-
-
 class TerminalCommandRouter:
     """Share local MCP routing, help, and result logging between TUI/headless."""
 
@@ -51,10 +43,6 @@ class TerminalCommandRouter:
     def pending(self):
         with self._lock:
             return bool(self._pending)
-
-    @property
-    def tool_names(self):
-        return tuple(tool["name"] for tool in self.service.tools) if self.service else ()
 
     def help(self, tool_name=None):
         return help_text(self.help_document(tool_name))

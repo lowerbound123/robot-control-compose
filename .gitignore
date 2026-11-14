@@ -65,7 +65,6 @@ ros_ws/log/
 !/policy/*/vendor/lerobot/dataset_schemas/configs/*.yaml
 !/policy/qwen35_history/vendor/SOURCE_MANIFEST.json
 !/policy/qwen35_history_lift2/vendor/SOURCE_MANIFEST.json
-!/policy/qwen35_history_clip/vendor/SOURCE_MANIFEST.json
 !**/*.example
 
 # WebUI local credentials and build/test outputs

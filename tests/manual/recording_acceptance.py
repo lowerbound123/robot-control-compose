@@ -427,17 +427,27 @@ def verify_artifacts(folder, model_requests, expected_published, measured_s, arg
                     check(tables[table][index][3:] == expected, f'{table} sample {index} differs from cached state')
     cameras = {}
     verified_assets = {}
+    video_pixels = {}
+    if (folder/'video_segments.jsonl').exists():
+        from robot_control.recording_media import segments, decode_segment
+        for segment in segments(folder):
+            for index, rgb in enumerate(decode_segment(folder, segment)):
+                video_pixels[(segment['file'], index)] = (segment['sha256'][index], hashlib.sha256(rgb).hexdigest())
     for camera in CAMERAS:
         frames = [commit['images'][camera] for commit in commits]
-        present = [frame for frame in frames if frame.get('file')]
+        present = [frame for frame in frames if frame.get('file') and not frame.get('missing') and not frame.get('placeholder')]
         sequences = [frame['sequence'] for frame in present]
         for frame in present:
             path = folder / frame['file']
-            check(path.is_file(), 'committed PNG is absent: ' + frame['file'])
+            check(path.is_file(), 'sealed lossless image is absent: ' + frame['file'])
             # Every unique lossless asset is decoded and hashed once. Sample hard
             # links are still checked individually, without multiplying RAM use.
             key = frame['sha256']
-            if key not in verified_assets and path.is_file():
+            if key not in verified_assets and frame.get('storage'):
+                actual, plain = video_pixels[(frame['file'],frame['frame_index'])]
+                check(actual == key, 'lossless MKV pixel hash differs: ' + frame['file'])
+                verified_assets[key] = plain
+            elif key not in verified_assets and path.is_file():
                 with Image.open(path) as picture:
                     array = np.asarray(picture)
                     digest = hashlib.sha256(str((array.shape, str(array.dtype))).encode())
@@ -463,8 +473,11 @@ def verify_artifacts(folder, model_requests, expected_published, measured_s, arg
             if not frame:
                 check(False, 'model input camera asset is absent: ' + camera)
                 continue
-            with Image.open(folder / frame['file']) as picture:
-                actual = hashlib.sha256(np.asarray(picture).tobytes()).hexdigest()
+            if frame.get('storage'):
+                actual = video_pixels[(frame['file'],frame['frame_index'])][1]
+            else:
+                with Image.open(folder / frame['file']) as picture:
+                    actual = hashlib.sha256(np.asarray(picture).tobytes()).hexdigest()
             check(actual == expected, 'saved model input pixels differ for ' + camera)
     missed = sum(bool(commit['missed']) for commit in commits)
     check(missed / max(1, len(commits)) <= args.max_gap_ratio, 'sampler gap ratio exceeds configured threshold')
@@ -472,7 +485,7 @@ def verify_artifacts(folder, model_requests, expected_published, measured_s, arg
             'cameras': cameras, 'published_events': len(published), 'policy_starts': len(starts),
             'policy_results': len(results), 'model_calls': len(model_requests),
             'late_observers': late_observers,
-            'verified_unique_png_assets': len(verified_assets), 'verification_errors': errors[:100],
+            'verified_unique_lossless_images': len(verified_assets), 'verification_errors': errors[:100],
             'verification_error_count': len(errors)}
 
 
