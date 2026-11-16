@@ -1,5 +1,6 @@
 """RC tick timing: absorb small wakeup jitter, skip missed periods, no bursts."""
 import sys
+import math
 
 
 def prepare_control_threads():
@@ -9,10 +10,21 @@ def prepare_control_threads():
     sys.setswitchinterval(min(sys.getswitchinterval(), .001))
 
 
-def next_deadline(previous, tick_started, last_send, period):
-    if tick_started - previous >= period:
-        return max(tick_started, last_send) + period
-    # Keep the nominal clock rather than adding processing/wakeup latency on
-    # every cycle. Limit jitter correction to 20% of a period (the established
-    # controller no-burst bound); never replay missed ticks.
-    return max(previous + period, last_send + .8 * period)
+class ControlSchedule:
+    """Keep nominal phase independent of the last actual send time."""
+    def __init__(self, period, started):
+        self.period = period
+        self.nominal = started
+
+    def deadline(self, last_send):
+        # Preserve the established 20% jitter-correction/no-burst bound.
+        return max(self.nominal, last_send + .8*self.period)
+
+    def advance(self, finished):
+        periods = max(1, math.floor((finished-self.nominal)/self.period)+1)
+        self.nominal += periods*self.period
+        # Floating-point rounding at an exact boundary must not replay a tick.
+        if self.nominal <= finished:
+            self.nominal += self.period
+            periods += 1
+        return periods-1

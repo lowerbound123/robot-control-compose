@@ -132,14 +132,16 @@ def test_sync_waits_for_target_receipt_before_starting_next(setup_controller, mo
         before = len(submitted)
         controller._tick()
         assert len(submitted) == before + 1
+        target_id = submitted[-1][0]
         for _ in range(4): controller._tick()
-        assert len(submitted) == before + 1
+        assert len(submitted) == before + 5
+        np.testing.assert_allclose([row[1] for row in submitted[before:]], np.ones((5,14)))
         assert not worker.requests and controller.buffer.consumed == 0
-        receipts.append(receipt(submitted[-1][0]))
+        receipts.append(receipt(target_id))
         controller._collect_publications()
         controller._tick()
         assert controller.buffer.consumed == 1
-        assert len(worker.requests) == 1 and len(submitted) == before + 1
+        assert len(worker.requests) == 1 and len(submitted) == before + 6
 
 
 def test_sync_retry_finishes_protected_tail_instead_of_request_loop(setup_controller, monkeypatch):

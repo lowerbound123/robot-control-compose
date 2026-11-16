@@ -34,6 +34,7 @@ class FakeProcess:
         self.closed = False
         self.resets = 0
         self.kwargs = kwargs
+        self.ready_event = kwargs.get('ready_event')
         self.instances.append(self)
 
     def start(self, cancel_event=None):
@@ -50,6 +51,7 @@ class FakeProcess:
     def finish(self, actions):
         request = self.requests[-1]
         self.responses.put({"type": "result", "images_released": True, **{key: request[key] for key in ["request_id", "generation", "config_version"]}, "actions": np.asarray(actions).tolist()})
+        if self.ready_event is not None: self.ready_event.set()
 
     def poll(self):
         try:
@@ -132,14 +134,17 @@ def ready(controller):
     return FakeProcess.instances[-1]
 
 
-def test_sync_wait_stops_robot_sends_and_exit_remains_responsive(setup_controller):
+def test_sync_wait_repeats_hold_and_exit_remains_responsive(setup_controller):
     controller, robot, _ = setup_controller
     process = ready(controller)
     controller.submit("resume")
     until(lambda: len(process.requests) == 1)
     count = len(robot.commands)
+    held = controller._hold.copy()
     time.sleep(0.08)
-    assert len(robot.commands) == count
+    assert len(robot.commands) > count
+    np.testing.assert_allclose(robot.commands[count:], [held]*(len(robot.commands)-count))
+    assert controller.buffer.consumed == 0 and len(process.requests) == 1
     controller.submit("exit")
     assert controller.done.wait(2)
     assert process.closed and controller.exit_code == 0, controller.read_events()

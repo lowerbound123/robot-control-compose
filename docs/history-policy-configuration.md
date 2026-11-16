@@ -43,11 +43,11 @@ policy qwen35_history config save
 
 ## 流水线与融合
 
-RC 保持 30 Hz，`execution.mode` 接受 `sync` / `async`，`execution.call_every_actions` 接受正整数。它们分别决定 RC 是否等待策略返回、多久调用一次策略；不会替 policy 决定是否推理。目标只有收到完整发布确认才算消费，已开始的分步目标继续完成。
+RC 保持 30 Hz，`execution.mode` 接受 `sync` / `async`，`execution.call_every_actions` 接受正整数。它们分别决定等待策略时使用 hold 还是继续提交缓存动作、多久调用一次策略；不会替 policy 决定是否推理。目标只有收到完整发布确认才算消费；已开始的分步目标保留，sync 策略等待期间保持最近提交的位置，等待结束后再继续限速推进。
 
 policy 每次查看传入的剩余动作数量：大于 `50-X` 时原样返回，不推理、不重复后处理；小于或等于此阈值时执行一轮推理。X 是现有 `model_config.execution.replan_every_actions`，例如 X=45 表示剩余 5 条时推理。RC 调用间隔和 policy 推理阈值是两项独立配置，现有值不会自动互相覆盖。
 
-`pipelined=false` 直接返回完整新预测；`true` 将请求中收到的旧 chunk 与新预测融合后返回。这个开关不再启动另一套后台调度。需要推理的 policy 调用会等待本轮结果；外层 async 时 RC 同时继续消费旧缓存，sync 时等待返回。
+`pipelined=false` 直接返回完整新预测；`true` 将请求中收到的旧 chunk 与新预测融合后返回。这个开关不再启动另一套后台调度。需要推理的 policy 调用会等待本轮结果；外层 async 时 RC 同时继续提交旧缓存，sync 时按周期重复 hold、等待返回。缓存耗尽时两种模式都发送 hold；hold 本身不增加已消费动作数。
 
 policy 使用 SDK `TrajectoryAddTransition` 寻找接近点并融合，默认用旧段尾点寻找新段最近点，全部 14 维（包含夹爪）参与距离和插值；之后执行夹爪处理。回包保留请求时的起点，由 RC 单独裁掉已经消费的前缀、保留已提交目标并更新缓存，不重复裁剪。融合后的缓存长度可能超过 50，按实际长度消费。
 

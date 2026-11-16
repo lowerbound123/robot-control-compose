@@ -30,9 +30,11 @@ class _MemberResources:
 
 
 class ChainProcess:
+    HEALTH_CHECK_INTERVAL = .05
+
     def __init__(self, record, *, process_factory=PolicyProcess, init_timeout_s=600,
                  inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None, on_trace=None,
-                 on_log_event=None, on_performance=None):
+                 on_log_event=None, on_performance=None, ready_event=None):
         self.record = record
         self.config = copy.deepcopy(record.config)
         self.config_version = record.version
@@ -50,6 +52,8 @@ class ChainProcess:
         self.on_trace = on_trace
         self.on_log_event = on_log_event
         self.on_performance = on_performance
+        self.ready_event = ready_event
+        self._wake = threading.Event()
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -71,6 +75,31 @@ class ChainProcess:
         self._command_members = {}
         self._cancelled_commands = deque()
         self._performance_active = False
+
+    def _notify_state(self):
+        # Callers own _condition. Lifecycle waiters retain their condition;
+        # the coordinator uses an independent Event to avoid child->parent
+        # condition-lock inversion on a socket-reader thread.
+        self._condition.notify_all()
+        self._wake.set()
+
+    def _notify_ready(self, perf=None):
+        if self.ready_event is not None:
+            if perf: perf.mark('chain.ready_notified')
+            self.ready_event.set()
+
+    @property
+    def next_result_deadline(self):
+        with self._condition:
+            request = self._request
+            if request is None or self.reloading_member is not None or self._connector_transition:
+                return None
+            deadline = request['deadline']
+            if request['child'] is not None:
+                identity = self.record.members[request['index']].instance_id
+                child_deadline = getattr(self._workers.get(identity), 'next_result_deadline', None)
+                if child_deadline is not None: deadline = min(deadline, child_deadline)
+            return deadline
 
     @property
     def alive(self):
@@ -102,20 +131,20 @@ class ChainProcess:
         with self._condition:
             self._check_ready()
             self._connector_transition = True
-            self._condition.notify_all()
+            self._notify_state()
 
     def end_connector_switch(self, failed):
         with self._condition:
             self._connector_blocked = set(failed)
             self._connector_transition = False
-            self._condition.notify_all()
+            self._notify_state()
 
     def begin_connector_retry(self):
         with self._condition:
             if self._failure or self._stop.is_set() or self._request or self._observation:
                 raise RuntimeError(self._failure or 'chain is not ready for connector recovery')
             self._connector_transition = True
-            self._condition.notify_all()
+            self._notify_state()
 
     def commit_connector_record(self, record, replacement=None):
         with self._condition:
@@ -126,7 +155,7 @@ class ChainProcess:
                                  for member in record.members if member.instance_id in self._workers}
                 self._connector_blocked.discard(identity)
             self.record, self.config_version = record, record.version
-            self._condition.notify_all()
+            self._notify_state()
 
     @property
     def reload_recoverable(self):
@@ -158,6 +187,7 @@ class ChainProcess:
             **({'on_log_event': self.on_log_event} if self.on_log_event is not None else {}),
             **({'on_trace': self.on_trace} if self.on_trace is not None else {}))
         worker.on_performance = self.on_performance
+        worker.ready_event = self._wake
         worker.resources = _MemberResources(self, identity)
         return worker
 
@@ -242,7 +272,7 @@ class ChainProcess:
                         member_id=identity, error='policy instance was replaced', config_version=self.config_version))
             del self._workers[identity]
             self._endpoints.pop(identity, None)
-            self._condition.notify_all()
+            self._notify_state()
 
     def finish_reinitialize(self, member, worker, record, flags):
         with self._condition:
@@ -253,14 +283,14 @@ class ChainProcess:
             self.record, self.config_version = record, record.version
             self.execution = copy.deepcopy(record.execution)
             self.reloading_member = None
-            self._condition.notify_all()
+            self._notify_state()
 
     def keep_member_context(self, identity):
         with self._condition:
             if self.reloading_member != identity:
                 raise RuntimeError('member reinitialization changed')
             self.reloading_member = None
-            self._condition.notify_all()
+            self._notify_state()
 
     def install_member(self, identity, worker, record):
         with self._condition:
@@ -275,7 +305,7 @@ class ChainProcess:
             self.record, self.config_version = record, record.version
             self.execution = copy.deepcopy(record.execution)
             self.reloading_member = None
-            self._condition.notify_all()
+            self._notify_state()
 
     def commit_hot_config(self, record, member, worker):
         """Install an acknowledged member patch without replacing any context."""
@@ -286,7 +316,7 @@ class ChainProcess:
                 raise RuntimeError('stale member hot configuration')
             self.record, self.config_version = record, record.version
             self.execution = copy.deepcopy(record.execution)
-            self._condition.notify_all()
+            self._notify_state()
 
     @staticmethod
     def _identity(request):
@@ -331,13 +361,13 @@ class ChainProcess:
             self._performance_active = perf is not None
             if perf: perf.mark('chain.submit_locked', request_id=request['request_id'])
             self._trace('start', {**self._request['message'], 'type': 'infer'})
-            self._condition.notify_all()
+            self._notify_state()
 
     def cancel_inference(self):
         with self._condition:
             if self._request is not None:
                 self._request['cancel'] = True
-            self._condition.notify_all()
+            self._notify_state()
 
     def _finish(self, kind, *, trace_kind=None, **extras):
         if kind in ('result', 'cancelled'): extras['images_released'] = True
@@ -348,7 +378,8 @@ class ChainProcess:
         self._responses.append(response)
         if perf: perf.mark('chain.result_available', outcome=kind)
         self._request = None
-        self._condition.notify_all()
+        self._notify_state()
+        self._notify_ready(perf)
 
     def _drive_inference(self):
         request = self._request
@@ -388,7 +419,7 @@ class ChainProcess:
             if any(response.get(key) != request['child'][key] for key in ('request_id', 'generation', 'config_version')):
                 self._trace('stale', response, cell=index + 1, child_instance_id=identity, discarded=True,
                             child_request_id=response.get('request_id'))
-                return  # A stale response must not advance the chain.
+                return True  # Drain a later queued reply without advancing the cell.
             perf = trace(response, 'chain.child_collected', instance_id=identity,
                          request_id=response.get('request_id'), cell=index+1)
             if perf:
@@ -429,6 +460,7 @@ class ChainProcess:
                 request['index'] += 1
                 request['child'] = None
                 request['message']['action_chunk'] = chunk.payload(self.execution['control_mode'])
+                return True  # Dispatch the next cell immediately, without a polling interval.
         except Exception as exc:
             self._failure = f'chain cell {index + 1} ({identity}): {exc}'
             # Error is not a lease-release acknowledgement. The controller keeps
@@ -439,20 +471,30 @@ class ChainProcess:
             self._finish('error', trace_kind='timeout' if timed_out else 'error', error=self._failure)
 
     def _coordinate(self):
-        with self._condition:
-            while not self._stop.is_set():
+        while not self._stop.is_set():
+            # Clear before draining queues. A result arriving during/after the
+            # drain leaves this set, so wait cannot erase a fresh notification.
+            self._wake.clear()
+            with self._condition:
+                previous_failure = self._failure
                 try:
                     for identity, worker in self._workers.items():
                         if (not self._connector_transition and identity not in self._connector_blocked
                                 and identity != self.reloading_member and not getattr(worker, 'runnable', worker.alive)):
                             self._failure = self._failure or f'chain {identity}: worker exited'
-                    self._drive_inference()
+                    while self._drive_inference():
+                        pass
                     self._drive_observation()
                 except Exception as exc:
                     self._failure = f'chain coordinator: {exc}'
                     if self._request is not None:
                         self._finish('error', error=self._failure)
-                self._condition.wait(.005)
+                if self._failure and self._failure != previous_failure:
+                    self._notify_ready()
+                deadline = self.next_result_deadline
+            timeout = self.HEALTH_CHECK_INTERVAL
+            if deadline is not None: timeout = min(timeout, max(0., deadline-time.monotonic()))
+            self._wake.wait(timeout)
 
     def poll(self):
         started = time.monotonic_ns() if self._performance_active else 0
@@ -480,7 +522,7 @@ class ChainProcess:
                 return False
             self._observation = {'request_id': request['request_id'], 'pending': pending, 'errors': errors,
                                  'performance': trace(request)}
-            self._condition.notify_all()
+            self._notify_state()
             return True
 
     def _drive_observation(self):
@@ -512,7 +554,8 @@ class ChainProcess:
                 observation['performance'].attach(response)
             self._observations.append(response)
             self._observation = None
-            self._condition.notify_all()
+            self._notify_state()
+            self._notify_ready(observation.get('performance'))
 
     def poll_observation(self):
         with self._condition:
@@ -613,7 +656,7 @@ class ChainProcess:
                 self._trace('cancel', {**self._identity(self._request['message']), 'type': 'cancelled',
                                        'reason': 'chain closing'}, cell=self._request['index'] + 1)
                 self._request['trace_cancelled'] = True
-            self._condition.notify_all()
+            self._notify_state()
         with self._close_lock:
             if self._closed:
                 return self._forced

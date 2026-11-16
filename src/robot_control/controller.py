@@ -37,7 +37,7 @@ from .recording_control import RecordingControl
 from .connector_lifecycle import ConnectorLifecycle
 from .connector_control import ConnectorControl
 from .connector import ImagesPending
-from .scheduling import next_deadline, prepare_control_threads
+from .scheduling import ControlSchedule, prepare_control_threads
 from rc_policy_sdk.commands import BUILTIN_COMMANDS
 from .help_content import builtin_help
 from .help_document import help_text
@@ -146,7 +146,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._init_chain_editor()
         self._init_globals()
         self._init_recording()
-        self._performance = PerformanceLogger(self.config['logging']['level'], self.run_id, self._recorder.log)
+        self._performance = PerformanceLogger(self.config['logging']['level'], self.run_id, ingress=self._recorder)
         self._recorder.performance = self._performance if self._performance.enabled else None
         if self.robot.raw is not None:
             self.robot.raw.performance = self._performance if self._performance.enabled else None
@@ -1071,9 +1071,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             inference_timeout_s=timeouts.get("inference_s", 60),
             release_timeout_s=timeouts.get("release_s", 30),
             on_log=self._emit if record.is_chain else lambda message: self._emit(f"[{record.config['id']}] {message}"),
-            on_trace=self._recorder.policy_event,
+            on_trace=self._recorder.policy_event_owned,
             on_log_event=self._emit_policy_log,
             on_performance=self._performance.emit if self._performance.enabled else None,
+            ready_event=self._wake,
         )
         endpoints = {h.policy_id:h for h in handles}
         if record.is_chain:
@@ -1337,13 +1338,17 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if command_table_output is not None:
                 self._emit_command_table(job['public_id'], *command_table_output)
 
+    def _prediction_draining_context(self, worker):
+        return (worker is not None and self._operation is not None
+                and self._operation.get('in_place') and self._operation.get('prepared')
+                and self._operation['old_worker'] is worker)
+
     def _collect_prediction(self):
         request = self._inflight
         if request is None:
             return
         worker = request["worker"]
-        draining_context = (self._operation is not None and self._operation.get('in_place')
-                            and self._operation.get('prepared') and self._operation['old_worker'] is worker)
+        draining_context = self._prediction_draining_context(worker)
         response = (worker.poll_reader_result() if draining_context and not hasattr(worker, 'member_workers')
                     else worker.poll())
         if response is None:
@@ -1487,6 +1492,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if self._pool.publish(name,image,timestamp):
                 published[name] = (image,timestamp)
         lease = self._pool.acquire()
+        recording_images = self._record_frames.select(published, lease.descriptors,
+            epoch=(self.robot.generation, self._pool.pool_id))
         if perf: perf.mark('rc.snapshot_images_published')
         self._observation_serial += 1
         runtime = {'observation_id': f'{self.run_id}:{self.buffer.generation}:{self._observation_serial}',
@@ -1501,7 +1508,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             stats[identity] = {'context_id': context_id, **self.buffer.clip_stats(owner)}
         self.buffer.retain_clip_stats(owners)
         runtime['action_stats'] = stats
-        self._recorder.observation(runtime['observation_id'], observation, published, descriptors=lease.descriptors)
+        self._recorder.observation(runtime['observation_id'], observation, recording_images, descriptors=lease.descriptors)
         if perf:
             perf.mark('rc.snapshot_recorded')
             self._performance.emit('rc.snapshot', trace=perf, observation_id=runtime['observation_id'],
@@ -1633,7 +1640,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self.robot.read_state()
             motion = self._motion
             if motion.get('awaiting_publication'):
-                self._send_hold()
+                self._send_hold('publication_wait')
                 return
             action, consumed = self._send_limited(motion["target"], "qpos")
             self._hold = action
@@ -1650,13 +1657,17 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             synchronous = record.execution['mode'] == 'sync'
             progress = self.buffer.submission_state()
             if synchronous and (progress == 'awaiting_publication'
-                                or (self._inflight is not None and progress != 'partial')):
+                                or self._inflight is not None):
+                if self._hold is not None:
+                    self._send_hold('policy_wait' if self._inflight is not None else 'publication_wait')
                 self._observe_tick()
                 return
             due = self._needs_request or self.buffer.current() is None or self.buffer.consumed_since_request >= record.execution["call_every_actions"]
             if due and synchronous and progress != 'partial':
                 # A hot patch can delay the callback at a completed target.
                 # Complete that decision before starting the next slew target.
+                if self._hold is not None:
+                    self._send_hold('policy_wait')
                 if self._inflight is None and self._operation is None and self._worker is not None:
                     snapshot = self._observe_tick()
                     self._submit_prediction(snapshot)
@@ -1672,7 +1683,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 elif consumed:
                     self.buffer.consume()
             elif self._hold is not None:
-                self._send_hold()
+                self._send_hold('buffer_empty')
             snapshot = self._observe_tick()
             if synchronous and self.buffer.submission_state() in ('partial', 'awaiting_publication'):
                 return
@@ -1682,14 +1693,15 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         elif self._hold is not None:
             self._send_hold()
 
-    def _send_limited(self, target, mode="qpos"):
+    def _send_limited(self, target, mode="qpos", *, is_hold=False, hold_reason=None):
         perf = self._performance.trace('send')
         if perf: perf.mark('rc.limit_begin')
         previous = self.limiter.checkpoint()
         command, consumed = self.limiter.apply(target, mode, self.robot.read_state())
         if perf: perf.mark('rc.limit_end')
         attempt = self._recorder.control_attempt({'requested':target, 'limited':command,
-            'mode':mode, 'owner':self.control_owner, 'generation':self.buffer.generation})
+            'mode':mode, 'owner':self.control_owner, 'generation':self.buffer.generation,
+            'is_hold':is_hold, 'hold_reason':hold_reason})
         if perf: perf.mark('rc.attempt_recorded')
         try:
             if mode == "qpos":
@@ -1701,7 +1713,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._recorder.event('control', {'event':'control.error', 'attempt_id':attempt, 'error':str(exc)}, priority=True)
             if perf:
                 perf.mark('rc.send_failed', error_type=type(exc).__name__)
-                self._performance.emit('rc.send', trace=perf, attempt_id=attempt, outcome='error')
+                self._performance.emit('rc.send', trace=perf, attempt_id=attempt, outcome='error',
+                                       is_hold=is_hold, hold_reason=hold_reason)
             self.limiter.restore(previous)
             self._published_targets.clear()
             self._publish_fault = True
@@ -1714,17 +1727,18 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             perf.mark('rc.send_submitted')
             self._performance.emit('rc.send', trace=perf, attempt_id=attempt, connector_request_id=identity,
                                    generation=self.buffer.generation, consumed_actions=self.buffer.consumed,
-                                   target_complete=consumed, mode=mode)
+                                   target_complete=consumed, mode=mode, is_hold=is_hold, hold_reason=hold_reason)
         return command, consumed
 
-    def _send_direct(self, targets, state):
+    def _send_direct(self, targets, state, *, is_hold=False, hold_reason=None):
         perf = self._performance.trace('direct_send')
         if perf: perf.mark('rc.limit_begin')
         previous = self.limiter.checkpoint()
         commands, complete = self.limiter.apply_arms(targets, state)
         if perf: perf.mark('rc.limit_end')
         attempt = self._recorder.control_attempt({'requested':targets, 'limited':commands,
-            'owner':self.control_owner, 'generation':self.buffer.generation})
+            'owner':self.control_owner, 'generation':self.buffer.generation,
+            'is_hold':is_hold, 'hold_reason':hold_reason})
         if perf: perf.mark('rc.attempt_recorded')
         try:
             identity = self.robot.execute_arms(commands)
@@ -1744,14 +1758,15 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         if perf:
             perf.mark('rc.send_submitted')
             self._performance.emit('rc.send', trace=perf, attempt_id=attempt, connector_request_id=identity,
-                                   generation=self.buffer.generation, target_complete=complete, mode='direct')
+                                   generation=self.buffer.generation, target_complete=complete, mode='direct',
+                                   is_hold=is_hold, hold_reason=hold_reason)
         return commands, complete
 
-    def _send_hold(self):
+    def _send_hold(self, reason='idle'):
         if self.limiter.modes == ("qpos", "qpos"):
-            self._send_limited(self._hold)
+            self._send_limited(self._hold, is_hold=True, hold_reason=reason)
         else:
-            self._send_direct(self.limiter.commands(), self.robot.read_state())
+            self._send_direct(self.limiter.commands(), self.robot.read_state(), is_hold=True, hold_reason=reason)
 
     def _take(self):
         if self._operation is not None or self._stop.is_set():
@@ -1918,6 +1933,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._connected = False
         try:
             self._pool.close()
+            self._record_frames.clear()
             if self.runtime and self._pool._bytes == 0:
                 self.runtime.forget_pool(self._pool.pool_id)
         except OSError as exc:
@@ -1953,11 +1969,17 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._state = "connecting"
             self._operation_start("connect")
         period = 1 / self.config["frequency_hz"]
-        deadline = time.monotonic()
+        schedule = ControlSchedule(period, time.monotonic())
         wake_reason = 'startup'
         while not self.done.is_set():
+            # Queue producers publish data before setting _wake. Clear before
+            # inspecting those queues, never after wait returns.
+            self._wake.clear()
+            deadline = schedule.deadline(self._last_send_at)
+            skipped_periods = 0
             perf = self._performance.trace('loop')
-            if perf: perf.mark('rc.loop_begin', scheduled_ns=int(deadline*1e9))
+            if perf: perf.mark('rc.loop_begin', scheduled_ns=int(deadline*1e9),
+                               nominal_deadline_ns=int(schedule.nominal*1e9))
             with self._lock:
                 if perf: perf.mark('rc.loop_lock_acquired')
                 try:
@@ -1976,6 +1998,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     if self.done.is_set():
                         break
                     self._clear_finished_lease()
+                    self._collect_observation()
                     self._collect_prediction()
                     if perf: perf.mark('rc.prediction_collected')
                     self._launch_deferred()
@@ -1991,19 +2014,18 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                             command = None
                         if command:
                             self._dispatch(command)
-                    if target_published:
-                        # ACK wakeups may precede the next send tick. Start the
-                        # due callback now, after control/lifecycle decisions,
-                        # so it does not consume a separate sending period.
-                        self._submit_sync_prediction_after_publication()
                     if perf: perf.mark('rc.before_tick')
                     now = time.monotonic()
                     if now >= deadline:
                         self._tick()
-                        deadline = next_deadline(deadline, now, self._last_send_at, period)
-                        if deadline < time.monotonic():
-                            deadline = time.monotonic() + period
-                    if perf: perf.mark('rc.after_tick', next_deadline_ns=int(deadline*1e9))
+                        skipped_periods = schedule.advance(time.monotonic())
+                    elif target_published:
+                        # Use spare time after ACK for a due callback; when a
+                        # send is already due, _tick submits action/hold first.
+                        self._submit_sync_prediction_after_publication()
+                    if perf: perf.mark('rc.after_tick',
+                        next_deadline_ns=int(schedule.deadline(self._last_send_at)*1e9),
+                        nominal_deadline_ns=int(schedule.nominal*1e9), skipped_periods=skipped_periods)
                 except Exception as exc:
                     self._cancel_direct(f"control failure: {exc}")
                     self._pause("fault", cancel_wait=False)
@@ -2013,11 +2035,17 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     if self._worker is not None and self._operation is None and self.control_owner != "mcp":
                         self._operation_start("unload", worker=self._worker)
                     self._fail_policy_wait(exc)
-                    deadline = time.monotonic() + period
+                    schedule = ControlSchedule(period, time.monotonic()+period)
             if perf:
                 self._performance.emit('rc.loop', trace=perf, state=self._state,
                                        generation=self.buffer.generation, in_flight=self._inflight is not None,
                                        consumed_actions=self.buffer.consumed, wake_reason=wake_reason)
+            deadline = schedule.deadline(self._last_send_at)
+            pending_worker = (self._inflight or {}).get('worker')
+            # A prepared context handoff waits for an actual reader receipt,
+            # not a synthetic inference timeout. Its lifecycle owns the deadline.
+            result_deadline = (None if self._prediction_draining_context(pending_worker)
+                               else getattr(pending_worker, 'next_result_deadline', None))
+            if result_deadline is not None: deadline = min(deadline, result_deadline)
             signaled = self._wake.wait(max(0, deadline - time.monotonic()))
             if self._performance.enabled: wake_reason = 'signal' if signaled else 'deadline'
-            self._wake.clear()

@@ -63,7 +63,7 @@ class CandidateRejected(ValueError):
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
                  init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None, on_trace=None,
-                 on_log_event=None, on_performance=None):
+                 on_log_event=None, on_performance=None, ready_event=None):
         from rc_policy_sdk.catalog import instance_id
         instance_id(config.get('id'))
         self.endpoint = endpoint
@@ -81,6 +81,7 @@ class PolicyProcess(MonitorClient):
         self.on_log_event = on_log_event
         self.on_trace = on_trace
         self.on_performance = on_performance
+        self.ready_event = ready_event
         self._trace_requests = OrderedDict()
         self.global_state = global_state
         self.host_socket = host_socket or (endpoint.socket if endpoint else None)
@@ -303,11 +304,26 @@ class PolicyProcess(MonitorClient):
         if event['type'] == 'policy_command': packet['command_timeout'] = self.command_specs[event['name']]['timeout_s']
         self.host.enqueue(packet)
 
+    @property
+    def next_result_deadline(self):
+        with self._condition:
+            if self._inflight and not self._inflight.get('timed_out'):
+                return self._inflight['deadline']
+            return None
+
+    def _notify_ready(self, perf=None):
+        # Only set an Event: never acquire a parent/RC lock or execute control
+        # work from the socket reader. The queue remains the source of truth.
+        if self.ready_event is not None:
+            if perf: perf.mark('rc.policy_ready_notified')
+            self.ready_event.set()
+
     def _receive(self, packet):
         if packet['event'].get('type') == 'log':
             self._policy_log_packet(packet)
             return
         perf = trace(packet['event'], 'rc.policy_receive')
+        ready = False
         lock_started = time.monotonic_ns() if perf else 0
         with self._condition:
             if perf: perf.mark('rc.policy_lock', wait_ns=time.monotonic_ns()-lock_started)
@@ -348,6 +364,7 @@ class PolicyProcess(MonitorClient):
                 if self._observation and all(message.get(k) == v for k, v in self._observation.items()):
                     self._observation_responses.append(message)
                     self._observation = None
+                    ready = True
             elif kind in ('monitor_result', 'monitor_error'):
                 self._receive_monitor(message)
             elif kind.startswith('command_'): self._receive_command(message)
@@ -365,6 +382,7 @@ class PolicyProcess(MonitorClient):
                             if controls and controls[0]['type'] not in self.runtime_tools:
                                 raise ValueError('control_requests requires negotiated runtime_tools ' + controls[0]['type'])
                         self._responses.append(message)
+                        ready = True
                         if perf: perf.mark('rc.result_available', instance_id=self.config['id'])
                     self._inflight = None
                 else:
@@ -389,6 +407,7 @@ class PolicyProcess(MonitorClient):
                 self._enqueue(ack)
             self._condition.notify_all()
 
+        if ready: self._notify_ready(perf)
         if perf and self.on_performance is not None:
             perf.mark('rc.policy_receive_complete')
             self._performance_event('policy.receive', perf, message, outcome=kind)
@@ -453,6 +472,7 @@ class PolicyProcess(MonitorClient):
                         self._responses.append(response)
                     self._inflight = None
             self._condition.notify_all()
+        self._notify_ready()
 
     def _check_wait(self, deadline, cancel_event, operation):
         with self._condition:

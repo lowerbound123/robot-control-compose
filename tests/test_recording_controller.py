@@ -117,7 +117,7 @@ def test_record_help_status_and_invalid_arguments_do_not_change_generation(setup
     assert controller.buffer.generation == generation
 
 
-def test_inference_records_actual_leased_frame_when_image_pool_is_full(setup_controller):
+def test_inference_records_actual_leased_frame_when_image_pool_is_full(setup_controller, monkeypatch):
     import numpy as np
     from PIL import Image
     from rc_policy_sdk.images import map_images
@@ -128,9 +128,16 @@ def test_inference_records_actual_leased_frame_when_image_pool_is_full(setup_con
     try:
         with controller._lock:
             for number in (1, 2, 3):
-                for camera in ('head', 'left_wrist', 'right_wrist'):
-                    assert controller._pool.publish(camera, np.full((2,3,3), number, np.uint8), float(number))
-                leases.append(controller._pool.acquire())
+                pixels = np.full((2,3,3), number, np.uint8)
+                pixels.flags.writeable = False
+                monkeypatch.setattr(robot, 'read_images', lambda pixels=pixels, number=number:
+                    {camera: (pixels, float(number)) for camera in ('head', 'left_wrist', 'right_wrist')})
+                _, lease, _ = controller._snapshot()
+                leases.append(lease)
+            newer = np.full((2,3,3), 99, np.uint8)
+            newer.flags.writeable = False
+            monkeypatch.setattr(robot, 'read_images', lambda:
+                {camera: (newer, 99.) for camera in ('head', 'left_wrist', 'right_wrist')})
             state, lease, runtime = controller._snapshot()
             leases.append(lease)
             with map_images(lease.descriptors) as images:

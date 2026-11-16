@@ -9,16 +9,17 @@ from .log_format import format_log_time
 
 
 class PerformanceLogger:
-    def __init__(self, level, run_id, sink, *, capacity=2048):
+    def __init__(self, level, run_id, sink=None, *, capacity=2048, ingress=None):
         self.enabled = str(level).upper() in ('DEBUG', 'TRACE')
         self.run_id, self.sink = run_id, sink
+        self.ingress = ingress
         self._queue = queue.Queue(maxsize=capacity)
         self._serial = itertools.count(1)
         self._lock = threading.Lock()
         self._closed = False
         self._dropped = 0
         self._thread = None
-        if self.enabled:
+        if self.enabled and ingress is None:
             self._thread = threading.Thread(target=self._drain, name='performance-log', daemon=True)
             self._thread.start()
 
@@ -34,6 +35,14 @@ class PerformanceLogger:
         if trace is not None:
             entry['performance'] = trace.snapshot()
             entry['trace_id'] = trace.data['trace_id']
+        if self.ingress is not None:
+            # RC uses recorder admission directly, so session assignment and
+            # stop barriers also cover DEBUG records before formatting begins.
+            with self._lock:
+                if self._closed: return
+            try: self.ingress.performance_entry(entry)
+            except Exception: pass  # Diagnostics never change control results.
+            return
         with self._lock:
             if self._closed:
                 return

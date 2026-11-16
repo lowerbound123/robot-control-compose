@@ -72,6 +72,8 @@ auto 开启后新发起的 `reset`、`pose restore`、策略切换（含 `--rese
 
 `epos` 是框架已有的 14 维末端状态：左右 arm 各 6 个位姿坐标加 1 个 gripper 值。CSV 不补写上次动作：没有真实发布的新目标时留空，避免把持续保持误认为又发送了一次。左 arm 成功、右 arm 发布失败时，仅左 arm 有成功记录。
 
+sync 等待策略或原动作发布确认时，RC 现在按周期实际提交 hold；async 缓存耗尽时也如此。这些真实重复发布会进入控制 CSV，但不会推进动作消费计数。`control.attempt` 的 `is_hold` 和 `hold_reason` 标明 hold；原因包括 `policy_wait`、`publication_wait`、`buffer_empty` 和其他既有保持状态的 `idle`。使用 `attempt_id` 与 `control.published`、`samples.jsonl` 关联，区分真实缓存动作和 hold，不能只按 CSV 非空行数判断动作执行进度。
+
 成功发布之后，观察回调偶尔会受线程调度影响而晚于当前采样边界入队。这次真实发送会保留原始 `monotonic_ns`，进入下一次实际收取它的采样行，并标记 `late_observer`。对齐控制 CSV 时应使用 `samples.jsonl` 的 `control_events` 发布引用，不应仅按单调时间窗口重新分配行。
 
 相机帧保留原始帧序号、传感器墙钟时间和接收单调时间。轮询相同帧会明确标记 `repeated`；相机超时或解码错误不会伪造新图像。缓存中的旧图像保留失效原因，录制提交将无有效图像的相机标记为 `missing`。采样线程错过截止时间则产生 `missed` 记录。视频中的缺失槽使用上一有效图像占位（`placeholder: hold`），首次有效图像前使用黑帧（`placeholder: black`）；均标记 `missing: true, valid: false`，不能当成有效传感器数据。尺寸未知时只保留缺失槽数量，得到尺寸后由视频线程回填黑帧；早期黑帧的尺寸和哈希从完成索引读取。整场无有效图像的相机不生成伪视频。`repeated` 表示传感器帧身份重复，与占位标记分开。录制中分辨率变化会明确失败。
@@ -82,6 +84,8 @@ auto 开启后新发起的 `reset`、`pose restore`、策略切换（含 `--rese
 
 `policy.observation` 保存与本次实际 image lease 对应的 RGB，并使用同一 `observation_id` 关联 policy 输入。image pool 暂时不能发布新帧时，记录应对应 policy 实际拿到的帧，不能将新的相机缓存冒充为该次输入。policy 请求事件只保存共享内存描述符；离线读取应使用 `image_files` 的 MKV 帧引用，不能依赖运行结束后的 SHM 名称。能匹配已受理采样图像的输入复用对应帧，否则写入独立 `observations` 无损流，按 `observation_id` 和原始时间关联。辅助流不是 30 Hz 传感器时间线；去重缓存最多保留 4096 个像素身份。
 
+RC 按相机保留最近成功发布帧的只读数组引用，用 `pool_id/frame_id` 对齐实际 lease。录制不新增策略租约、不延长原租约，也不在控制线程重新映射或复制共享图像。池重置或 connector 代次变化会使索引失效；无法匹配时，该条可选 observation 被拒绝并记录 `observation_frame_unavailable` 缺口，不替换成其他帧。
+
 每个可执行实例分别产生 `policy.start/result/error/cancel/timeout`。原生链的子请求携带 `chain_id`、`chain_request_id`、`cell`，同时保留实例自己的 `request_id`、来源目录身份、代次及配置版本；`a-0` 与 `a-1` 的输出不会合并。整体链事件还记录 `policy.stage_start/stage_result/stage_error`。迟到或过期响应分别记录为 `policy.late/stale`，记录行为不会使它们重新进入控制。
 
 录制可能在推理中途开始或结束。只有结果、没有本段开始事件的请求带 `start_outside_recording`；停止时仍未结束的请求出现在 `session.jsonl` 的 `unfinished_requests`。这些标记表示录制边界，不等同于 policy 故障。
@@ -90,7 +94,11 @@ auto 开启后新发起的 `reset`、`pose restore`、策略切换（含 `--rese
 
 ## 状态、容量和退出
 
-`record status` 返回 `state`、`session_id`、`path`、`error`、`samples_written`、`samples_accepted`、`repeated_frames`、`missing_frames`、`missed_samples`、`extra_dropped`、`pending_bytes`、`pending_samples` 和 `peak_pending_bytes`；视频工作开始后还包含 `video_pending_frames`、`video_pending_bytes`、`video_segments_written`。
+`record status` 返回 `state`、`session_id`、`path`、`error`、`samples_written`、`samples_accepted`、`repeated_frames`、`missing_frames`、`missed_samples`、`extra_dropped`、`pending_bytes`、`pending_samples` 和 `peak_pending_bytes`；另有 `ingress_pending`（入口已接收、尚未完成后台整理的条数）和 `debug_dropped`（本轮统计中的 DEBUG 丢弃数，计入 `extra_dropped`）。视频工作开始后还包含 `video_pending_frames`、`video_pending_bytes`、`video_segments_written`。
+
+控制提交、策略 trace、真实发布回执和普通日志只进入有界内存入口，不获取录制后台锁，不等待队列空间或 writer ACK。必要元数据快照和额度估算不持共享录制锁；已经拥有快照的策略 trace 不再重复深拷贝。状态查询也不等待后台锁。采样线程成批取走回执引用后在锁外处理，保留原有 `late_observer` 及不补写旧动作的语义。
+
+每条数据在入口接收时固定所属会话。停止先关闭该段入口，再把全部已接收记录纳入 writer 排空边界，收到实际处理确认并完成尾段封口后才报告成功。停止过程中接收的普通日志仍写基础日志；自动切段不会把上一段已接收的数据或丢弃计数移入下一段。`pending_bytes` 从入口接收一直计到 writer ACK，转交后台不会提前释放或重复占用额度。
 
 序列化和磁盘写入由独立 writer 进程执行，每路采样／辅助视频各有专用线程和 FFmpeg 编码进程，每个编码器使用两个线程。原始图像立即流式送入编码器，不在内存积攒五秒。writer 主线程继续处理文本，视频管道阻塞不会阻塞控制提交或后续文本处理。视频完成索引使用独立锁，索引 fsync 不持有受理或统计锁；停止等待尾段封口时，普通日志也可继续落盘。默认采样内存额度为 512 MiB，附加诊断额度为 64 MiB，最多 60 个待处理采样。在途字节估算覆盖保留图像、IPC 和编码开销，因此不等于进程 RSS 或磁盘文件大小。只有文本处理完成且原始像素已送入编码器后才归还额度；转交线程本身不归还额度。每路视频队列最多 128 个槽，拥塞、编码器退出或排空超时会明确报错。附加诊断拥塞时记录丢弃数量；必需采样超过额度会停止该段录制并给出错误，保留已写数据。磁盘写入失败、writer 退出或停止排空超时也会形成明确错误。
 

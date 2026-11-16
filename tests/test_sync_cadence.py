@@ -37,14 +37,18 @@ def test_sync_callback_starts_on_ack_before_next_send_tick(setup_controller, mon
         assert worker.requests[0]['runtime']['consumed_actions'] == 1
         np.testing.assert_allclose(worker.requests[0]['action_chunk'], [[.02] * 14])
         assert len(submitted) == before
-    # Starting early does not turn sync into async: even a full send period
-    # may pass without sending another target while this callback is pending.
+    # A due period repeats the last target while the callback is pending;
+    # the subsequent cached target remains untouched.
     time.sleep(.55)
     with controller._lock:
-        assert len(submitted) == before
+        assert len(submitted) > before
+        np.testing.assert_allclose([row[1] for row in submitted[before:]],
+                                   [[.01]*14]*(len(submitted)-before))
+        assert controller.buffer.consumed == 1 and len(worker.requests) == 1
+        before_result = len(submitted)
         worker.finish([[.02] * 14])
-    until(lambda: len(submitted) > before, timeout=1)
-    np.testing.assert_allclose(submitted[before][1], [.02] * 14)
+    until(lambda: len(submitted) > before_result, timeout=1)
+    np.testing.assert_allclose(submitted[before_result][1], [.02] * 14)
 
 
 @pytest.mark.parametrize('call_every_actions', [1, 2])

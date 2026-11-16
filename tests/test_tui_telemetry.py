@@ -57,7 +57,7 @@ def test_monitor_has_no_target_until_success_and_invalidates_failed_publish(setu
     controller, robot, _ = setup_controller
     # Keep the background hold publisher outside this deterministic unit test;
     # only the explicit sends below should establish published targets.
-    monkeypatch.setattr(controller, '_send_hold', lambda: None)
+    monkeypatch.setattr(controller, '_send_hold', lambda reason='idle': None)
     ready(controller)
     with controller._lock:
         assert controller.monitor_snapshot()["targets"] == {}

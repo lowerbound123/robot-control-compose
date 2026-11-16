@@ -33,9 +33,12 @@ def test_debug_logging_covers_running_pipeline_and_info_stays_silent(tmp_path, m
     try:
         until(lambda:rc.status()['state']=='paused' and rc._worker is not None,10)
         command(rc,'record start')
-        command(rc,'resume')
-        until(lambda:rc.status()['consumed']>=5,8)
-        command(rc,'pause')
+        # The real example / native self-chain must still install results,
+        # submit actions and consume full connector ACKs while recording stalls.
+        with rc._recorder._lock:
+            command(rc,'resume')
+            until(lambda:rc.status()['consumed']>=5,1.5)
+            command(rc,'pause')
         recording=command(rc,'record stop')
     finally:
         rc.submit('exit');assert rc.done.wait(15),rc.status()

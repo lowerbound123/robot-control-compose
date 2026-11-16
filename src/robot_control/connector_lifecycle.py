@@ -157,6 +157,7 @@ class ConnectorLifecycle:
                 # This is the only publication point for the new sensor epoch.
                 limiter, safety = self._connection_limiter(result['robot'], result['state'])
                 self._pool.clear_latest()
+                self._record_frames.clear()
                 self.robot.bind(result['robot'])
                 self.limiter, self._effective_safety = limiter, safety
                 self._connected = True

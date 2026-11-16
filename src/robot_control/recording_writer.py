@@ -639,6 +639,7 @@ def writer_main(receiver, responder, directory, run_id):
                     elif kind == 'gap':
                         data = {'event':'diagnostic_gap', 'count':packet['count'],
                                 'record_session_id':packet.get('session'), 'rc_run_id':run_id}
+                        if packet.get('reasons'): data['reasons'] = packet['reasons']
                         if session is not None and packet.get('session') == session.identity:
                             session.event('session', data)
                         elif base is not None:

@@ -4,6 +4,7 @@ from concurrent.futures import CancelledError
 import time
 
 from .recording import RecordingService
+from .recording_images import PublishedFrames
 from .recording_reduce import RecordingReducer, ReductionFailed
 from .recording_auto import RecordingAuto
 
@@ -13,6 +14,7 @@ RECORD_HELP = 'record：切换录制；record start：开始；record stop：停
 
 class RecordingControl(RecordingAuto):
     def _init_recording(self):
+        self._record_frames = PublishedFrames()
         self._record_global_version = None
         self._record_requested = False
         self._init_record_auto()
