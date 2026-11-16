@@ -82,7 +82,7 @@ def test_consumption_history_survives_shared_image_release_and_pause(running):
     old = len(events(root,'predict_end'))
     assert completed(controller,'resume')['status'] == 'succeeded'
     wait(lambda: len(events(root,'predict_end'))>old)
-    assert events(root,'predict_end')[old]['indices'] == []
+    assert events(root,'predict_end')[old]['indices']
     assert controller._worker.runnable
 
 

@@ -43,5 +43,14 @@ class ConnectorControl:
         self._hold_name = motion['source']
         self._state = 'paused'
         if motion.get('complete') is not None: motion['complete'].set()
+        if motion.get('reset_policy_context') and getattr(self._worker, 'supports_resume_context', False):
+            if self._operation is not None:
+                self.operations.update(motion.get('public_id'), 'cancelled',
+                                       reason='policy lifecycle superseded reset context cleanup')
+                return
+            self._operation_start('reset_context', wait_inflight=True, worker=self._worker,
+                                  motion_reset=True, public_id=motion.get('public_id'),
+                                  origin=motion.get('origin', 'tui'))
+            return
         self._emit(f"到达 {motion['source']} 指令目标；等待 resume")
         self.operations.update(motion.get('public_id'), 'succeeded', result=self.status())

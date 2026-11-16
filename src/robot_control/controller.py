@@ -569,6 +569,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 return
             if self._motion is not None and self._motion is not previous_motion:
                 self._motion["public_id"] = identity
+                self._motion['origin'] = request.origin
                 if word in ('reset', 'r', 'load'):
                     self._record_auto_mark(identity, 'pose.restore' if word == 'load' else 'reset')
                 return
@@ -939,7 +940,11 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._close_connectors(deadline=self._cleanup_deadline())
             return {}
         if kind == "reset_context":
-            job["worker"].reset_context(cancel_event=cancel)
+            worker = job['worker']
+            if job.get('motion_reset'):
+                worker.reset_motion_context(cancel_event=cancel)
+            else:
+                getattr(worker, 'resume_context', worker.reset_context)(cancel_event=cancel)
             return {}
         if kind == "hot_patch":
             if job.get('command_request') is not None:
@@ -1266,10 +1271,16 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             elif job["kind"] == "reset_context":
                 if job["cancel"].is_set():
                     self._pause()
-                    emit("恢复操作已取消；保持暂停")
+                    emit("上下文操作已取消；保持暂停")
                     self._return_requested = False
                     self._return_operation = None
-                    self.operations.update(job.get("public_id"), "cancelled", error="resume cancelled")
+                    self.operations.update(job.get("public_id"), "cancelled", error="context operation cancelled")
+                    continue
+                if job.get('motion_reset'):
+                    self._state = 'paused'
+                    self._restore_policy_commands(self._worker)
+                    emit('复位完成，策略上下文已清空；等待 resume')
+                    self.operations.update(job.get('public_id'), 'succeeded', result=self.status())
                     continue
                 try:
                     self.limiter.reset(self.robot.read_state()["qpos"])
@@ -1814,7 +1825,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._cancel_direct("cancelled by reset")
             self._pause()
             self._publish_fault = False
-            self._motion = {"target": finite_qpos(self.config["reset_qpos"]), "source": "reset"}
+            self._motion = {"target": finite_qpos(self.config["reset_qpos"]), "source": "reset",
+                            'reset_policy_context': True}
             self._state = "moving"
         elif command == "save" and len(args) == 1:
             self._save_state(args[0])

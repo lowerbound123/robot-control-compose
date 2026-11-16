@@ -793,3 +793,14 @@ Linux/Humble Python 3.10 中，元数据、host、补全分析/服务与 example
 日志位于 `/private/tmp/history-control-config-final.log`、`/private/tmp/history-path-view-green.log`，RED/GREEN 分阶段证据位于同目录的 `history-*.log`。真实配置继续被 Git 忽略，原有 pipelined/replan 值保持不变。本轮没有服务器操作、部署、重启、提交或推送。
 
 后续补充：clip 新增 `params.arm_clip_enabled` 布尔热开关，旧配置默认开启，monitor 显示开关状态。关闭期间继续跟踪已消费指令，重新开启时沿用最后已消费目标；关闭期间产生的动作不累计硬裁剪次数。按用户明确要求，此补充直接实现，未新增或运行测试；上述通过结果不作为此开关的测试证据。
+
+
+## 2026-11-16 history 在显式 reset 时清空
+
+`qwen35_history` 与 `qwen35_history_lift2` 新增可选 `resume_context`，在普通恢复及 MCP 归还时保留已消费视觉历史；显式 reset 在复位目标完整发布确认后清空历史，清理确认前不发布成功回执，完成后保持暂停。任务/配置 reset 和重初始化语义保留。RC/SDK 通过 `resume_context_v1` 协商，旧策略沿用恢复时 reset 的行为；原生链按实例执行，SDK 内部组合支持逐环节回退。
+
+定向验收 **153 passed、1 deselected，56.79 秒**，退出码 0。覆盖两个 history 的 sync/pipelined worker、MCP 接管归还、显式 reset、发布确认、取消/失败/生命周期竞争、协议协商、example 单实例/自链/混合链、旧策略恢复兼容及录制自动换段一次。初始 7 项回归先复现失败；新增生命周期竞争用例也先复现失败，再修复通过。日志 `outputs/history-reset-20261116/directed-delivery.log`，阶段证据见同目录。
+
+唯一排除项 `test_start_log_failure_cleans_without_waiting_for_unstarted_loop` 在未修改的 `ba7f919` 临时源码副本上独立复现相同断言失败和夹具清理失败，日志 `baseline-start-failure.log`；属于已有的日志目录创建失败收尾问题，本轮未修改该路径，不计为通过。早期新增测试中的 monitor ID 和 MCP busy 预期已按现有协议修正，失败记录保留。
+
+本轮仅本机 mock、真实 worker/UDS/共享图像及相关单测；未运行完整接口回归、Docker smoke、真实模型或硬件验收，未修改服务器部署。

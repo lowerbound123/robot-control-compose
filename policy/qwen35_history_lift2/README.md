@@ -52,6 +52,8 @@ ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 R
 
 切换完成后保持暂停；确认设备、模型和任务后再显式 `resume`。`switch-task`、`switch-model`、monitor、重初始化和重载接口与原 history 相同，也可将本来源放入原生 chain。切换 connector 不会自动替换 policy。
 
+普通 `pause → resume` 和 MCP 接管后归还保留视觉历史；显式 `reset` 在复位目标完整发布确认后清空历史，清理完成才返回成功，并保持暂停。详见[暂停、恢复与复位](../../docs/history-policy-configuration.md#暂停恢复与复位)。
+
 用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。指标与原 history 一致，详见[策略监控说明](docs/runtime.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
 
 ## 定向验证

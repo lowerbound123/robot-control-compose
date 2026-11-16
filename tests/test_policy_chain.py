@@ -27,6 +27,24 @@ def stage(**callbacks):
     )
 
 
+def test_resume_uses_optional_callback_and_legacy_reset_fallback():
+    calls = []
+    pipeline = chain([
+        stage(resume_context=lambda context: calls.append('resume'),
+              reset_context=lambda context: calls.append('reset')),
+        stage(reset_context=lambda context: calls.append('legacy reset')),
+    ])
+    context = pipeline.initialize({})
+    try:
+        pipeline.resume_context(context)
+        assert calls == ['resume', 'legacy reset']
+        calls.clear()
+        pipeline.reset_context(context)
+        assert calls == ['reset', 'legacy reset']
+    finally:
+        pipeline.release(context)
+
+
 @pytest.mark.parametrize("mode", ["qpos", "epos", "mixed"])
 def test_stages_receive_previous_output_and_unchanged_other_inputs(mode):
     config = {"params": {}, "execution": {"control_mode": mode}}

@@ -27,6 +27,8 @@ resume
 
 任务覆盖值在 manifest 的 `params.task` 中；`null` 恢复 model.json 的 `runtime.instruction`。可使用 `policy qwen35_history config set params.task "新任务"`，重复实例使用精确实例名。配置入口的 task 修改请求 reset：等待旧后台推理退出、清空历史和动作计划，保留模型并暂停，随后显式 resume。注册的 switch-task 热更新仍保留原运行状态。冷重载成功后暂停。MCP 命令继续遵循 take/return 和实例代次检查；本策略不自动接管、复位或恢复运动。
 
+普通 `pause → resume` 和 MCP 接管后归还保留视觉历史；显式 `reset` 在复位目标完整发布确认后清空历史，清理完成才返回成功，并保持暂停。详见[暂停、恢复与复位](../../docs/history-policy-configuration.md#暂停恢复与复位)。
+
 ## X、回调模式与模型流水线
 
 RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC 发起策略调用的间隔，策略不限定这两个值；`control_mode` 仍需 `qpos`。是否启动模型推理由策略检查输入剩余动作数量决定，`model.json` 的 `execution.pipelined` 只控制新旧动作是否融合。

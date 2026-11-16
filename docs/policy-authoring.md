@@ -82,6 +82,10 @@ def release(context):
 
 四个同步函数必须在 main.py 顶层声明。辅助模块使用相对 import，资源路径以本策略目录或模型配置文件为基准，不依赖仓库 parents[2]。策略依赖只装在对应镜像中，RC 不安装 Torch 等模型框架。
 
+策略还可提供同步 `resume_context(context)`，将恢复执行与重置上下文分开。RC/SDK 通过 `resume_context_v1` 协商后，`resume` 和 MCP 归还调用这个回调；显式 `reset` 在机器人复位目标完整发布后调用 `reset_context`，等待确认后返回成功并保持暂停。两类回调都在 SDK 的推理、观测、命令和监控屏障之后执行。恢复回调应排空旧后台工作与动作计划，可保留视觉历史等连续状态。原生链逐实例处理；没有协商该能力的策略仍沿用恢复时调用 `reset_context` 的行为，显式机械臂复位不新增策略回调。
+
+配置 callback("reset") 和 connector 的 reset 路径仍调用 `reset_context`。SDK 内部 `PolicyChain.resume_context` 会逐环节调用可选恢复回调，缺少时回退到该环节的 `reset_context`；组合策略需在 `main.py` 显式暴露恢复回调才能启用该能力。升级时同步更新 RC、SDK 和需要此语义的策略源码。
+
 可使用 SDK 的 `runtime`、`observe`、`monitor`、命令、外部资源接口。`runtime.pause(reason)` 只在当前推理回调线程使用，成功结果才携带暂停请求。运行时配置引用保持稳定，热补丁仅允许白名单叶字段，两端确认 config_version 后生效；RC 参数和身份/命令/时限属于冷配置。
 
 ## 任务完成与终止
@@ -126,7 +130,7 @@ MCP 执行必须先 `take`，再调用 `policy_command(instance_id=..., command=
 
 `effect: update_config` 提交热配置补丁。handler 只验证并返回manifest 白名单内 `params.*` 或 `execution.on_connector_switch` 叶字段的非空补丁，不直接修改 context 或配置。RC 使用现有 SDK `update_config` 事务，在双端确认后更新目标配置及逻辑链版本；配置对象、context、模型、进程和容器保持不变。TUI 调用保留原运行/暂停状态，MCP 调用仍需先 take，完成后保持 MCP 控制权和 policy 暂停。链中必须解析为明确实例，其他成员的配置与版本不变；`policy example-1 set-message "新消息"` 展示该用法。命令回包与 ACK 提交都复核 worker、配置版本、控制权及动作代次；未确认或失效的提交沿用热更新故障清理，不自动重试。该 effect 通过 `tui_command_effects_v2` 双端协商，需同步更新 RC/SDK。
 
-`effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停，`resume` 仍重置上下文。Docker 生命周期由 RC 管理。
+`effect: reload_policy` 只重建命令目标实例的容器、host 和执行进程。`effect: reload_all_policy` 重建整个活动运行组。两者的 handler 都在旧实例校验候选设置，返回已有 `params.*` 冷叶字段的非空补丁。只有目标配置和逻辑链版本递增。相同补丁也会重新初始化。成功后暂停；`resume` 按上述可选恢复回调规则执行。Docker 生命周期由 RC 管理。
 
 候选校验被拒时原实例继续使用。局部重载在旧目标退出后初始化失败，健康成员驻留，链停止推理。`status.retry_reload_instance` 指示失败目标。修复文件后在本地 TUI 执行 `policy <精确实例ID> retry`，按已校验的候选配置重新初始化；显式保存只使用最近生效的配置。整组重载初始化失败按整组清理，使用 `policy switch <来源>` 恢复。
 

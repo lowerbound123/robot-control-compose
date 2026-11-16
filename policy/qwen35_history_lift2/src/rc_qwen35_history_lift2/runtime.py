@@ -287,6 +287,19 @@ class HistoryPolicy:
                 pass
         self.pending = self._request = None
 
+    def resume(self):
+        """Discard stale predictions while retaining consumed visual history."""
+        if self._closed:
+            raise RuntimeError('policy is closed')
+        if self._failure is not None:
+            raise self._failure
+        self._drain()
+        self.canonical = np.empty((0, 14), np.float32)
+        self._last_submission = None
+        with self._metrics_lock:
+            self._metrics.update(pending=0, last_trim=0, cached_actions=0,
+                                 last_submission_actions=-1, _pending_at=0., _deadline=0.)
+
     def reset(self):
         if self._closed:
             raise RuntimeError('policy is closed')

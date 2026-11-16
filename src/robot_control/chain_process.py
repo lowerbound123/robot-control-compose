@@ -477,7 +477,21 @@ class ChainProcess:
         with self._condition:
             return self._observations.popleft() if self._observations else None
 
+    @property
+    def supports_resume_context(self):
+        with self._condition:
+            return any(getattr(worker, 'supports_resume_context', False) for worker in self._workers.values())
+
     def reset_context(self, cancel_event=None):
+        self._context_barrier('reset_context', cancel_event)
+
+    def resume_context(self, cancel_event=None):
+        self._context_barrier('resume_context', cancel_event)
+
+    def reset_motion_context(self, cancel_event=None):
+        self._context_barrier('reset_motion_context', cancel_event)
+
+    def _context_barrier(self, method, cancel_event):
         with self._lifecycle_lock:
             self.stop_commands()
             deadline = time.monotonic() + self.inference_timeout_s
@@ -490,8 +504,10 @@ class ChainProcess:
                         raise TimeoutError('chain reset barrier timeout')
                     self._condition.wait(.01)
             for identity, worker in self._workers.items():
+                if method == 'reset_motion_context' and not getattr(worker, 'supports_resume_context', False):
+                    continue
                 try:
-                    worker.reset_context(cancel_event=cancel_event)
+                    getattr(worker, method, worker.reset_context)(cancel_event=cancel_event)
                 except Exception as exc:
                     raise RuntimeError(f'{identity}: reset failed: {exc}') from exc
             self.resume_commands()

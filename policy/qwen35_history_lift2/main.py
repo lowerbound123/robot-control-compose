@@ -57,6 +57,10 @@ def reset_context(context):
     context.reset()
 
 
+def resume_context(context):
+    context.resume()
+
+
 def release(context):
     if context is not None:
         context.close()

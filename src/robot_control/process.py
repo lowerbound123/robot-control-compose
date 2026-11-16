@@ -107,6 +107,7 @@ class PolicyProcess(MonitorClient):
         self._release_confirmed = False
         self.supports_commands = self.supports_observe = False
         self.supports_configure = False
+        self.supports_resume_context = False
         self.supports_table_output = False
         self._log_pending_version = None
         self._configure_fenced = self._configure_failed = self._configure_committed = False
@@ -258,6 +259,7 @@ class PolicyProcess(MonitorClient):
                                global_state=global_descriptor, context_id=self.context_id,
                                table_output_v1=getattr(self.host, 'table_output_v1', False),
                                configure=getattr(self.host, 'configure', False),
+                               resume_context_v1=True,
                                connector_switch_v1=getattr(self.host, 'connector_switch_v1', False)))
                 self.runtime_id, self._pid = loaded['runtime_id'], loaded['pid']
             deadline = time.monotonic() + self.init_timeout_s
@@ -311,6 +313,7 @@ class PolicyProcess(MonitorClient):
                 if mode not in message.get('action_modes', ['qpos']):
                     self._record_failure('policy SDK does not support ' + mode); return
                 self.supports_commands = message.get('tui_commands', False)
+                self.supports_resume_context = message.get('resume_context_v1') is True
                 self.supports_configure = message.get('configure') is True and getattr(self.host, 'configure', False)
                 if self.supports_configure and (message.get('context_id') != self.context_id or
                         type(message.get('config_version')) is not int or message['config_version'] != self.config_version):
@@ -913,3 +916,10 @@ class PolicyProcess(MonitorClient):
 
     def reset_context(self, cancel_event=None):
         self._operation("reset_context", {}, cancel_event)
+
+    def resume_context(self, cancel_event=None):
+        self._operation('reset_context', {'resume': True} if self.supports_resume_context else {}, cancel_event)
+
+    def reset_motion_context(self, cancel_event=None):
+        if self.supports_resume_context:
+            self.reset_context(cancel_event=cancel_event)

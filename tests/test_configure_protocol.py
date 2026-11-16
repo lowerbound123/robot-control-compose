@@ -53,7 +53,7 @@ def configure(context, config, key, value, callback):
 
 
 @contextmanager
-def worker(tmp_path, source=POLICY, *, connector_switch=False):
+def worker(tmp_path, source=POLICY, *, connector_switch=False, resume_context=False):
     (tmp_path / 'main.py').write_text(source)
     left, right = socket.socketpair()
     left.settimeout(3)
@@ -63,7 +63,8 @@ def worker(tmp_path, source=POLICY, *, connector_switch=False):
     def send(kind, **extras):
         send_message(left, dict(type=kind, operation_id=kind, config_version=1, context_id='old', **extras))
     try:
-        send('initialize', config=config, configure=True, connector_switch_v1=connector_switch)
+        send('initialize', config=config, configure=True, connector_switch_v1=connector_switch,
+             resume_context_v1=resume_context)
         ready = receive_message(left)
         assert ready['type'] == 'ready'
         receive_message(left)
@@ -74,6 +75,29 @@ def worker(tmp_path, source=POLICY, *, connector_switch=False):
         thread.join(3)
         left.close()
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize('negotiated', [False, True])
+def test_resume_context_requires_negotiation_and_keeps_reset_separate(tmp_path, negotiated):
+    source = POLICY + '''
+def resume_context(context):
+    context['resumes'] = context.get('resumes', 0) + 1
+_monitor = monitor
+def monitor(context):
+    return {**_monitor(context), 'resumes': context.get('resumes', 0)}
+'''
+    with worker(tmp_path, source, resume_context=negotiated) as (send, recv, ready, config):
+        assert ready['resume_context_v1'] is negotiated
+        send('reset_context', resume=True)
+        response = recv()
+        assert response['type'] == ('ack' if negotiated else 'error')
+        send('monitor', monitor_id=1, monitor_epoch=1)
+        result = recv()['result']
+        assert result['resets'] == 0 and result['resumes'] == int(negotiated)
+        send('reset_context')
+        assert recv()['type'] == 'ack'
+        send('monitor', monitor_id=2, monitor_epoch=1)
+        assert recv()['result']['resets'] == 1
 
 
 def test_configure_is_independent_of_custom_effects_and_defers_mutation(tmp_path):

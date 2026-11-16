@@ -101,6 +101,7 @@ def run_session(connection, policy_dir, namespace):
         specs = command_specs(config)
         check_command_effects(specs, message)
         supports_configure = callable(getattr(module, "configure", None))
+        resume_enabled = message.get('resume_context_v1') is True and callable(getattr(module, 'resume_context', None))
         configure_enabled = supports_configure and message.get("configure") is True
         reinitialize_enabled = (configure_enabled or message.get("connector_switch_v1") is True or
                                 any(spec.get("effect") == "reinitialize_policy" for spec in specs.values()))
@@ -144,6 +145,7 @@ def run_session(connection, policy_dir, namespace):
         channel.send({"type": "ready", "config_version": version, "action_modes": list(CONTROL_MODES), "tui_commands": True, "monitor": monitor.callback is not None, "observe": supported,
                       "config_export": export_config(module, context, config),
                       "configure": configure_enabled, "context_id": channel.context_id,
+                      "resume_context_v1": resume_enabled,
                       "table_output_v1": channel.table_output_v1,
                       "connector_switch_v1": message.get("connector_switch_v1") is True,
                       "tui_command_effects_v2": list(COMMAND_EFFECTS), "runtime_tools": list(RUNTIME_TOOLS),
@@ -339,7 +341,12 @@ def run_session(connection, policy_dir, namespace):
                     monitor.barrier()
                     commands.barrier()
                     channel.barrier()
-                    module.reset_context(context)
+                    if message.get('resume') is True:
+                        if not resume_enabled:
+                            raise ValueError('resume_context was not negotiated')
+                        module.resume_context(context)
+                    else:
+                        module.reset_context(context)
                     commands.resume()
                     monitor.resume()
                     channel.send({"type": "ack", "operation_id": message["operation_id"]})

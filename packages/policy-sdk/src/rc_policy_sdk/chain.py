@@ -53,7 +53,7 @@ class PolicyChain:
         if not self.stages:
             raise ValueError("PolicyChain requires at least one stage")
         required = ("initialize", "policy", "reset_context", "release")
-        optional = ("observe", "wants_observations", "validate_config")
+        optional = ("observe", "wants_observations", "validate_config", "resume_context")
         for index, stage in enumerate(self.stages):
             for name in required + optional:
                 callback = getattr(stage, name, None)
@@ -128,12 +128,19 @@ class PolicyChain:
                     invoke(self.stages[index].observe, (child, state, images, config), runtime)
 
     def reset_context(self, context):
+        self._context_callbacks(context, 'reset_context')
+
+    def resume_context(self, context):
+        self._context_callbacks(context, 'resume_context')
+
+    def _context_callbacks(self, context, method):
         self._check_context(context)
         errors = []
         for index, child in enumerate(context.children):
             try:
-                with _stage_call(index, "reset_context"):
-                    self.stages[index].reset_context(child)
+                with _stage_call(index, method):
+                    stage = self.stages[index]
+                    getattr(stage, method, stage.reset_context)(child)
             except BaseException as exc:
                 errors.append(exc)
         _raise_errors(errors)

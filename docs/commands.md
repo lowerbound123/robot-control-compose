@@ -95,6 +95,8 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 
 `resume` 只恢复 policy 拥有控制权时的运行，不隐式归还 MCP 控制权。本地接管/归还使用 `mcp take` / `mcp return`；HTTP 的结构化工具名仍为 take/return。MCP 工具参数只能是 JSON 对象，无参数工具可省略对象。`mcp help` 显示工具目录。
 
+`qwen35_history` 和 `qwen35_history_lift2` 在 `resume`／MCP 归还时保留视觉历史；显式 `reset` 在复位目标完整发布确认后清空历史，清理确认后返回成功并保持暂停。其他未提供可选 `resume_context` 的策略保留原恢复语义，详见[策略作者规范](policy-authoring.md)。
+
 `record auto [on|off]` 控制本次运行的自动模式，默认关闭。开启后确保正在录制，重置／重建类操作成功后后台换段；关闭 auto 保留当前录制。手动 stop 不关闭 auto，但会阻止旧操作的延迟重开。输入框上方显示 recording_auto，完整状态包括 auto、auto_pending、auto_error。裸 `record` 切换录制，start/stop/status 分别开始、停止和查询；on/off/toggle 仅属于结构化 MCP record 工具的 action 值。`record reduce <日志文件夹名>` 在后台缩减当前 `outputs/logs` 下的指定目录，`record reduce all` 扫描全部。补全提供文件夹名，含空格的名称需要引号；不接受任意路径。转换并验证视频后删除原图，保留 `initial.png`、视频和其他日志；活动 writer 持锁时跳过，异常停止或缺少停止记录的静态目录仍可处理。兼容旧 PNG 和新五秒无损 MKV，保留未封口素材与文本索引。录制与日志缩减均不改变控制归属或运动。MCP 的录制开关仍无需 take；经 MCP `command` 执行 reduce 属于文件写操作，需要先 take。详情见[录制说明](recording.md)。
 
 `monitor` 切换机器人面板，`monitor <实例>` 切换该实例面板；不接受 on/off 参数。
