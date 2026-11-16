@@ -17,6 +17,7 @@ import numpy as np
 from rc_connector_sdk.actions import arm_targets
 from rc_connector_sdk.client import ConnectorClient
 from rc_connector_sdk.images import map_images
+from rc_policy_sdk.performance import trace
 from .yaml_config import load_yaml_config
 from .safety_config import safety_settings
 
@@ -63,6 +64,7 @@ class ConnectorRobot:
         self._attempts = {}
         self.last_submission = None
         self.wake = lambda: None
+        self.performance = None
         # Bounded inspection history, also used by recording/integration tests.
         self._commands, self._command_modes = deque(maxlen=4096), deque(maxlen=4096)
 
@@ -278,7 +280,9 @@ class ConnectorRobot:
 
     def execute_arms(self, targets):
         if self.closed or self._stop.is_set() or self.client is None: raise RuntimeError('connector is not connected')
-        identity = self.client.submit(targets)
+        perf = self.performance.trace('connector') if self.performance is not None else None
+        identity = (self.client.submit(targets, performance=perf.data) if perf is not None
+                    else self.client.submit(targets))
         self.last_submission = identity
         with self._result_lock: self._sent[identity] = copy.deepcopy(targets)
         return identity
@@ -297,6 +301,7 @@ class ConnectorRobot:
 
     def _record_results_locked(self, results):
         for response in results:
+            perf = trace(response, 'rc.connector_receipt')
             self._receipts[response['id']] = response
             targets = self._sent.pop(response['id'], {})
             if response['success']:
@@ -308,10 +313,16 @@ class ConnectorRobot:
                 self._commands.append(np.asarray(values))
                 self._command_modes.append({arm: t['mode'] for arm, t in targets.items()})
             attempt = self._attempts.pop(response['id'], None)
+            if perf: perf.mark('rc.command_observer_begin')
             for event in response.get('events', []):
                 if self._command_observer:
                     try: self._command_observer({**event, 'attempt_id': attempt, 'connector_request_id': response['id']})
                     except Exception: pass
+            if perf and self.performance is not None:
+                perf.mark('rc.command_observer_end')
+                self.performance.emit('connector.receipt', trace=perf, attempt_id=attempt,
+                    connector_request_id=response['id'], instance_id=self.instance_id,
+                    success=response['success'], publications=len(response.get('events', [])))
             while len(self._receipts) > 512: self._receipts.pop(next(iter(self._receipts)))
 
     def publication(self, identity):

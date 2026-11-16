@@ -21,6 +21,8 @@ from rc_policy_sdk.images import ImagePool
 
 from .external import ExternalResources
 from .log_format import LEVELS, LogSource, format_log_time
+from .performance import PerformanceLogger
+from rc_policy_sdk.performance import trace
 from .buffer import ActionBuffer
 from .yaml_config import save_yaml_config
 from .config import PolicyRegistry, atomic_json, load_rc, validate_entry
@@ -144,6 +146,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._init_chain_editor()
         self._init_globals()
         self._init_recording()
+        self._performance = PerformanceLogger(self.config['logging']['level'], self.run_id, self._recorder.log)
+        self._recorder.performance = self._performance if self._performance.enabled else None
+        if self.robot.raw is not None:
+            self.robot.raw.performance = self._performance if self._performance.enabled else None
         self._tui_batches = TerminalBatches(self)
 
     def _emit_command(self, message, level="info", *, record_history=True, help_document=None,
@@ -245,6 +251,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self._external.close()
                     self._pool.close()
                 finally:
+                    self._performance.close(self._cleanup_deadline())
                     self._recorder.shutdown(self._cleanup_deadline())
                     self._state = "stopped"
                     self.done.set()
@@ -262,6 +269,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self._external.close()
                 self._pool.close()
             finally:
+                self._performance.close(self._cleanup_deadline())
                 self._state = "stopped"
                 self.done.set()
 
@@ -1065,6 +1073,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             on_log=self._emit if record.is_chain else lambda message: self._emit(f"[{record.config['id']}] {message}"),
             on_trace=self._recorder.policy_event,
             on_log_event=self._emit_policy_log,
+            on_performance=self._performance.emit if self._performance.enabled else None,
         )
         endpoints = {h.policy_id:h for h in handles}
         if record.is_chain:
@@ -1339,6 +1348,14 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     else worker.poll())
         if response is None:
             return
+        perf = trace(response, 'rc.result_polled')
+        if perf is None and request.get('performance'):
+            perf = request['performance']
+            perf.mark('rc.result_missing_worker_timings')
+        if perf and response.get('type') != 'result':
+            self._performance.emit('rc.policy_result', trace=perf, request_id=request['id'],
+                                   generation=request['token'].generation, outcome=response.get('type'),
+                                   observation_id=request.get('observation_id'))
         if response.get("request_id", request["id"]) != request["id"]:
             return
         if draining_context:
@@ -1406,6 +1423,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         if response.get("generation") != request["token"].generation or response.get("config_version") != record.version:
             raise ValueError("policy 结果代次或配置版本不匹配")
         chunk = normalize_result(response, record.execution['control_mode'])
+        if perf: perf.mark('rc.result_normalized')
         controls = control_requests(response.get("control_requests", []), chain=record.is_chain)
         if controls:
             control = controls[0]
@@ -1451,16 +1469,25 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._needs_request = not accepted and self.buffer.submission_state() == 'empty'
         self._last_action_request = ActionRequestSnapshot(
             request['id'], request['token'].generation, self.buffer.last_trim, len(self.buffer.remaining()))
+        if perf:
+            perf.mark('rc.result_installed', accepted=accepted, remaining_actions=len(self.buffer.remaining()))
+            self._performance.emit('rc.policy_result', trace=perf, request_id=request['id'],
+                                   generation=request['token'].generation, config_version=record.version,
+                                   instance_id=self._identity, observation_id=request.get('observation_id'), outcome='result')
         self._emit(f"请求 {request['id']}：裁剪 {self.buffer.last_trim}，缓存 {self._last_action_request.cached}", 'trace')
 
     def _snapshot(self):
+        perf = self._performance.trace('snapshot')
+        if perf: perf.mark('rc.snapshot_begin')
         observation = self.robot.read_state()
         images = self.robot.read_images()
+        if perf: perf.mark('rc.snapshot_cache_read')
         published = {}
         for name, (image,timestamp) in images.items():
             if self._pool.publish(name,image,timestamp):
                 published[name] = (image,timestamp)
         lease = self._pool.acquire()
+        if perf: perf.mark('rc.snapshot_images_published')
         self._observation_serial += 1
         runtime = {'observation_id': f'{self.run_id}:{self.buffer.generation}:{self._observation_serial}',
                    'control_epoch':self.buffer.generation,'consumed_actions':self.buffer.consumed}
@@ -1475,12 +1502,20 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self.buffer.retain_clip_stats(owners)
         runtime['action_stats'] = stats
         self._recorder.observation(runtime['observation_id'], observation, published, descriptors=lease.descriptors)
+        if perf:
+            perf.mark('rc.snapshot_recorded')
+            self._performance.emit('rc.snapshot', trace=perf, observation_id=runtime['observation_id'],
+                                   consumed_actions=self.buffer.consumed, generation=self.buffer.generation)
         return observation,lease,runtime
 
     def _collect_observation(self):
         if self._observe_inflight:
             worker,lease,epoch = self._observe_inflight
             response = worker.poll_observation()
+            if response is not None and self._performance.enabled:
+                perf = trace(response, 'rc.observe_collected')
+                self._performance.emit('rc.observe_result', trace=perf, request_id=response.get('request_id'),
+                                       generation=epoch, outcome=response.get('type'))
             with self._owned_lock:
                 closed = worker in self._confirmed_closed
             if closed or (response and response.get('images_released') is True):
@@ -1502,6 +1537,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         record = self.registry.get(self._identity)
         request = {'request_id':self._observation_serial,'generation':self.buffer.generation,
                    'config_version':record.version,'state':observation,'images':lease.descriptors,'runtime':runtime}
+        perf = self._performance.trace('observe')
+        if perf:
+            perf.mark('rc.observe_submit', observation_id=runtime['observation_id'])
+            perf.attach(request)
         try:
             accepted = self._worker.observe(request)
         except Exception:
@@ -1516,6 +1555,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         return None
 
     def _submit_prediction(self, snapshot=None):
+        perf = self._performance.trace('infer')
+        if perf: perf.mark('rc.request_begin')
         if snapshot and snapshot[2]["consumed_actions"] != self.buffer.consumed:
             snapshot = None
         if snapshot is None:
@@ -1532,12 +1573,18 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         request = {"request_id": self._request_serial, "generation": token.generation,
                    "config_version": record.version, "state": observation, "runtime":runtime,
                    "action_chunk": self.buffer.remaining_payload(record.execution["control_mode"]), "images": lease.descriptors}
+        if perf:
+            perf.mark('rc.request_ready', request_id=self._request_serial, generation=token.generation,
+                      config_version=record.version, observation_id=runtime['observation_id'],
+                      remaining_actions=len(self.buffer.remaining()), instance_id=self._identity)
+            perf.attach(request)
         try:
             self._worker.submit(request)
         except Exception:
             lease.release()
             raise
-        self._inflight = {"id": self._request_serial, "worker": self._worker, "token": token, "lease": lease}
+        self._inflight = {"id": self._request_serial, "worker": self._worker, "token": token, "lease": lease,
+                          'performance': perf, 'observation_id':runtime['observation_id']}
         self._needs_request = False
 
     def _submit_sync_prediction_after_publication(self):
@@ -1636,10 +1683,14 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._send_hold()
 
     def _send_limited(self, target, mode="qpos"):
+        perf = self._performance.trace('send')
+        if perf: perf.mark('rc.limit_begin')
         previous = self.limiter.checkpoint()
         command, consumed = self.limiter.apply(target, mode, self.robot.read_state())
+        if perf: perf.mark('rc.limit_end')
         attempt = self._recorder.control_attempt({'requested':target, 'limited':command,
             'mode':mode, 'owner':self.control_owner, 'generation':self.buffer.generation})
+        if perf: perf.mark('rc.attempt_recorded')
         try:
             if mode == "qpos":
                 identity = self.robot.execute(command)
@@ -1648,6 +1699,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._last_send_at = time.monotonic()
         except Exception as exc:
             self._recorder.event('control', {'event':'control.error', 'attempt_id':attempt, 'error':str(exc)}, priority=True)
+            if perf:
+                perf.mark('rc.send_failed', error_type=type(exc).__name__)
+                self._performance.emit('rc.send', trace=perf, attempt_id=attempt, outcome='error')
             self.limiter.restore(previous)
             self._published_targets.clear()
             self._publish_fault = True
@@ -1656,13 +1710,22 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._register_publication(identity, arm_targets(command, mode), attempt)
         else:
             self._published_targets.update(arm_targets(command, mode))
+        if perf:
+            perf.mark('rc.send_submitted')
+            self._performance.emit('rc.send', trace=perf, attempt_id=attempt, connector_request_id=identity,
+                                   generation=self.buffer.generation, consumed_actions=self.buffer.consumed,
+                                   target_complete=consumed, mode=mode)
         return command, consumed
 
     def _send_direct(self, targets, state):
+        perf = self._performance.trace('direct_send')
+        if perf: perf.mark('rc.limit_begin')
         previous = self.limiter.checkpoint()
         commands, complete = self.limiter.apply_arms(targets, state)
+        if perf: perf.mark('rc.limit_end')
         attempt = self._recorder.control_attempt({'requested':targets, 'limited':commands,
             'owner':self.control_owner, 'generation':self.buffer.generation})
+        if perf: perf.mark('rc.attempt_recorded')
         try:
             identity = self.robot.execute_arms(commands)
             self._last_send_at = time.monotonic()
@@ -1678,6 +1741,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         else:
             self._published_targets.update(copy.deepcopy(commands))
         self._hold = self.limiter.previous.copy()
+        if perf:
+            perf.mark('rc.send_submitted')
+            self._performance.emit('rc.send', trace=perf, attempt_id=attempt, connector_request_id=identity,
+                                   generation=self.buffer.generation, target_complete=complete, mode='direct')
         return commands, complete
 
     def _send_hold(self):
@@ -1869,6 +1936,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             'exit_code':self.exit_code, 'exit_operations':list(self._exit_operations),
             'message':("安全退出完成，退出码 0" if self.exit_code == 0 else
                        f"退出完成，存在强制终止或清理错误，退出码 {self.exit_code}")}
+        if not self._performance.close(self._cleanup_deadline()):
+            self.exit_code = 1
         if self._recorder.shutdown(self._cleanup_deadline(), final_entry=final_entry):
             self.exit_code = 1
         # Finish priority shutdown receipts after the cancellation batch, so
@@ -1885,8 +1954,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._operation_start("connect")
         period = 1 / self.config["frequency_hz"]
         deadline = time.monotonic()
+        wake_reason = 'startup'
         while not self.done.is_set():
+            perf = self._performance.trace('loop')
+            if perf: perf.mark('rc.loop_begin', scheduled_ns=int(deadline*1e9))
             with self._lock:
+                if perf: perf.mark('rc.loop_lock_acquired')
                 try:
                     self._tui_batches.poll()
                     try:
@@ -1896,6 +1969,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     if urgent:
                         self._dispatch(urgent)
                     target_published = self._collect_publications()
+                    if perf: perf.mark('rc.publications_collected')
                     self._poll_policy_commands()
                     self._handle_internal()
                     self._unload_command_fault()
@@ -1903,6 +1977,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         break
                     self._clear_finished_lease()
                     self._collect_prediction()
+                    if perf: perf.mark('rc.prediction_collected')
                     self._launch_deferred()
                     if self._stop.is_set():
                         if self._state != "stopping":
@@ -1921,12 +1996,14 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         # due callback now, after control/lifecycle decisions,
                         # so it does not consume a separate sending period.
                         self._submit_sync_prediction_after_publication()
+                    if perf: perf.mark('rc.before_tick')
                     now = time.monotonic()
                     if now >= deadline:
                         self._tick()
                         deadline = next_deadline(deadline, now, self._last_send_at, period)
                         if deadline < time.monotonic():
                             deadline = time.monotonic() + period
+                    if perf: perf.mark('rc.after_tick', next_deadline_ns=int(deadline*1e9))
                 except Exception as exc:
                     self._cancel_direct(f"control failure: {exc}")
                     self._pause("fault", cancel_wait=False)
@@ -1937,5 +2014,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         self._operation_start("unload", worker=self._worker)
                     self._fail_policy_wait(exc)
                     deadline = time.monotonic() + period
-            self._wake.wait(max(0, deadline - time.monotonic()))
+            if perf:
+                self._performance.emit('rc.loop', trace=perf, state=self._state,
+                                       generation=self.buffer.generation, in_flight=self._inflight is not None,
+                                       consumed_actions=self.buffer.consumed, wake_reason=wake_reason)
+            signaled = self._wake.wait(max(0, deadline - time.monotonic()))
+            if self._performance.enabled: wake_reason = 'signal' if signaled else 'deadline'
             self._wake.clear()

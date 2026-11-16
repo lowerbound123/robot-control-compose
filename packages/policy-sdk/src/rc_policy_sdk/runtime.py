@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .wire import receive_message
 from .outbox import PrioritySender
 from .control import merge_control_requests
+from .performance import trace
 
 
 class WorkerChannel:
@@ -55,6 +56,7 @@ class WorkerChannel:
         try:
             while True:
                 message = receive_message(self.connection)
+                trace(message, 'worker.channel_received')
                 if message.get('type') == 'global_state_ack':
                     with self._condition:
                         if message.get('rpc_id') in self._global_pending:
@@ -190,6 +192,7 @@ class PolicyRuntime:
     def __init__(self, channel, message=None):
         self.channel = channel
         message = message or {}
+        self.performance = trace(message)
         metadata = message.get('runtime', {})
         self.observation_id = metadata.get('observation_id', str(message.get('request_id', 'initialization')))
         self.consumed_actions = metadata.get('consumed_actions', 0)

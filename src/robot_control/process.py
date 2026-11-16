@@ -12,6 +12,7 @@ from rc_policy_sdk.configuration import apply_candidate, apply_patch, prepare_pa
 from rc_policy_sdk.config_export import validate_export
 from rc_policy_sdk.control import RUNTIME_TOOLS, control_requests, runtime_tools
 from rc_policy_sdk.wire import encode_message
+from rc_policy_sdk.performance import KEY as PERFORMANCE_KEY, trace
 from .host_client import HostClient
 
 
@@ -42,10 +43,12 @@ def _emit_inference_trace(callback, instance_id, source_id, kind, context, data,
     if callback is None:
         return
     try:
+        payload = ({key: value for key, value in data.items() if key != PERFORMANCE_KEY}
+                   if trace(data) is not None else data)
         event = {'event': 'policy.' + kind, 'instance_id': instance_id, 'source_id': source_id,
                  **{key: value for key, value in context.items() if key != 'started_at'},
                  'timestamp_ns': time.time_ns(), 'monotonic_ns': time.monotonic_ns(),
-                 'data': _trace_payload(data), **extras}
+                 'data': _trace_payload(payload), **extras}
         if kind != 'start':
             event['elapsed_s'] = max(0., time.monotonic() - context['started_at'])
         callback(event)
@@ -60,7 +63,7 @@ class CandidateRejected(ValueError):
 class PolicyProcess(MonitorClient):
     def __init__(self, policy_dir, config, config_version=1, *, host_socket=None, endpoint=None, exit_authority=None,
                  init_timeout_s=600, inference_timeout_s=60, release_timeout_s=30, on_log=None, global_state=None, on_trace=None,
-                 on_log_event=None):
+                 on_log_event=None, on_performance=None):
         from rc_policy_sdk.catalog import instance_id
         instance_id(config.get('id'))
         self.endpoint = endpoint
@@ -77,6 +80,7 @@ class PolicyProcess(MonitorClient):
         self.on_log = on_log
         self.on_log_event = on_log_event
         self.on_trace = on_trace
+        self.on_performance = on_performance
         self._trace_requests = OrderedDict()
         self.global_state = global_state
         self.host_socket = host_socket or (endpoint.socket if endpoint else None)
@@ -214,6 +218,15 @@ class PolicyProcess(MonitorClient):
         return (self.runtime_id if runtime_id is None else runtime_id,
                 *(message.get(key) for key in ('request_id', 'generation', 'config_version')))
 
+    def _performance_event(self, stage, perf, message, **values):
+        if perf is not None and self.on_performance is not None:
+            try:
+                self.on_performance(stage, trace=perf, instance_id=self.config['id'],
+                    source_id=self.policy_dir.name, request_id=message.get('request_id'),
+                    generation=message.get('generation'), config_version=message.get('config_version'), **values)
+            except Exception:
+                pass  # Optional diagnostics must never alter request delivery.
+
     def _trace(self, kind, message, *, runtime_id=None, **extras):
         if self.on_trace is not None:
             try:
@@ -294,7 +307,10 @@ class PolicyProcess(MonitorClient):
         if packet['event'].get('type') == 'log':
             self._policy_log_packet(packet)
             return
+        perf = trace(packet['event'], 'rc.policy_receive')
+        lock_started = time.monotonic_ns() if perf else 0
         with self._condition:
+            if perf: perf.mark('rc.policy_lock', wait_ns=time.monotonic_ns()-lock_started)
             if self.runtime_id is not None and packet['runtime_id'] != self.runtime_id:
                 if packet['event'].get('type') in ('result', 'error') and 'request_id' in packet['event']:
                     self._trace('stale', packet['event'], runtime_id=packet['runtime_id'], discarded=True, reason='runtime_id')
@@ -340,13 +356,16 @@ class PolicyProcess(MonitorClient):
             elif kind in ('result','error') and 'request_id' in message:
                 if self._inflight and all(message.get(k) == self._inflight[k] for k in ('request_id','generation','config_version')):
                     late = self._inflight.get('timed_out') or self._inflight.get('trace_cancelled')
+                    if perf: perf.mark('rc.result_trace_begin')
                     self._trace('late' if late else kind, message, discarded=bool(late))
+                    if perf: perf.mark('rc.result_trace_end')
                     if not self._inflight.get('timed_out'):
                         if kind == 'result':
                             controls = control_requests(message.get('control_requests', []))
                             if controls and controls[0]['type'] not in self.runtime_tools:
                                 raise ValueError('control_requests requires negotiated runtime_tools ' + controls[0]['type'])
                         self._responses.append(message)
+                        if perf: perf.mark('rc.result_available', instance_id=self.config['id'])
                     self._inflight = None
                 else:
                     self._trace('stale', message, discarded=True, reason='inference_identity')
@@ -369,6 +388,10 @@ class PolicyProcess(MonitorClient):
                 except Exception as exc: ack = dict(type='resource_ack',rpc_id=message['rpc_id'],error=str(exc))
                 self._enqueue(ack)
             self._condition.notify_all()
+
+        if perf and self.on_performance is not None:
+            perf.mark('rc.policy_receive_complete')
+            self._performance_event('policy.receive', perf, message, outcome=kind)
 
     def _confirm_closed(self, proof):
         with self._condition:
@@ -460,6 +483,8 @@ class PolicyProcess(MonitorClient):
                 raise RuntimeError("policy already has an operation in flight")
             if request["config_version"] != self.config_version:
                 raise ValueError("inference config version differs from supervisor")
+            perf = trace(request, 'rc.policy_submit', instance_id=self.config['id'],
+                         request_id=request['request_id'], config_version=self.config_version)
             self._enqueue({**request, "type": "infer"})
             self._inflight = {key: request[key] for key in ("request_id", "generation", "config_version")}
             self._inflight["deadline"] = time.monotonic() + self.inference_timeout_s
@@ -468,6 +493,9 @@ class PolicyProcess(MonitorClient):
                 while len(self._trace_requests) > 256:
                     self._trace_requests.popitem(last=False)
                 self._trace('start', {**request, 'type': 'infer'})
+            if perf: perf.mark('rc.policy_submit_complete')
+        if perf and self.on_performance is not None:
+            self._performance_event('policy.submit', perf, request)
 
     def observe(self, request):
         with self._condition:

@@ -11,6 +11,7 @@ import uuid
 from .actions import validate_arm_targets
 from .images import ImagePool
 from .wire import receive_message, send_message
+from .performance import mark
 
 
 class ConnectorServer:
@@ -50,14 +51,17 @@ class ConnectorServer:
                 self.commands.task_done()
                 return
             connection, message = item
+            mark(message, 'connector.publisher_dequeued')
             targets, self._events = message.get('params'), []
             error = None
             valid = False
             try:
                 targets = validate_arm_targets(targets)
                 valid = True
+                mark(message, 'connector.driver_begin')
                 self.driver.execute_arms(targets)
             except Exception as exc: error = str(exc)
+            mark(message, 'connector.driver_end', success=error is None)
             published = {e['arm'] for e in self._events}
             arms = {arm: ('published' if error is None or arm in published else 'unknown' if valid else 'not_published')
                     for arm in targets if arm in ('left', 'right')} if isinstance(targets, dict) else {}
@@ -65,6 +69,9 @@ class ConnectorServer:
             except Exception: watermarks = {}
             response = {'id': message['id'], 'success': error is None, 'error': error, 'arms': arms,
                         'events': self._events, 'feedback_watermarks': watermarks}
+            if '_performance' in message:
+                response['_performance'] = message['_performance']
+                mark(response, 'connector.receipt_ready')
             try: send_message(connection, response)
             except OSError: pass  # Receipt loss does not cancel already admitted work.
             finally:
@@ -77,6 +84,7 @@ class ConnectorServer:
         try:
             while not self.stop.is_set():
                 message = receive_message(connection)
+                mark(message, 'connector.server_received')
                 if message.get('method') != 'send_targets' or type(message.get('id')) is not int:
                     raise ValueError('invalid connector command')
                 # Backpressure only; never evict an older accepted command.

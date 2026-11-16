@@ -87,6 +87,8 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 
 `config rc set` 只修改内存中的冷配置草稿，不重建或修改当前 RC。`config rc show` 返回 active、draft 和 changes；changes 按字段路径给出 active/draft 值。`config rc save` 将草稿写入 RC 配置文件，重启后生效。未保存草稿在退出后丢弃。
 
+`config rc set logging.level "DEBUG"`、`config rc save` 后重启，可开启默认关闭的全链路性能诊断；恢复时改回 `"INFO"` 并重启。时间点写入运行 JSONL 和活动录制的 events，详见 [性能日志](performance-logging.md)。
+
 `policy <实例> config set <key> <raw_value>` 保留 key 之后完整原文，由策略 `configure(context, candidate, key, value, callback) -> None` 解析。策略可以普通提交、请求 reset，或请求原进程 reinitialize。reset/reinitialize 完成后保持暂停，需显式恢复。显示和保存使用已提交配置，保存目标必须是明确实例。重复来源按出现顺序使用 -0/-1/...，不会把来源名隐式指向某个实例。
 
 `connector switch <名称>` 使用命名 connector profile 热切换连接，正常 policy 容器保留；成功后暂停，失败后仅显式 `connector retry` 或 `policy <实例> retry` 恢复。profile 结构及退出证明要求见 [connector 热切换](connector-switching.md)。

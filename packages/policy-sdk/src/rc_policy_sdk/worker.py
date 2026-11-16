@@ -9,6 +9,8 @@ import socket
 import sys
 import traceback
 import types
+from contextlib import nullcontext
+from .performance import trace
 
 from .commands import COMMAND_EFFECTS, check_command_effects, command_specs, resolve_handlers
 from .command_runtime import CommandExecutor
@@ -127,17 +129,29 @@ def run_session(connection, policy_dir, namespace):
                 channel.observations_gated = False
         channel.on_command_resume = resume
         def observe(message):
+            perf = trace(message, 'worker.observe_dequeued')
             try:
                 if message.get('config_version') != version:
                     raise ValueError('observation config version differs from worker')
-                with map_images(message['images']) as images:
-                    if callable(getattr(module, 'observe', None)):
-                        invoke(module.observe, (context, message['state'], images, config), PolicyRuntime(channel, message))
-                channel.send({'type':'observed', **_identity(message), 'images_released':True})
+                with (perf.span('worker.observe') if perf else nullcontext()):
+                    with map_images(message['images']) as images:
+                        if callable(getattr(module, 'observe', None)):
+                            invoke(module.observe, (context, message['state'], images, config), PolicyRuntime(channel, message))
+                response = {'type':'observed', **_identity(message), 'images_released':True}
+                if perf: perf.attach(response)
+                channel.send(response)
             except BufferError as exc:
-                channel.send({'type':'fatal', **_identity(message), 'images_released':False, 'error':str(exc)})
+                response = {'type':'fatal', **_identity(message), 'images_released':False, 'error':str(exc)}
+                if perf:
+                    perf.mark('worker.observe_error', error_type=type(exc).__name__)
+                    perf.attach(response)
+                channel.send(response)
             except Exception as exc:
-                channel.send({'type':'observation_error', **_identity(message), 'images_released':True, 'error':str(exc)})
+                response = {'type':'observation_error', **_identity(message), 'images_released':True, 'error':str(exc)}
+                if perf:
+                    perf.mark('worker.observe_error', error_type=type(exc).__name__)
+                    perf.attach(response)
+                channel.send(response)
         channel.on_observe = observe
         supported=callable(getattr(module,'observe',None))
         if callable(getattr(module,'wants_observations',None)):
@@ -153,6 +167,7 @@ def run_session(connection, policy_dir, namespace):
         channel.send({'type':'capabilities','observe':supported})
         while True:
             message = channel.commands.get()
+            perf = trace(message, 'worker.dequeued')
             kind = message.get("type")
             if kind == "shutdown":
                 break
@@ -306,19 +321,27 @@ def run_session(connection, policy_dir, namespace):
                     if message.get("config_version") != version:
                         raise ValueError("inference config version differs from worker")
                     runtime = PolicyRuntime(channel, message)
+                    if perf: perf.mark('worker.images_map_begin')
                     with map_images(message["images"]) as images:
-                        with runtime._inference_scope():
-                            output = invoke(module.policy, (context, message["state"], message["action_chunk"], images, config), runtime)
-                        actions = normalize_actions(
-                            output,
-                            config.get("execution", {}).get("control_mode", "qpos"),
-                        )
+                        if perf: perf.mark('worker.images_mapped')
+                        with (perf.span('worker.policy') if perf else nullcontext()):
+                            with runtime._inference_scope():
+                                output = invoke(module.policy, (context, message["state"], message["action_chunk"], images, config), runtime)
+                        with (perf.span('worker.normalize') if perf else nullcontext()):
+                            actions = normalize_actions(
+                                output,
+                                config.get("execution", {}).get("control_mode", "qpos"),
+                            )
                         result = {"type": "result", **_identity(message), **actions.payload(), **actions.annotations()}
                         if runtime._control_requests:
                             result["control_requests"] = runtime._control_requests
                         del actions, output
+                        if perf: perf.mark('worker.result_built')
                     # Result is the lease-release acknowledgment: all image
                     # mappings must be closed before the supervisor receives it.
+                    if perf:
+                        perf.mark('worker.images_released')
+                        perf.attach(result)
                     channel.send({**result, "images_released": True})
                 elif kind == "update_config":
                     if type(message.get("config_version")) is not int or message["config_version"] <= version:
@@ -353,12 +376,20 @@ def run_session(connection, policy_dir, namespace):
                 else:
                     raise ValueError(f"unknown worker message type: {kind}")
             except BufferError as exc:
-                channel.send({"type": "fatal", **_identity(message), "images_released": False, "error": str(exc)})
+                response = {"type": "fatal", **_identity(message), "images_released": False, "error": str(exc)}
+                if perf:
+                    perf.mark('worker.error', error_type=type(exc).__name__)
+                    perf.attach(response)
+                channel.send(response)
                 break
             except Exception as exc:
                 if kind in ("update_config", "reset_context") and not channel.configure_fenced:
                     monitor.resume()
-                channel.send({"type": "error", "images_released": True, **_identity(message), "operation_id": message.get("operation_id"), "error": f"{type(exc).__name__}: {exc}", **({"error_type": "candidate_rejected"} if isinstance(exc, CandidateRejected) else {})})
+                response = {"type": "error", "images_released": True, **_identity(message), "operation_id": message.get("operation_id"), "error": f"{type(exc).__name__}: {exc}", **({"error_type": "candidate_rejected"} if isinstance(exc, CandidateRejected) else {})}
+                if perf:
+                    perf.mark('worker.error', error_type=type(exc).__name__)
+                    perf.attach(response)
+                channel.send(response)
     except Shutdown:
         pass
     except (EOFError, BrokenPipeError, ConnectionResetError):

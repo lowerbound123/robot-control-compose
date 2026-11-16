@@ -1,5 +1,6 @@
 """Per-target callbacks and one GPU executor; RC alone consumes actions."""
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import nullcontext
 import copy
 import json
 import logging
@@ -239,37 +240,51 @@ class HistoryPolicy:
     def observe(self, state, images, *, runtime):
         if self._closed or self._failure is not None:
             return
+        perf = getattr(runtime, 'performance', None)
+        started = time.monotonic_ns() if perf else 0
         with self._history_lock:
+            if perf: perf.mark('history.observe_lock', wait_ns=time.monotonic_ns()-started)
             self._refresh_settings()
-            self._observe_history(images, runtime)
+            with (perf.span('history.observe_update') if perf else nullcontext()):
+                self._observe_history(images, runtime)
 
     def step(self, state, action_chunk, images, *, runtime):
         if self._closed:
             raise RuntimeError('policy is closed')
         if self._failure is not None:
             raise self._failure
+        perf = getattr(runtime, 'performance', None)
         try:
+            started = time.monotonic_ns() if perf else 0
             with self._history_lock:
+                if perf: perf.mark('history.settings_lock', wait_ns=time.monotonic_ns()-started)
                 self._refresh_settings()
             instruction = self._instruction()
             if instruction != self.instruction:
                 self.reset()
                 action_chunk = []
-            old = normalize_actions(action_chunk, 'qpos', allow_empty=True).actions
+            with (perf.span('history.normalize') if perf else nullcontext()):
+                old = normalize_actions(action_chunk, 'qpos', allow_empty=True).actions
             count, epoch = runtime.consumed_actions, runtime.control_epoch
+            started = time.monotonic_ns() if perf else 0
             with self._history_lock:
+                if perf: perf.mark('history.lock_acquired', wait_ns=time.monotonic_ns()-started)
                 if self._consumed is not None and count < self._consumed:
                     raise RuntimeError('consumed action counter moved backwards')
-                self._observe_history(images, runtime)
+                with (perf.span('history.update') if perf else nullcontext()):
+                    self._observe_history(images, runtime)
                 self._consumed = count
                 tick = max(0, count-self._history_origin)
-                contexts = self.history.snapshot(tick=tick) if self.history_enabled else ()
+                with (perf.span('history.snapshot') if perf else nullcontext()):
+                    contexts = self.history.snapshot(tick=tick) if self.history_enabled else ()
             if len(old) > self.backend.chunk_size - self.x:
                 self.canonical = old.copy()
                 self._record(cached_actions=len(old))
+                if perf: perf.mark('history.cache', remaining_actions=len(old), consumed_actions=count)
                 return old.copy()
-            self._launch(state, images, count, epoch, contexts)
-            new = self._collect()
+            with (perf.span('history.model', remaining_actions=len(old)) if perf else nullcontext()):
+                self._launch(state, images, count, epoch, contexts)
+                new = self._collect()
             self.canonical = self.transition.apply(old, new) if self.pipelined else new.copy()
             self._record(cached_actions=len(self.canonical))
             threshold = self.policy_config.get('params', {}).get('gripper_threshold', self.default_gripper_threshold)

@@ -8,6 +8,7 @@ import time
 
 from .actions import validate_arm_targets
 from .wire import encode_message, receive_message, send_message
+from .performance import mark
 
 
 class _DeadlineIO:
@@ -130,7 +131,7 @@ class ConnectorClient:
     def release_images(self, lease_ids, *, deadline=None, cancel_event=None):
         return self._request('release_images', request_deadline=deadline, cancel_event=cancel_event, lease_ids=list(lease_ids))
 
-    def submit(self, targets):
+    def submit(self, targets, *, performance=None):
         targets = validate_arm_targets(targets)
         with self._lock:
             if self.closed or self.failure: raise RuntimeError(self.failure or 'connector is closed')
@@ -138,7 +139,11 @@ class ConnectorClient:
             self.serial += 1
             identity = self.serial
             self._pending[identity] = targets
-            self._outbox.append(memoryview(encode_message({'id': identity, 'method': 'send_targets', 'params': targets})))
+            message = {'id': identity, 'method': 'send_targets', 'params': targets}
+            if performance is not None:
+                message['_performance'] = performance
+                mark(message, 'connector.client_submit', connector_request_id=identity)
+            self._outbox.append(memoryview(encode_message(message)))
             self._flush()
             return identity
 
@@ -173,6 +178,7 @@ class ConnectorClient:
         try:
             while not self.closed:
                 response = receive_message(self._command)
+                mark(response, 'connector.client_received')
                 with self._lock:
                     identity = response.get('id')
                     if type(identity) is not int or not 0 < identity <= self.serial:
@@ -190,6 +196,7 @@ class ConnectorClient:
         with self._lock:
             self._flush()
             result = list(self._results)
+            for response in result: mark(response, 'connector.client_polled')
             self._results.clear()
             for response in result: self._pending.pop(response['id'], None)
             return result

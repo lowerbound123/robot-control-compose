@@ -90,6 +90,7 @@ class RecordingService:
         self._boundary = 0
         self._closing = False
         self._worker_ready = False
+        self.performance = None
         self._shutdown_future = None
 
     @staticmethod
@@ -157,8 +158,32 @@ class RecordingService:
         self._wake.set()
         return packet
 
-    def _enqueue(self, kind, data, *, frames=None, stream=None, priority=False, session=None,
-                 frames_factory=None, frame_size=0):
+    def _enqueue(self, kind, data, **options):
+        perf = self.performance
+        if perf is None or data.get('event') == 'performance':
+            return self._enqueue_data(kind, data, **options)
+        started = time.monotonic_ns()
+        timings = {}
+        accepted = False
+        acquired = started
+        try:
+            with self._lock:
+                acquired = time.monotonic_ns()
+                accepted = self._enqueue_data(kind, data, timings=timings, **options)
+            return accepted
+        finally:
+            finished = time.monotonic_ns()
+            perf.emit('record.enqueue', kind=kind, stream=options.get('stream'), accepted=accepted,
+                      started_ns=started, acquired_ns=acquired, finished_ns=finished,
+                      lock_wait_ns=acquired-started, work_ns=finished-acquired,
+                      sample_id=data.get('sample_id'), observation_id=data.get('observation_id'),
+                      request_id=data.get('request_id'), instance_id=data.get('instance_id'),
+                      generation=data.get('generation'), config_version=data.get('config_version'),
+                      chain_request_id=data.get('chain_request_id'), event_name=data.get('event'),
+                      attempt_id=data.get('attempt_id'), arm=data.get('arm'), **timings)
+
+    def _enqueue_data(self, kind, data, *, frames=None, stream=None, priority=False, session=None,
+                      frames_factory=None, frame_size=0, timings=None):
         # No serialization or IPC writes on producer/control threads.
         with self._lock:
             if self._quit.is_set() or self._writer_failed or self._closing:
@@ -167,7 +192,9 @@ class RecordingService:
                 return False
             session = self._session if self._state == 'recording' else None
             lane = 'sample' if kind == 'sample' else 'extra'
+            measured = time.monotonic_ns() if timings is not None else 0
             size = estimated_bytes(data) + (frame_size if frames_factory else estimated_bytes(frames))
+            if timings is not None: timings['estimate_ns'] = time.monotonic_ns()-measured
             limit = self.sample_budget if lane == 'sample' else self.extra_budget
             if lane == 'extra' and not priority:
                 limit = limit * 9 // 10  # reserve room for receipts and LLM events
@@ -187,9 +214,13 @@ class RecordingService:
             # The caller owns sample snapshots and readonly images. Other
             # metadata is copied only AFTER credit admission.
             try:
+                measured = time.monotonic_ns() if timings is not None else 0
                 payload = data if kind == 'sample' else copy.deepcopy(data)
+                if timings is not None: timings['copy_ns'] = time.monotonic_ns()-measured
                 if frames_factory is not None:
+                    measured = time.monotonic_ns() if timings is not None else 0
                     frames = frames_factory()
+                    if timings is not None: timings['frames_ns'] = time.monotonic_ns()-measured
                 packet = self._packet(kind, lane='sample' if lane=='sample' else 'priority' if priority else 'extra',
                                       data=payload, frames=frames, stream=stream, session=session)
             except BaseException:
@@ -511,6 +542,7 @@ class RecordingService:
                 except Exception as exc: capture = {'state':None,'state_error':str(exc),'frames':{}}
             wall, cutoff = time.time_ns(), time.monotonic_ns()
             with self._lock:
+                acquired = time.monotonic_ns() if self.performance is not None else 0
                 if self._state != 'recording' or self._session != session: continue
                 controls = {}
                 if not missed:
@@ -524,6 +556,15 @@ class RecordingService:
                 payload = {**capture, 'sample_id':index, 'timestamp_ns':wall, 'monotonic_ns':cutoff,
                            'scheduled_ns':scheduled, 'missed':missed, 'controls':controls}
                 self._enqueue('sample', payload)
+            if self.performance is not None:
+                left, right = controls.get('left', {}), controls.get('right', {})
+                self.performance.emit('record.sample', sample_id=index, record_session_id=session,
+                    scheduled_ns=scheduled, cutoff_ns=cutoff, lateness_ns=now-scheduled,
+                    capture_ns=cutoff-now, collect_lock_wait_ns=acquired-cutoff,
+                    missed=missed, control_arms=len(controls),
+                    left_attempt_id=left.get('attempt_id'), right_attempt_id=right.get('attempt_id'),
+                    left_published_ns=left.get('monotonic_ns'), right_published_ns=right.get('monotonic_ns'),
+                    left_late=left.get('late_observer'), right_late=right.get('late_observer'))
             index += 1
 
     def shutdown(self, deadline, *, final_entry=None):

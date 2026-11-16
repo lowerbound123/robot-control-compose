@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import uuid
+from .performance import trace
 
 from .lifecycle import become_subreaper, descendant_snapshot, process_birth
 from .supervisor import _cleanup
@@ -198,6 +199,7 @@ class PolicyHost:
         return {'valid': True, 'python': sys.version.split()[0], 'directory': str(directory)}
 
     def _send_runtime(self, message):
+        trace(message.get('event'), 'host.runtime_enqueue')
         # A blocked runtime must never block the supervisor's watchdog or stop
         # RPC. Ownership transfers into this bounded queue, not into sendall.
         if message.get('event', {}).get('type') == 'monitor':
@@ -259,6 +261,7 @@ class PolicyHost:
         try:
             while True:
                 packet = receive_message(connection)
+                trace(packet.get('event'), 'host.result_received')
                 with self.condition:
                     if runtime_id != self.runtime_id: return
                     record = self.sessions.get(packet['session_id'])
@@ -328,6 +331,7 @@ class PolicyHost:
             return runtime_id
 
     def dispatch(self, peer, message):
+        trace(message.get('event'), 'host.dispatch_received')
         kind = message.get('type')
         if kind == 'hello':
             if message.get('protocol_version') != PROTOCOL_VERSION or message.get('image_protocol_version') != IMAGE_PROTOCOL_VERSION:

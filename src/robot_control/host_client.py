@@ -8,6 +8,7 @@ import weakref
 
 from rc_policy_sdk.outbox import PriorityOutbox
 from rc_policy_sdk.wire import encode_message, receive_message, send_message
+from rc_policy_sdk.performance import trace
 
 
 class HostClient:
@@ -87,6 +88,7 @@ class HostClient:
         with self.condition: self.members[member.session_id] = member
 
     def enqueue(self, message):
+        trace(message.get('event'), 'rc.host_enqueue')
         framed = encode_message(message)
         with self.condition:
             if self.closed or self.failure: raise RuntimeError(self.failure or 'host disconnected')
@@ -179,6 +181,7 @@ class HostClient:
                     raise ValueError('stale host instance')
                 with self.condition: members = list(self.members.values())
                 if kind == 'policy_event':
+                    trace(message.get('event'), 'rc.host_received')
                     member = self.members.get(message['session_id'])
                     if member: member._receive(message)
                 elif kind == 'runtime_stopped':

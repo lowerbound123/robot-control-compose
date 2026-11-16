@@ -1,5 +1,7 @@
 # 连续录制与推理追踪
 
+调查控制空白帧、同步回调或采样延迟时，可开启默认关闭的 [DEBUG 全链路性能日志](performance-logging.md)。该文包含启用、重启、关闭以及完整日志收集步骤。
+
 connector热切换时自动结束旧会话、在新连接提交后开启独立会话，并记录连接代次和前后关联。用户的record start/stop意图优先，连接失败后的手动重试保留最新意图。见 [connector 热切换](connector-switching.md#录制边界)。
 
 在 RC 命令行使用 `record start` 开始录制，`record stop` 停止并等待已接收数据落盘，`record status` 查看状态。裸 `record` 切换录制开关。

@@ -7,9 +7,11 @@ from .lifecycle import become_subreaper, cleanup_worker_children
 from .wire import receive_message
 from .outbox import PrioritySender
 from .worker import run_session
+from .performance import trace
 
 
 def emit(output, session_id, message):
+    trace(message, 'runtime.response_forward')
     packet = {'session_id': session_id, 'event': message}
     if message.get('type') == 'log':
         return output.send_log(packet, stage='runtime')
@@ -29,6 +31,7 @@ def run(fd):
         try:
             while True:
                 event = receive_message(connection)
+                trace(event, 'runtime.result_received')
                 emit(output, session_id, event)
                 if event['type'] == 'closed': return
         except (OSError, EOFError, ValueError) as exc:
@@ -38,6 +41,7 @@ def run(fd):
     try:
         while True:
             message = receive_message(upstream)
+            trace(message.get('event'), 'runtime.dispatch_received')
             if message['type'] == 'exit': break
             identity = message['session_id']
             if message['type'] == 'load':

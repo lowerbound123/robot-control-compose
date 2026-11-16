@@ -44,6 +44,8 @@ class ConnectorLifecycle:
         if robot is not None and getattr(robot, 'asynchronous', False):
             robot.runtime = self.runtime
             robot.wake = self._wake.set
+            perf = getattr(self, '_performance', None)
+            robot.performance = perf if perf is not None and perf.enabled else None
         return robot
 
     def connector_status(self):

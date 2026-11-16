@@ -3,6 +3,7 @@ from collections import deque
 import copy
 import threading
 import time
+from rc_policy_sdk.performance import KEY as PERFORMANCE_KEY, MAX_POINTS, trace
 import numpy as np
 
 from rc_policy_sdk.actions import ActionChunk, normalize_actions, normalize_result
@@ -31,7 +32,7 @@ class _MemberResources:
 class ChainProcess:
     def __init__(self, record, *, process_factory=PolicyProcess, init_timeout_s=600,
                  inference_timeout_s=60, release_timeout_s=30, endpoints=None, exit_authority=None, on_log=None, global_state=None, on_trace=None,
-                 on_log_event=None):
+                 on_log_event=None, on_performance=None):
         self.record = record
         self.config = copy.deepcopy(record.config)
         self.config_version = record.version
@@ -48,6 +49,7 @@ class ChainProcess:
         self.global_state = global_state
         self.on_trace = on_trace
         self.on_log_event = on_log_event
+        self.on_performance = on_performance
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
@@ -68,6 +70,7 @@ class ChainProcess:
         self._connector_blocked = set()
         self._command_members = {}
         self._cancelled_commands = deque()
+        self._performance_active = False
 
     @property
     def alive(self):
@@ -154,6 +157,7 @@ class ChainProcess:
             on_log=(lambda message: self._log(f'[{identity}] {message}') if self._log else None),
             **({'on_log_event': self.on_log_event} if self.on_log_event is not None else {}),
             **({'on_trace': self.on_trace} if self.on_trace is not None else {}))
+        worker.on_performance = self.on_performance
         worker.resources = _MemberResources(self, identity)
         return worker
 
@@ -294,7 +298,13 @@ class ChainProcess:
                    'chain_request_id': message['request_id']}
         if cell is not None:
             runtime['cell'] = cell
-        return {**message, 'request_id': self._serial, 'config_version': worker.config_version, 'runtime': runtime}
+        child = {**message, 'request_id': self._serial, 'config_version': worker.config_version, 'runtime': runtime}
+        perf = trace(message)
+        if perf:
+            child[PERFORMANCE_KEY] = perf.snapshot()
+            trace(child, 'chain.child_created', instance_id=worker.config['id'], cell=cell,
+                  request_id=self._serial, config_version=worker.config_version)
+        return child
 
     def _trace(self, kind, data, *, cell=None, **extras):
         if self._request is not None:
@@ -305,6 +315,7 @@ class ChainProcess:
                                   kind, context, data, **extras)
 
     def submit(self, request):
+        perf = trace(request, 'chain.submit_begin')
         with self._condition:
             self._check_ready()
             if self._request is not None:
@@ -317,6 +328,8 @@ class ChainProcess:
             self._request = {'message': {**request, 'action_chunk': chunk.payload(self.execution['control_mode'])},
                              'index': 0, 'child': None, 'cancel': False, 'control_requests': [],
                              'deadline': time.monotonic() + self.inference_timeout_s, 'trace': context}
+            self._performance_active = perf is not None
+            if perf: perf.mark('chain.submit_locked', request_id=request['request_id'])
             self._trace('start', {**self._request['message'], 'type': 'infer'})
             self._condition.notify_all()
 
@@ -329,8 +342,11 @@ class ChainProcess:
     def _finish(self, kind, *, trace_kind=None, **extras):
         if kind in ('result', 'cancelled'): extras['images_released'] = True
         response = {'type': kind, **self._identity(self._request['message']), **extras}
+        perf = trace(self._request['message'], 'chain.result_trace_begin')
+        if perf: perf.attach(response)
         self._trace(trace_kind or ('cancel' if kind == 'cancelled' else kind), response, cell=self._request['index'] + 1)
         self._responses.append(response)
+        if perf: perf.mark('chain.result_available', outcome=kind)
         self._request = None
         self._condition.notify_all()
 
@@ -373,6 +389,12 @@ class ChainProcess:
                 self._trace('stale', response, cell=index + 1, child_instance_id=identity, discarded=True,
                             child_request_id=response.get('request_id'))
                 return  # A stale response must not advance the chain.
+            perf = trace(response, 'chain.child_collected', instance_id=identity,
+                         request_id=response.get('request_id'), cell=index+1)
+            if perf:
+                request['message'][PERFORMANCE_KEY] = perf.data
+            elif trace(request['message']):
+                trace(request['message'], 'chain.child_missing_timings', instance_id=identity, cell=index+1)
             self._trace('stage_result' if response['type'] == 'result' else 'stage_error', response,
                         cell=index + 1, child_instance_id=identity, child_request_id=request['child']['request_id'])
             if response['type'] != 'result' or response.get('images_released') is not True:
@@ -433,8 +455,12 @@ class ChainProcess:
                 self._condition.wait(.005)
 
     def poll(self):
+        started = time.monotonic_ns() if self._performance_active else 0
         with self._condition:
-            return self._responses.popleft() if self._responses else None
+            response = self._responses.popleft() if self._responses else None
+            if response is not None:
+                trace(response, 'rc.chain_result_collected', lock_wait_ns=time.monotonic_ns()-started if started else 0)
+            return response
 
     def observe(self, request):
         with self._condition:
@@ -452,7 +478,8 @@ class ChainProcess:
                         errors.append(f'{identity}: {exc}')
             if not pending:
                 return False
-            self._observation = {'request_id': request['request_id'], 'pending': pending, 'errors': errors}
+            self._observation = {'request_id': request['request_id'], 'pending': pending, 'errors': errors,
+                                 'performance': trace(request)}
             self._condition.notify_all()
             return True
 
@@ -463,13 +490,27 @@ class ChainProcess:
         for identity, request_id in list(observation['pending'].items()):
             response = self._workers[identity].poll_observation()
             if response and response.get('request_id') == request_id and response.get('images_released') is True:
+                perf = trace(response, 'chain.observe_child_collected', instance_id=identity)
+                parent = observation.get('performance')
+                if perf and parent:
+                    for point in perf.data['points']:
+                        if len(parent.data['points']) < MAX_POINTS:
+                            parent.data['points'].append(dict(point))
+                        else:
+                            parent.data['dropped_points'] = min(2**31-1, parent.data.get('dropped_points', 0)+1)
+                elif parent:
+                    parent.mark('chain.observe_missing_timings', instance_id=identity)
                 del observation['pending'][identity]
                 if response['type'] != 'observed':
                     observation['errors'].append(f"{identity}: {response.get('error')}")
         if not observation['pending']:
             errors = observation['errors']
-            self._observations.append({'type': 'observation_error' if errors else 'observed',
-                                       'request_id': observation['request_id'], 'images_released':True, 'error': '; '.join(errors)})
+            response = {'type': 'observation_error' if errors else 'observed',
+                        'request_id': observation['request_id'], 'images_released':True, 'error': '; '.join(errors)}
+            if observation.get('performance'):
+                observation['performance'].mark('chain.observe_available')
+                observation['performance'].attach(response)
+            self._observations.append(response)
             self._observation = None
             self._condition.notify_all()
 
