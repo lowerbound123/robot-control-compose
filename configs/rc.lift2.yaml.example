@@ -1,0 +1,43 @@
+schema_version: 3
+logging:
+  level: INFO
+global_state:
+  path: global.env
+  max_bytes: 1048576
+  timeout_s: 2.0
+frequency_hz: 30
+robot_profiles_directory: robots
+connector_directory: ../connector
+robot:
+  profile: lift2
+policy_directory: ../policy
+startup_policy: null # Connect and inspect first; select a policy explicitly.
+outputs_directory: ../outputs
+safety:
+  # The active connector device's safety settings override these fallbacks.
+  enabled: true
+  reference_frequency_hz: 50
+  max_delta_per_step: [0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.05, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.05]
+  epos:
+    translation_m_s: 0.15
+    rotation_rad_s: 0.75
+    gripper_units_s: 2.5
+# Only an explicit reset uses this pose. Set the site's intended reset pose.
+# LIFT2 grippers use native values near 0..5, not ACOne's negative values.
+reset_qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+timeouts:
+  initialize_s: 600
+  inference_s: 60
+  release_s: 30
+mcp:
+  host: 127.0.0.1
+  port: 4000
+  token_env: ROBOT_CONTROL_MCP_TOKEN
+direct_control:
+  default_speed: slow
+  gripper_open: 4.9
+  gripper_close: 0
+  gripper_tolerance: 0.12
+tui:
+  camera:
+    protocol: kitty

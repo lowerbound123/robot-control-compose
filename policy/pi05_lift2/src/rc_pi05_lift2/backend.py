@@ -1,68 +1,50 @@
-"""Strict, local LeRobot Pi05 inference inside the policy's own environment."""
+"""Offline Pi05 dev-export inference; no training package or ROS imports."""
 import copy
 import gc
-from importlib import metadata
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 
-from .configuration import CAMERAS, processor_step_key, read_processor
-
-LEROBOT_VERSION = '0.6.1'
+from .configuration import CAMERAS, read_json
 
 
 def load_local_policy(checkpoint, policy_config):
-    """Load a complete native checkpoint without PI05's exception-swallowing override.
+    from .modeling import Pi05Model, load_weights, verify_runtime
 
-    The base loader uses safetensors.load_model, including shared-tensor handling,
-    and propagates malformed files and strict state-dictionary failures.
-    """
-    from lerobot.policies.pi05.modeling_pi05 import PI05Policy
-    from lerobot.policies.pretrained import PreTrainedPolicy
-
-    return PreTrainedPolicy.from_pretrained.__func__(
-        PI05Policy, Path(checkpoint), config=policy_config, local_files_only=True, strict=True)
-
-
-def _mode(value):
-    return getattr(value, 'value', value)
+    verify_runtime()
+    model = Pi05Model(policy_config)
+    # The export is complete, including vision and language weights. Construct
+    # the architecture directly, then require EVERY parameter to be loaded.
+    # No redundant 12 GB base-model load or Hub fallback is necessary.
+    load_weights(model, Path(checkpoint) / 'model.safetensors')
+    return model.to(policy_config.device)
 
 
-def validate_normalization(pipeline, feature_name, feature, expected_mode, processor_name):
-    steps = [s for s in pipeline.steps if getattr(s.__class__, '_registry_name', '') == processor_name]
-    if len(steps) != 1:
-        raise ValueError(f'{feature_name}: expected one {processor_name}')
-    step = steps[0]
-    stored = step.features.get(feature_name)
-    if stored is None or stored.type != feature.type or tuple(stored.shape) != tuple(feature.shape):
-        raise ValueError(f'{feature_name}: normalization feature differs from checkpoint')
-    actual_mode = _mode(step.norm_map.get(feature.type, 'IDENTITY'))
-    if actual_mode != _mode(expected_mode):
-        raise ValueError(f'{feature_name}: normalization mode {actual_mode} differs from checkpoint {expected_mode}')
-    selected = step.normalize_observation_keys
-    if (processor_name == 'normalizer_processor' and actual_mode != 'IDENTITY'
-            and selected is not None and feature_name not in selected):
-        raise ValueError(f'{feature_name}: excluded by saved normalize_observation_keys')
-    keys = {'IDENTITY': (), 'MEAN_STD': ('mean', 'std'), 'MIN_MAX': ('min', 'max'),
-            'QUANTILES': ('q01', 'q99')}.get(actual_mode)
-    if keys is None:
-        raise ValueError(f'{feature_name}: unsupported normalization mode {actual_mode}')
-    stats = step.state_dict()
-    arrays = {}
-    for key in keys:
-        value = stats.get(f'{feature_name}.{key}')
-        if value is None:
-            raise ValueError(f'{feature_name}: missing saved normalization statistic {key}')
-        array = value.detach().float().cpu().numpy()
-        shapes = {(14,)} if _mode(feature.type) != 'VISUAL' else {(3,), (3, 1, 1)}
-        if array.shape not in shapes or not np.isfinite(array).all():
-            raise ValueError(f'{feature_name}: invalid normalization statistic {key}')
-        arrays[key] = array
-    if ('std' in arrays and (arrays['std'] < 0).any()
-            or 'q01' in arrays and (arrays['q99'] < arrays['q01']).any()
-            or 'min' in arrays and (arrays['max'] < arrays['min']).any()):
-        raise ValueError(f'{feature_name}: invalid normalization statistic range')
+def state_prompt(state, instruction):
+    """Training's mean/std state tokenizer, preserving contiguous joint order."""
+    padded = np.pad(np.asarray(state, dtype=np.float32), (0, 18)) / 3
+    bins = np.digitize(padded, np.linspace(-1, 1, 257)[:-1]) - 1
+    task = instruction.strip().replace('_', ' ').replace('\n', ' ')
+    return f'Task: {task}, State: {" ".join(map(str, bins))};\nAction: '
+
+
+def resize_with_pad(image, size=224):
+    import torch.nn.functional as F
+
+    height, width = image.shape[-2:]
+    if (height, width) == (size, size):
+        return image
+    scale = min(size / height, size / width)
+    resized_height, resized_width = round(height * scale), round(width * scale)
+    if min(resized_height, resized_width) < 1:
+        raise ValueError('camera aspect ratio cannot be resized to 224 pixels')
+    resized = F.interpolate(image[None], size=(resized_height, resized_width),
+                            mode='bilinear', align_corners=False)[0]
+    top, left = (size - resized_height) // 2, (size - resized_width) // 2
+    return F.pad(resized, (left, size-resized_width-left, top, size-resized_height-top),
+                 value=0.).clamp(0., 1.)
 
 
 class Pi05Backend:
@@ -74,87 +56,76 @@ class Pi05Backend:
         self.device = config['model']['device']
         self.scale = np.asarray(config['observations']['state_scale'], dtype=np.float32)
         self.offset = np.asarray(config['observations']['state_offset'], dtype=np.float32)
-        self.policy = self.policy_config = self.preprocessor = self.postprocessor = None
+        self.policy = self.policy_config = self.tokenizer = None
+        self.state_mean = self.state_std = self.action_mean = self.action_std = None
         self._closed = False
-
-    def _processor_overrides(self, data, tokenizer=None):
-        overrides = {}
-        for step in data['steps']:
-            key, kind = processor_step_key(step)
-            if kind == 'device_processor':
-                overrides[key] = {'device': self.device if tokenizer is not None else 'cpu'}
-            elif kind in ('normalizer_processor', 'unnormalizer_processor'):
-                # Tokenization runs before moving the batch to the GPU. The
-                # native normalizer moves statistics to its input device itself.
-                overrides[key] = {'device': 'cpu'}
-            elif kind == 'tokenizer_processor' and tokenizer is not None:
-                overrides[key] = {'tokenizer_name': self.config['model']['tokenizer_path'],
-                                  'tokenizer': tokenizer}
-        return overrides
 
     def load(self):
         import torch
         from transformers import AutoTokenizer
-        from lerobot.configs import PreTrainedConfig
-        from lerobot.policies.pi05.configuration_pi05 import PI05Config
-        # Registers the Pi05-specific saved tokenizer preparation step.
-        from lerobot.policies.pi05 import processor_pi05  # noqa: F401
-        from lerobot.policies.factory import make_pre_post_processors
 
         if self._closed or self.policy is not None:
             raise RuntimeError('Pi05 backend is closed or already loaded')
-        if metadata.version('lerobot') != LEROBOT_VERSION:
-            raise RuntimeError(f'Pi05 image requires lerobot=={LEROBOT_VERSION}; rebuild the dedicated image')
         if self.device.startswith('cuda') and not torch.cuda.is_available():
             raise RuntimeError('Pi05 CUDA device is unavailable; check NVIDIA runtime/GPU selection')
-        config = PreTrainedConfig.from_pretrained(self.checkpoint, local_files_only=True)
-        if not isinstance(config, PI05Config):
-            raise ValueError('checkpoint is not a native LeRobot pi05 policy')
-        config.device = self.device
-        config.compile_model = self.config['model']['compile_model']
-        if config.chunk_size != self.model_horizon or config.n_action_steps != self.chunk_size:
-            raise ValueError('checkpoint horizon changed after preflight')
-        tokenizer = AutoTokenizer.from_pretrained(self.config['model']['tokenizer_path'],
-                                                  local_files_only=True, trust_remote_code=False)
-        model = self.config['model']
-        pre = read_processor(self.checkpoint, model['preprocessor_filename'])
-        post = read_processor(self.checkpoint, model['postprocessor_filename'])
-        self.preprocessor, self.postprocessor = make_pre_post_processors(
-            config, pretrained_path=str(self.checkpoint),
-            preprocessor_config_filename=model['preprocessor_filename'],
-            postprocessor_config_filename=model['postprocessor_filename'],
-            preprocessor_overrides=self._processor_overrides(pre, tokenizer),
-            postprocessor_overrides=self._processor_overrides(post))
-        for name in ('observation.state', *self.config['observations']['camera_map'].values()):
-            feature = config.input_features[name]
-            validate_normalization(self.preprocessor, name, feature,
-                                   config.normalization_mapping.get(_mode(feature.type), 'IDENTITY'),
-                                   'normalizer_processor')
-        validate_normalization(self.postprocessor, 'action', config.output_features['action'],
-                               config.normalization_mapping.get('ACTION', 'IDENTITY'), 'unnormalizer_processor')
-        self.policy_config = config
-        self.policy = load_local_policy(self.checkpoint, config)
+        metadata = read_json(self.checkpoint / 'config.json')
+        if metadata != self.config['checkpoint_config']:
+            raise ValueError('checkpoint configuration changed after preflight')
+        cfg = SimpleNamespace(**metadata)
+        cfg.device = self.device
+        cfg.compile_model = self.config['model']['compile_model']
+        cfg.compile_mode = metadata.get('compile_mode', 'reduce-overhead')
+        self.dtype = getattr(torch, cfg.dtype)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.config['model']['tokenizer_path'],
+                                                       local_files_only=True, trust_remote_code=False)
+        for name in ('state', 'action'):
+            for key in ('mean', 'std'):
+                setattr(self, name+'_'+key, torch.tensor(self.config['statistics'][name][key],
+                                                        dtype=torch.float32, device=self.device))
+        # Match dev's selected bf16/fp32 weights; never cast the whole policy.
+        self.policy_config = cfg
+        self.policy = load_local_policy(self.checkpoint, cfg)
         self.policy.requires_grad_(False)
         self.policy.eval()
+        if self.device.startswith('cuda'):
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
 
-    def _inputs(self, qpos, images, instruction):
-        import torch
-
+    def _native_state(self, qpos):
         qpos = np.asarray(qpos, dtype=np.float32)
         if qpos.shape != (14,) or not np.isfinite(qpos).all():
             raise ValueError('qpos must contain 14 finite values')
         with np.errstate(over='ignore', invalid='ignore'):
-            native_state = qpos * self.scale + self.offset
-        if not np.isfinite(native_state).all():
+            state = qpos * self.scale + self.offset
+        if not np.isfinite(state).all():
             raise ValueError('affine state overflow: model observation must be finite')
-        sample = {'observation.state': torch.from_numpy(native_state.copy()),
-                  'task': instruction}
+        return state
+
+    def _inputs(self, native_state, images, instruction):
+        import torch
+
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise ValueError('instruction must be nonempty')
+        state = torch.tensor(native_state, dtype=torch.float32, device=self.device)
+        state = (state - self.state_mean) / (self.state_std + 1e-6)
+        if not torch.isfinite(state).all().item():
+            raise ValueError('normalized state must be finite')
+        tokens = self.tokenizer(state_prompt(state.cpu().numpy(), instruction), max_length=200,
+                                padding_side='right', padding='max_length', truncation=True)
+        sample = {'observation.state': state[None].to(self.dtype), 'task': [instruction],
+                  'observation.language.tokens': torch.tensor([tokens['input_ids']],
+                                                              dtype=torch.int64, device=self.device),
+                  'observation.language.attention_mask': torch.tensor([tokens['attention_mask']],
+                                                                      dtype=torch.bool, device=self.device)}
         for camera in CAMERAS:
             frame = np.asarray(images[camera])
             if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8 or not frame.size:
                 raise ValueError(f'{camera} must be nonempty RGB uint8 HWC')
-            sample[self.config['observations']['camera_map'][camera]] = (
-                torch.from_numpy(frame.copy()).permute(2, 0, 1).to(torch.float32) / 255.0)
+            # Copy before constructing a tensor: shared image leases are readonly.
+            image = torch.from_numpy(frame.copy()).to(device=self.device, dtype=self.dtype) / 255.
+            target = self.config['observations']['camera_map'][camera]
+            sample[target] = resize_with_pad(image.permute(2, 0, 1))[None]
+            sample[target+'_mask'] = torch.ones(1, dtype=torch.bool, device=self.device)
         return sample
 
     def predict(self, qpos, images, instruction):
@@ -162,22 +133,25 @@ class Pi05Backend:
 
         if self._closed or self.policy is None:
             raise RuntimeError('Pi05 backend is not loaded')
+        native_state = self._native_state(qpos)
         with torch.inference_mode():
-            batch = self.preprocessor(self._inputs(qpos, images, instruction))
-            prediction = self.policy.predict_action_chunk(batch)
-            shape = (1, self.model_horizon, 14)
+            batch = self._inputs(native_state, images, instruction)
+            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.dtype,
+                                enabled=self.dtype != torch.float32):
+                prediction = self.policy.predict_action_chunk(batch)
+            shape = (1, self.model_horizon, 32)
             if (not isinstance(prediction, torch.Tensor) or tuple(prediction.shape) != shape
                     or not torch.isfinite(prediction).all().item()):
                 raise ValueError(f'Pi05 must return finite model actions shaped {shape}')
-            prediction = self.postprocessor(prediction)
-            if not isinstance(prediction, torch.Tensor) or tuple(prediction.shape) != shape:
-                raise ValueError(f'Pi05 postprocessor must preserve action shape {shape}')
-            actions = prediction[0].float().cpu().numpy().copy()
-        if self.config['actions']['representation'] == 'delta_joint':
-            anchor = np.asarray(qpos, dtype=np.float32) * self.scale + self.offset
+            # This export composes 14 contiguous channels then pads at the END.
+            # A sparse 16-channel extraction would swap both grippers/joints.
+            prediction = prediction[0, :, :14].float()
+            actions = prediction * (self.action_std + 1e-6) + self.action_mean
+            anchor = torch.tensor(native_state, device=actions.device, dtype=actions.dtype)
             anchor[[6, 13]] = 0
-            actions += anchor
-        actions = (actions - self.offset) / self.scale
+            actions = (actions + anchor).cpu().numpy()
+        with np.errstate(over='ignore', invalid='ignore'):
+            actions = (actions - self.offset) / self.scale
         if not np.isfinite(actions).all():
             raise ValueError('Pi05 postprocessed actions are nonfinite')
         return actions[:self.chunk_size].astype(np.float32, copy=True)
@@ -185,8 +159,7 @@ class Pi05Backend:
     def warmup(self):
         if self.policy is None:
             raise RuntimeError('Pi05 backend is not loaded')
-        height, width = self.policy_config.image_resolution
-        frames = {camera: np.zeros((height, width, 3), np.uint8) for camera in CAMERAS}
+        frames = {camera: np.zeros((224,224,3), np.uint8) for camera in CAMERAS}
         for _ in range(self.config['model']['warmup_runs']):
             self.predict(np.zeros(14, np.float32), frames, self.config['runtime']['instruction'])
         if self.device.startswith('cuda'):
@@ -194,15 +167,15 @@ class Pi05Backend:
         self.reset_context()
 
     def reset_context(self):
-        for component in (self.policy, self.preprocessor, self.postprocessor):
-            if component is not None:
-                component.reset()
+        if self.policy is not None:
+            self.policy.reset()
 
     def close(self):
         if self._closed:
             return
         self._closed = True
-        self.policy = self.policy_config = self.preprocessor = self.postprocessor = None
+        self.policy = self.policy_config = self.tokenizer = None
+        self.state_mean = self.state_std = self.action_mean = self.action_std = None
         gc.collect()
         torch = sys.modules.get('torch')
         if torch is not None and torch.cuda.is_initialized():

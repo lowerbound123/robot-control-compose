@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from config_helpers import read_config
-from pi05_helpers import checkpoint_fixture
+from pi05_lift2_helpers import checkpoint_fixture
 from project_templates import copy_templates
 from test_qwen35_runtime import Model, images
 
@@ -51,7 +51,7 @@ def step(policy, chunk, count, epoch=1, version=1):
     return policy.step({'qpos':np.arange(14)}, chunk, images(), runtime=runtime(count, epoch, version))
 
 
-def test_new_source_is_discoverable_and_reuses_only_pi05_dependencies(tmp_path):
+def test_new_source_is_discoverable_with_an_independent_dev_runtime_image(tmp_path):
     from robot_control.config import PolicyRegistry
     from robot_control.yaml_config import load_yaml_config
     from setup_project import build_fingerprint, select_policies
@@ -63,17 +63,19 @@ def test_new_source_is_discoverable_and_reuses_only_pi05_dependencies(tmp_path):
     assert select_policies(tmp_path, ['pi05_lift2']) == ['pi05_lift2']
     services = [load_yaml_config(ROOT/'policy'/name/'compose.yaml')['services']['policy']
                 for name in ('pi05', 'pi05_lift2')]
-    assert services[1]['image'] == services[0]['image'] == 'robot-control-compose-pi05:local'
+    assert services[0]['image'] == 'robot-control-compose-pi05:local'
+    assert services[1]['image'] == 'robot-control-compose-pi05-lift2:local'
     assert services[1]['environment']['RC_SOURCE_MODULES'] == '{"rc_pi05_lift2":"/workspace/policy/pi05_lift2/src"}'
     mounts = {row['target']:row for row in services[1]['volumes']}
     assert mounts['/workspace/policy/pi05_lift2/src']['read_only']
+    assert mounts['/tokenizer']['read_only'] and not mounts['/tokenizer']['bind']['create_host_path']
     fingerprints = []
     for name, service in zip(('pi05','pi05_lift2'), services):
         build = copy.deepcopy(service['build'])
         build['context'] = str(ROOT)
         build['additional_contexts']['policy-deps'] = str(ROOT/'policy'/name/'dependencies')
         fingerprints.append(build_fingerprint(build))
-    assert fingerprints[0] == fingerprints[1]
+    assert fingerprints[0] != fingerprints[1]
 
 
 def test_default_lift2_grippers_are_processed_without_changing_model_or_cached_values(running_policy):

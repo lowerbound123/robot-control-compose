@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from config_helpers import read_config
-from pi05_helpers import checkpoint_fixture
+from pi05_lift2_helpers import checkpoint_fixture
 from rc_policy_sdk.transitions import TrajectoryAddTransition
 from test_qwen35_history_runtime import Backend, config, frames
 from test_qwen35_runtime import Model

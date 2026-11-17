@@ -1,6 +1,6 @@
 services:
   policy:
-    image: robot-control-compose-pi05:local
+    image: robot-control-compose-pi05-lift2:local
     build:
       context: ../..
       dockerfile: policy/pi05_lift2/Dockerfile
@@ -28,6 +28,11 @@ services:
       - type: bind
         source: ${MODELS_DIR:?Set deployment.env MODELS_DIR}
         target: /models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOKENIZER_DIR:?Set deployment.env TOKENIZER_DIR}
+        target: /tokenizer
         read_only: true
         bind: {create_host_path: false}
       - type: bind

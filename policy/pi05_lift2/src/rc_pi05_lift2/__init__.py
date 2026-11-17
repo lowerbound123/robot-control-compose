@@ -1,1 +1,1 @@
-"""LeRobot model imports are confined to the policy's own runtime image."""
+"""Pi05 dev inference is confined to this policy's independent runtime image."""

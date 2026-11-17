@@ -27,7 +27,24 @@ connector 使用 host network；其进程会清除继承的 `ROS_HOSTNAME`，避
 模板中的两个值故意留空，不会沿用参考推理脚本中的旧实验室地址。
 
 设备驱动和相机由现场独立启动。连接器不会启动 roscore、CAN、厂商驱动或模型。
-启动当前部署后，在 RC 输入：
+
+直接以 LIFT2 连接启动：
+
+```bash
+./setup.sh --config-only
+./scripts/up.sh compose.lift2.yaml
+./scripts/attach.sh
+```
+
+`compose.lift2.yaml` 只覆盖 RC 主配置路径，基础服务仍是 RC 和 ipc-anchor；
+connector 由 RC 按 `configs/rc.lift2.yaml` 中的 `robot: {profile: lift2}` 动态创建。
+命名 profile 继续读取已有的 `configs/robots/lift2.yaml` 和设备网络配置。
+默认 30 Hz、`startup_policy: null`，连接后不自动加载策略；随后手动选择策略。
+该 RC 模板采用 LIFT2 的夹爪开/合值 4.9/0，`reset_qpos` 为全零模板，
+只有显式 reset 使用，现场应填写所需复位姿态。不要直接沿用 ACOne 的负夹爪值。
+宿主 MCP 端口继续由 `.env` 的 `RC_MCP_PORT` 决定。可在同一命令后追加 `compose.webui.yaml`。
+
+如果已经使用其他 RC 主配置启动，也可以在 RC 输入：
 
 ```text
 connector switch lift2

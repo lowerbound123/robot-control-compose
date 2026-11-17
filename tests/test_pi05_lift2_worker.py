@@ -9,7 +9,7 @@ import pytest
 from config_helpers import read_config
 from connector_helpers import MockRobot
 from host_helpers import LocalPolicyProcess
-from pi05_helpers import checkpoint_fixture
+from pi05_lift2_helpers import checkpoint_fixture
 from project_templates import copy_templates
 from robot_control.controller import RobotController
 from test_controller import until

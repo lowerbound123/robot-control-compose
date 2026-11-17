@@ -1,45 +1,60 @@
 # π0.5 / LIFT2
 
-`pi05_lift2` 是独立的策略来源，加载 **LeRobot 格式的 LIFT2 微调 checkpoint**，返回 RC 的 14 维关节目标。它拥有自己的入口、`src/rc_pi05_lift2/`、配置和依赖锁文件，复用现有 `robot-control-compose-pi05:local` Python 3.12 依赖镜像；每个运行实例仍使用独立容器、host、执行进程和 context。原 `pi05` 的实现和输出行为保持不变。
-
-模型接口与现有 pi05 相同，固定兼容 LeRobot 0.6.1。归一化和反归一化使用该 checkpoint 保存的 processor 及统计数据；本策略不读取 Qwen 的 `stats.json` 或 `arx_lift2` 统计键。模型必须按 LIFT2 的通道顺序、单位与相机语义训练。仅有 14 维形状不能证明训练单位正确。
+`pi05_lift2` 加载 `qwen3_5_dev` 已验证的 **Pi05 训练导出格式**（例如 `pi05_zero`），使用独立的 Python 3.12 / Torch 2.7.1+cu128 / Transformers 4.57.1 镜像和配套模型补丁。模型运行时、输入处理、统计读取均位于本策略目录，不导入训练仓库、Conda 或 ROS。原 `pi05` 继续支持 LeRobot 0.6.1 的原生 saved processors，两者的镜像不再共用。
 
 ## 模型与配置
 
-准备完整本地 checkpoint：
-
 ```text
-models/pi05_lift2/
-  pretrained_model/
-    config.json
-    model.safetensors
-    policy_preprocessor.json
-    policy_preprocessor_step_*.safetensors
-    policy_postprocessor.json
-    policy_postprocessor_step_*.safetensors
-  tokenizer/
-    tokenizer_config.json
-    tokenizer.json 或 tokenizer.model
+models/pi05_zero/
+  config.json
+  train_config.json
+  stats.json
+  model.safetensors
+models/paligemma-3b-pt-224/
+  tokenizer_config.json
+  tokenizer.json 或 tokenizer.model
+  special_tokens_map.json 等该 tokenizer 的配套文件
 ```
 
-processor 状态文件名以 JSON 中的 `state_file` 为准，不能缺失或借用其他模型的统计数据。tokenizer 使用训练时的本地 PaliGemma tokenizer。加载保持离线和严格检查，不自动转换 OpenPI JAX 或仅含 LoRA adapter 的目录。
+`pi05_zero` 包含完整视觉、语言及动作权重。直接构造相同架构并严格加载全部参数，不需要重复加载 PaliGemma 基础权重。缺失、额外、形状错误或冲突的 tied embedding 会报错，不会使用随机权重继续运行。tokenizer 必须是训练使用的 PaliGemma tokenizer；全部文件离线加载，不会从 Hub 自动下载。
 
-初始化本地配置模板：
+`train_config.json` 用于验证变换顺序，`stats.json` 固定选 **arx_lift2**。当前支持该 dev 导出的 `mean_std → compose_fields → pi05_gemma_tokenizer → pad_state_and_action` 输入链，12 关节 delta、两夹爪绝对值；不支持 16 维空位重排或其他训练变换。config.json 内的 QUANTILES 声明不代表实际训练变换，本策略以 train_config.json 为准并明确验证。
+
+初始化模板后，编辑本目录的 `model.json` 与 `deployment.env`：
 
 ```bash
 ./setup.sh --config-only
 ```
 
-编辑 `policy/pi05_lift2/deployment.env` 中的 `MODELS_DIR`、`HF_CACHE_DIR`、`GPU_DEVICE`，以及本目录 `model.json`：
+- `model.checkpoint`：容器内 checkpoint 目录，默认 `/models/pi05_zero`。
+- `model.tokenizer_path`：容器内 tokenizer 目录，默认 `/tokenizer`。
+- `runtime.instruction`：本次任务指令。
+- `observations.camera_map`：固定 head→image0、left_wrist→image1、right_wrist→image2（完整键见模板）。RGB HWC 转 CHW、0..1，按比例 bilinear resize 并居中零填充至 224×224；模型内部再映射至 -1..1。
+- `observations.state_scale/state_offset`：默认全 1/全 0。按 `qpos × scale + offset` 转成模型单位。
+- `actions.representation`：必须为 `delta_joint`，与上述训练链一致。
 
-- `model.checkpoint`：容器内 LIFT2 checkpoint 目录，模板为 `/models/pi05_lift2/pretrained_model`。
-- `model.tokenizer_path`：训练所用 tokenizer 的本地目录。
-- `runtime.instruction`：任务指令。
-- `observations.camera_map`：将 RC 的 `head/left_wrist/right_wrist` 映射到 checkpoint 中三个真实相机 feature。
-- `observations.state_scale/state_offset`：14 维显式单位映射，默认全 1/全 0。
-- `actions.representation`：`absolute` 或 `delta_joint`，必须与训练及保存的 processor 一致。
+状态使用 `(state - mean) / (std + 1e-6)`，连续 14 维尾部补零到 32 维，除以 3 后离散化；不重排、不额外裁剪。提示格式保持 `Task: ..., State: ...;\nAction: `，最长 200 tokens，保留 tokenizer 自身 BOS 等设置。
 
-状态和动作顺序为 `[左臂6关节, 左夹爪, 右臂6关节, 右夹爪]`。模型状态使用 `RC qpos × scale + offset`，反归一化后的绝对目标按 `(模型目标 - offset) / scale` 还原。`delta_joint` 仅给 12 个关节加回本次观测，夹爪保持绝对值；如果保存的 absolute processor 已完成转换，必须使用 `absolute`。完整的模型与 processor 契约见 [pi05 说明](../pi05/README.md)。
+模型返回 `[1, horizon, 32]`。取连续前 14 列，以 `raw × (std + 1e-6) + mean` 反归一化，给 12 个关节加回本次观测的模型单位 qpos；第 6、13 列夹爪不加锚点。最终按 `(目标 - offset) / scale` 还原 RC 单位，取 `n_action_steps` 前缀。任何非有限结果都拒绝提交。
+
+## 从旧 pi05_lift2 配置升级
+
+这次需要重建 **pi05_lift2 独立镜像**，不能继续复用原 pi05 镜像。旧 `model.json` 里的 `preprocessor_filename`、`postprocessor_filename` 已不适用；setup 合并会保留用户旧值，不能代替下面的语义更新：
+
+1. 保留自己的任务指令、路径、单位映射和执行参数，按 `model.json.example` 删除两个 processor 文件名字段。
+2. 将 camera_map 改为 image0/image1/image2，将 representation 改为 `delta_joint`。
+3. checkpoint 指向 `pi05_zero`；tokenizer_path 指向 `/tokenizer`，不能仍指向仅有模型权重的 `pi05_zero`。
+4. 在 `deployment.env` 加入 `TOKENIZER_DIR`，指向主机已有 PaliGemma 目录。该目录只读挂载；不用复制其中的大模型文件。
+
+服务器上已核实的路径可配置为：
+
+```text
+MODELS_DIR=/home/pjlab/zhouyuxiang/robot-control-compose/models
+TOKENIZER_DIR=/home/pjlab/hongrui_workspace/paligemma-3b-pt-224
+GPU_DEVICE=0
+```
+
+这是部署示例，本轮代码修改不自动改写服务器配置或加载策略。
 
 ## 夹爪规则
 
@@ -78,28 +93,22 @@ policy pi05_lift2 config save
 
 ## 镜像与启动
 
-已有 pi05 镜像时可直接复用。新策略的 Dockerfile 和依赖构建输入与 pi05 相同，不需因新增来源重复构建。没有该镜像时运行：
-
 ```bash
 ./scripts/build.sh pi05_lift2
 ```
 
-connector 独立配置；选择本策略不会自动切换设备或启动厂商驱动。按现有部署方式启动 RC 后：
+镜像为 `robot-control-compose-pi05-lift2:local`，构建会核对并安装五个固定版本的 Transformers 补丁。加载时再次检查版本和补丁摘要；使用旧镜像会明确报错。其来源及推理数学差异见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
+connector 独立配置；选择本策略不会自动切换设备或启动厂商驱动。按现有方式启动 RC 后：
 
 ```text
 policy switch pi05_lift2
 status
 ```
 
-加载完成保持暂停，再按现场流程使用 `resume`。更换模型配置使用：
+加载完成保持暂停，再按现场流程使用 `resume`。更换模型配置仍使用 `policy pi05_lift2 switch-model model_alt.json`。替换源码后需重新加载对应策略进程。
 
-```text
-policy pi05_lift2 switch-model model_alt.json
-```
-
-模型参数和任务文本仍按 pi05 的冷配置方式管理。替换源码需重新加载对应策略进程；不要用在原模块上重新初始化的操作代替源码重载。
-
-独立 GPU 加载/预热检查可以使用本目录的 `rc_pi05_lift2.probe`，不连接机器人：
+独立 GPU 加载/预热检查不连接机器人：
 
 ```bash
 RC_HOST_PROJECT_ROOT="$PWD" docker compose --env-file policy/pi05_lift2/deployment.env -f policy/pi05_lift2/compose.yaml \
@@ -108,4 +117,4 @@ RC_HOST_PROJECT_ROOT="$PWD" docker compose --env-file policy/pi05_lift2/deployme
   -m rc_pi05_lift2.probe --config /workspace/policy/pi05_lift2/model.json
 ```
 
-本地定向测试覆盖发现/配置、夹爪、缓存与热更新、真实 worker 图像释放和 example 自链组合，以及原生 LeRobot CPU processor 的归一化和坐标转换。模型前向使用合成替身；这些检查不代表实际 checkpoint、GPU 延迟或真机任务效果已经验收。
+定向测试使用模型元数据、小尺寸真实算子和受控推理输出，覆盖严格权重加载、图像/token/动作路径、夹爪和缓存、热更新、sync/async worker 及 example 自链。这些检查不代表完整 checkpoint GPU 延迟或真机任务效果已经验收。

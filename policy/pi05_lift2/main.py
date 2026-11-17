@@ -1,4 +1,4 @@
-"""Independent LIFT2 LeRobot Pi05, sharing only the Pi05 dependency image."""
+"""Independent LIFT2 Pi05 dev-export policy with its own inference image."""
 import copy
 import shlex
 import json

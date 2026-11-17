@@ -1,4 +1,4 @@
-"""Local checkpoint preflight without importing Torch or LeRobot."""
+"""Preflight the dev Pi05 export without importing Torch or a training repository."""
 import copy
 import json
 import math
@@ -10,12 +10,12 @@ import numpy as np
 from .gripper import parse_gripper_value
 
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
+CAMERA_MAP = dict(zip(CAMERAS, ('observation.images.image0', 'observation.images.image1',
+                              'observation.images.image2')))
 GRIPPER_DEFAULTS = {'gripper_upper_threshold': 2.5, 'gripper_upper_value': 4.9,
                     'gripper_lower_threshold': 2.5, 'gripper_lower_value': 0.}
 DEFAULTS = {
-    'model': {'device': 'cuda', 'compile_model': False, 'warmup_runs': 1,
-              'preprocessor_filename': 'policy_preprocessor.json',
-              'postprocessor_filename': 'policy_postprocessor.json'},
+    'model': {'device': 'cuda', 'compile_model': False, 'warmup_runs': 1},
     'runtime': {},
     'observations': {'state_scale': [1.0] * 14, 'state_offset': [0.0] * 14},
     'actions': {},
@@ -23,15 +23,6 @@ DEFAULTS = {
 }
 EXTRA = {'model': {'checkpoint', 'tokenizer_path'}, 'runtime': {'instruction'},
          'observations': {'camera_map'}, 'actions': {'representation'}, 'execution': set()}
-STEP_CLASSES = {
-    'NormalizerProcessorStep': 'normalizer_processor',
-    'UnnormalizerProcessorStep': 'unnormalizer_processor',
-    'TokenizerProcessorStep': 'tokenizer_processor',
-    'DeviceProcessorStep': 'device_processor',
-    'RenameObservationsProcessorStep': 'rename_observations_processor',
-    'RelativeActionsProcessorStep': 'relative_actions_processor',
-    'AbsoluteActionsProcessorStep': 'absolute_actions_processor',
-}
 
 
 def resolve_config_path(path, project_root):
@@ -60,88 +51,84 @@ def local_file(root, name):
     return path
 
 
-def processor_step_key(step):
-    """Return both LeRobot's override key and a stable built-in step identity."""
-    key = step.get('registry_name')
-    if key is None:
-        key = step.get('class', '').rsplit('.', 1)[-1]
-    return key, STEP_CLASSES.get(key, key)
-
-
-def read_processor(checkpoint, filename):
-    data = read_json(local_file(checkpoint, filename))
-    steps = data.get('steps')
-    if not isinstance(steps, list) or not steps:
-        raise ValueError(f'{filename}: saved processor steps are required')
-    for step in steps:
-        if (not isinstance(step, dict) or not processor_step_key(step)[0]
-                or not isinstance(step.get('config', {}), dict)):
-            raise ValueError(f'{filename}: invalid processor step')
-        if 'state_file' in step:
-            local_file(checkpoint, step['state_file'])
-    return data
-
-
 def _positive_int(value, name):
     if type(value) is not int or value <= 0:
         raise ValueError(f'{name} must be a positive integer')
     return value
 
 
-def _validate_features(checkpoint, observations):
-    inputs, outputs = checkpoint.get('input_features', {}), checkpoint.get('output_features', {})
-    for features, key, kind in ((inputs, 'observation.state', 'STATE'), (outputs, 'action', 'ACTION')):
-        value = features.get(key, {})
-        if value.get('type') != kind or value.get('shape') != [14]:
-            raise ValueError(f'checkpoint {key} must declare exactly 14 {kind} values')
-    mapping = observations.get('camera_map')
-    if (not isinstance(mapping, dict) or set(mapping) != set(CAMERAS)
-            or any(not isinstance(v, str) or not v for v in mapping.values())
-            or len(set(mapping.values())) != 3):
-        raise ValueError('camera_map must explicitly map head/left_wrist/right_wrist to three distinct features')
-    visual = {k: v for k, v in inputs.items() if v.get('type') == 'VISUAL'}
-    if set(mapping.values()) != set(visual):
-        raise ValueError(f'camera_map must match checkpoint image features: {sorted(visual)}')
-    for name, feature in visual.items():
-        shape = feature.get('shape')
-        if (not isinstance(shape, list) or len(shape) != 3 or shape[0] != 3
-                or any(type(n) is not int or n <= 0 for n in shape)):
-            raise ValueError(f'camera {name} must declare a CHW RGB feature')
+def _validate_training(checkpoint):
+    dataset = read_json(local_file(checkpoint, 'train_config.json')).get('dataset', {})
+    expected = [
+        {'type': 'delta_action', 'mask': None, 'mapping': {}, 'robot_type': None, 'relative_pose_slices': None},
+        {'type': 'resize_with_pad', 'height': 224, 'width': 224, 'mode': 'bilinear', 'mapping': {}},
+        {'type': 'normalize', 'selected_keys': None, 'mode': 'mean_std', 'norm_stats': {}},
+        {'type': 'compose_fields', 'mapping': {}},
+        {'type': 'pi05_gemma_tokenizer', 'pretrained_model_name_or_path': 'google/paligemma-3b-pt-224',
+         'max_length': 200, 'max_state_dim': 32, 'task_key': 'task', 'padding_side': 'right',
+         'padding': 'max_length', 'truncation': True},
+        {'type': 'pad_state_and_action', 'max_state_dim': 32, 'max_action_dim': 32},
+        {'type': 'remap_image_key', 'mapping': {}},
+        {'type': 'unify_pi05_inputs'},
+    ]
+    if (dataset.get('type') != 'pi05' or dataset.get('action_mode') != 'delta'
+            or dataset.get('data_transforms') != {'inputs': expected, 'outputs': []}
+            or any(dataset.get(key) != {'inputs': [], 'outputs': []}
+                   for key in ('repack_transforms', 'model_transforms'))):
+        raise ValueError('unsupported train_config pipeline: requires dev Pi05 mean_std, '
+                         'contiguous 14 values padded to 32, and joint-only delta actions')
 
 
-def _validate_processors(config, checkpoint, pre, post):
-    def selected(data, kind):
-        return [s for s in data['steps'] if processor_step_key(s)[1] == kind]
+def _load_statistics(checkpoint):
+    # Explicitly select this robot's statistics, never the ACOne statistics
+    # stored alongside them. Order matches compose_fields, not action_reorder.
+    data = read_json(local_file(checkpoint, 'stats.json')).get('arx_lift2')
+    if not isinstance(data, dict):
+        raise ValueError('stats.json requires arx_lift2 statistics')
+    result = {}
+    for output, prefix in (('state', 'states'), ('action', 'actions')):
+        result[output] = {}
+        for key in ('mean', 'std'):
+            arrays = []
+            for part, size in (('left_joint', 6), ('left_gripper', 1), ('right_joint', 6), ('right_gripper', 1)):
+                name = f'{prefix}.{part}.position'
+                with np.errstate(over='ignore', invalid='ignore'):
+                    value = np.asarray(data.get(name, {}).get(key), dtype=np.float32)
+                if (value.shape != (size,) or not np.isfinite(value).all()
+                        or key == 'std' and (value < 0).any()):
+                    raise ValueError(f'invalid statistic {name}.{key}: expected {size} finite values, std >= 0')
+                arrays.extend(value.tolist())
+            result[output][key] = arrays
+    return result
 
-    if len(selected(pre, 'tokenizer_processor')) != 1:
-        raise ValueError('preprocessor must contain exactly one tokenizer_processor')
-    for data, name in ((pre, 'normalizer_processor'), (post, 'unnormalizer_processor')):
-        found = selected(data, name)
-        if len(found) != 1 or not found[0].get('state_file'):
-            raise ValueError(f'{name} requires saved normalization state; export the complete processor')
-    relative = selected(pre, 'relative_actions_processor')
-    absolute = selected(post, 'absolute_actions_processor')
-    relative_enabled = any(s.get('config', {}).get('enabled', False) for s in relative)
-    absolute_enabled = any(s.get('config', {}).get('enabled', False) for s in absolute)
-    if relative_enabled != absolute_enabled or (checkpoint.get('use_relative_actions', False)
-                                                and not absolute_enabled):
-        raise ValueError('saved relative/absolute processors must be enabled as a matching pair')
-    if absolute_enabled and config['actions']['representation'] != 'absolute':
-        raise ValueError('absolute processor already converts relative actions; do not apply delta_joint again')
-    for step in relative:
-        settings = step.get('config', {})
-        if settings.get('enabled') and settings.get('exclude_joints'):
-            names = settings.get('action_names')
-            if (not isinstance(names, list) or len(names) < 14
-                    or any(not isinstance(name, str) or not name for name in names)):
-                raise ValueError('relative action_names are required to preserve gripper exclusions')
-    for step in selected(pre, 'rename_observations_processor'):
-        # The adapter already emits the checkpoint's names. Renaming those names
-        # elsewhere would make visual inputs silently absent downstream.
-        renames = step.get('config', {}).get('rename_map', {})
-        required = {'observation.state', *config['observations']['camera_map'].values()}
-        if any(k in required and k != v for k, v in renames.items()):
-            raise ValueError('saved camera/state rename_map conflicts with checkpoint feature names')
+
+def _validate_checkpoint(checkpoint):
+    if checkpoint.get('type') != 'pi05':
+        raise ValueError('checkpoint type must be pi05')
+    for group, key, kind in (('input_features', 'observation.state', 'STATE'),
+                             ('output_features', 'action', 'ACTION')):
+        if checkpoint.get(group) != {key: {'type': kind, 'shape': [32]}}:
+            raise ValueError(f'dev checkpoint {key} must declare 32 {kind} values')
+    for key, expected in (('n_obs_steps', 1), ('max_state_dim', 32), ('max_action_dim', 32),
+                          ('tokenizer_max_length', 200)):
+        if type(checkpoint.get(key)) is not int or checkpoint[key] != expected:
+            raise ValueError(f'dev checkpoint requires {key}={expected}')
+    if checkpoint.get('image_resolution') != [224, 224] or checkpoint.get('empty_cameras', 0):
+        raise ValueError('dev checkpoint requires three real 224x224 cameras')
+    if checkpoint.get('rtc_config') is not None:
+        raise ValueError('LeRobot RTC is unsupported; scheduling belongs to RC')
+    if checkpoint.get('use_visual_memory') or checkpoint.get('use_proprioceptive_memory'):
+        raise ValueError('history/memory checkpoints are unsupported')
+    for key in ('paligemma_variant', 'action_expert_variant'):
+        if checkpoint.get(key) not in ('gemma_2b', 'gemma_300m'):
+            raise ValueError(f'unsupported {key}')
+    if checkpoint.get('dtype') not in ('float32', 'bfloat16'):
+        raise ValueError('dtype must be float32 or bfloat16')
+    _positive_int(checkpoint.get('num_inference_steps'), 'num_inference_steps')
+    minimum, maximum = checkpoint.get('min_period'), checkpoint.get('max_period')
+    if (type(minimum) not in (int, float) or type(maximum) not in (int, float)
+            or not 0 < minimum <= maximum or not math.isfinite(maximum)):
+        raise ValueError('invalid sinusoidal time embedding periods')
 
 
 def load_model_config(path, *, project_root):
@@ -152,7 +139,8 @@ def load_model_config(path, *, project_root):
     config = copy.deepcopy(DEFAULTS)
     for section, values in raw.items():
         if not isinstance(values, dict) or set(values) - (set(DEFAULTS[section]) | EXTRA[section]):
-            raise ValueError(f'unknown or invalid {section} settings')
+            raise ValueError(f'unknown or invalid {section} settings; pi05_lift2 uses the dev export, '
+                             'not native saved processors (use pi05 for those)')
         config[section].update(values)
     model = config['model']
     for key in ('checkpoint', 'tokenizer_path'):
@@ -163,28 +151,20 @@ def load_model_config(path, *, project_root):
         if not Path(model[key]).is_dir():
             raise FileNotFoundError(f'{key} directory is missing: {model[key]}')
     checkpoint = read_json(local_file(model['checkpoint'], 'config.json'))
-    if checkpoint.get('type') != 'pi05':
-        raise ValueError('checkpoint type must be pi05 (LeRobot format)')
     local_file(model['checkpoint'], 'model.safetensors')
+    _validate_checkpoint(checkpoint)
+    _validate_training(model['checkpoint'])
+    config['statistics'] = _load_statistics(model['checkpoint'])
     tokenizer = Path(model['tokenizer_path'])
     local_file(tokenizer, 'tokenizer_config.json')
-    if not any((tokenizer / name).is_file() for name in ('tokenizer.json', 'tokenizer.model', 'spiece.model')):
+    if not any((tokenizer / name).is_file() and (tokenizer / name).stat().st_size
+               for name in ('tokenizer.json', 'tokenizer.model')):
         raise FileNotFoundError(f'tokenizer vocabulary missing: {tokenizer}')
     model['chunk_size'] = _positive_int(checkpoint.get('chunk_size'), 'chunk_size')
+    model['max_action_dim'] = checkpoint['max_action_dim']
     execute = _positive_int(checkpoint.get('n_action_steps'), 'n_action_steps')
     if execute > model['chunk_size']:
         raise ValueError('n_action_steps cannot exceed chunk_size')
-    for key in ('max_state_dim', 'max_action_dim'):
-        if _positive_int(checkpoint.get(key, 32), key) < 14:
-            raise ValueError(f'{key} must accommodate all 14 LIFT2 dimensions')
-    if type(checkpoint.get('n_obs_steps', 1)) is not int or checkpoint.get('n_obs_steps', 1) != 1:
-        raise ValueError('Pi05 supports n_obs_steps=1 only')
-    if checkpoint.get('rtc_config') is not None:
-        raise ValueError('LeRobot RTC is unsupported; chunk scheduling is owned by RC')
-    if checkpoint.get('use_visual_memory') or checkpoint.get('use_proprioceptive_memory'):
-        raise ValueError('history/memory checkpoints are unsupported')
-    if checkpoint.get('empty_cameras', 0):
-        raise ValueError('Pi05 LIFT2 requires three real camera features, no empty_cameras')
     if type(model['compile_model']) is not bool:
         raise ValueError('compile_model must be boolean')
     if type(model['warmup_runs']) is not int or model['warmup_runs'] < 0:
@@ -194,9 +174,10 @@ def load_model_config(path, *, project_root):
     instruction = config['runtime'].get('instruction')
     if not isinstance(instruction, str) or not instruction.strip():
         raise ValueError('runtime.instruction must be nonempty')
-    if config['actions'].get('representation') not in ('absolute', 'delta_joint'):
-        raise ValueError('actions.representation must explicitly be absolute or delta_joint')
-    _validate_features(checkpoint, config['observations'])
+    if config['actions'].get('representation') != 'delta_joint':
+        raise ValueError('dev training uses delta joints and absolute grippers; requires delta_joint')
+    if config['observations'].get('camera_map') != CAMERA_MAP:
+        raise ValueError(f'dev camera_map must preserve head/left/right order: {CAMERA_MAP}')
     for key in ('state_scale', 'state_offset'):
         values = config['observations'][key]
         if (not isinstance(values, list) or len(values) != 14
@@ -217,9 +198,7 @@ def load_model_config(path, *, project_root):
     timeout = execution['inference_timeout_s']
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('inference_timeout_s must be positive and finite')
-    pre = read_processor(model['checkpoint'], model['preprocessor_filename'])
-    post = read_processor(model['checkpoint'], model['postprocessor_filename'])
-    _validate_processors(config, checkpoint, pre, post)
+    config['checkpoint_config'] = checkpoint
     return config
 
 

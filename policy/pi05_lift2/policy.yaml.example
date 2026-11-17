@@ -1,6 +1,6 @@
 schema_version: 3
 id: pi05_lift2
-help: 使用 LIFT2 checkpoint 和夹爪上下限规则的独立 LeRobot pi05 策略
+help: 使用 Pi05 dev 导出 checkpoint、arx_lift2 统计和夹爪上下限规则的独立策略
 execution:
   mode: sync
   call_every_actions: 1
@@ -29,7 +29,7 @@ tui_commands:
       kind: file
       suffixes:
       - .json
-    help: 验证本地 LeRobot checkpoint 配置并完整重载；成功后等待 resume
+    help: 验证本地 Pi05 dev checkpoint 配置并完整重载；成功后等待 resume
     timeout_s: 30
     effect: reload_policy
 config_hints:

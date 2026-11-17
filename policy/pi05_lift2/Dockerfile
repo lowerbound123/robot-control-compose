@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm 
 COPY --from=policy-deps /requirements.lock /opt/pi05/requirements.lock
 RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
     python -m pip install --no-cache-dir --no-index --no-deps /wheels/*.whl && python -m pip check
+COPY --from=policy-deps /install_transformers_patch.py /opt/pi05/install_transformers_patch.py
+COPY --from=policy-deps /transformers_patch /opt/pi05/transformers_patch
+RUN python /opt/pi05/install_transformers_patch.py
 ENV PYTHONPYCACHEPREFIX=/tmp/rc-pycache
 WORKDIR /workspace
 ENTRYPOINT ["python", "/workspace/packages/policy-sdk/src/rc_policy_sdk/source.py", "--module", "rc_policy_sdk.host"]

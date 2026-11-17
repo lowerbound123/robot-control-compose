@@ -55,6 +55,7 @@ ros_ws/log/
 # Versioned build definitions and immutable model schemas are source assets.
 !/compose.yaml
 !/compose.acone.yaml
+!/compose.lift2.yaml
 !/compose.ros-sim.yaml
 !/compose.webui.yaml
 !/pyproject.toml
@@ -65,6 +66,7 @@ ros_ws/log/
 !/policy/*/vendor/lerobot/dataset_schemas/configs/*.yaml
 !/policy/qwen35_history/vendor/SOURCE_MANIFEST.json
 !/policy/qwen35_history_lift2/vendor/SOURCE_MANIFEST.json
+!/policy/pi05_lift2/dependencies/transformers_patch/sha256.json
 !**/*.example
 
 # WebUI local credentials and build/test outputs
