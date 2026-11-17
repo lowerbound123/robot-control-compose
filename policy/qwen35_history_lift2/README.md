@@ -14,10 +14,11 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 
 随后处理输出副本的两个夹爪列（从 0 开始的第 6、13 维）：
 
-- 原始预测值严格大于 `params.gripper_threshold`（默认 `2.5`）：输出 `4.9`。
-- 小于或等于配置阈值：输出 `0`。
+- 夹爪值大于等于 `params.gripper_threshold`（x1，默认 `2.5`）：输出 `params.gripper_high_value`（y1，默认 `4.9`）。
+- 未命中上限且小于等于 `params.gripper_low_threshold`（x2，默认 `2.5`）：输出 `params.gripper_low_value`（y2，默认 `0.0`）；x2 为 `null` 时禁用下限。
+- 均未命中时保留原值；阈值相等或范围重叠时上限优先，因此默认恰好等于 `2.5` 时输出 `4.9`。
 
-不调用原 history 的 `> -0.8 → 0.04` 处理。这个夹爪步骤不修改已反归一化的 12 个手臂关节，原始预测不被阈值化；是否融合和 RC 的 sync/async 模式均不改变该规则。原 `qwen35_history` 继续使用 ACOne 统计量和夹爪规则。RC 的设备限速仍在后续发送阶段执行。
+两条规则使用同一个处理前的夹爪值，不会把替换后的 y1 再交给下限处理。这个步骤不修改已反归一化的 12 个手臂关节，原始预测不被替换；是否融合和 RC 的 sync/async 模式均不改变该规则。原 `qwen35_history` 使用相同四参数规则，但保留自身 ACOne 统计量和默认值。RC 的设备限速仍在后续发送阶段执行。
 
 ## 配置与使用
 
@@ -42,11 +43,14 @@ policy switch qwen35_history_lift2
 policy qwen35_history_lift2 config show
 policy qwen35_history_lift2 config set params.task "新的任务"
 policy qwen35_history_lift2 config set params.gripper_threshold 3.5
+policy qwen35_history_lift2 config set params.gripper_high_value 4.9
+policy qwen35_history_lift2 config set params.gripper_low_threshold 2.0
+policy qwen35_history_lift2 config set params.gripper_low_value 0.0
 policy qwen35_history_lift2 config save
 ```
 
-夹爪阈值保存在本目录 `policy.yaml`，只接受有限数值。热更新不重载模型、不清空历史；
-RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，从新观测重新规划并应用新阈值。
+四个夹爪参数保存在本目录 `policy.yaml`，数值须有限，两个输出值须可表示为有限 float32；只有下限允许 `null`。热更新不重载模型、不清空历史；
+RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，从新观测重新规划并应用新规则。
 已经提交给 connector 的动作不撤回。重复实例使用精确实例名。
 ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 RC 频率需重启 RC。
 
@@ -54,7 +58,7 @@ ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 R
 
 普通 `pause → resume` 和 MCP 接管后归还保留视觉历史；显式 `reset` 在复位目标完整发布确认后清空历史，清理完成才返回成功，并保持暂停。详见[暂停、恢复与复位](../../docs/history-policy-configuration.md#暂停恢复与复位)。
 
-用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。指标与原 history 一致，详见[策略监控说明](docs/runtime.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
+用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。通用指标与原 history 一致，LIFT2 另外提供 `left_gripper_raw`、`right_gripper_raw`：最近一次成功推理的完整左右夹爪原始序列，直接按 `str(list)` 显示。数值取反归一化后、轨迹融合和夹爪阈值处理前的第 6、13 列；缓存直返保留原序列，初始或 reset 后为 `[]`。详见[策略监控说明](docs/runtime.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
 
 ## 定向验证
 

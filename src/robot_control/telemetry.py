@@ -11,6 +11,11 @@ def monitor_cells(snapshot, settings):
     for mode in ("qpos", "epos"):
         values = snapshot.get(mode)
         text, red = ["--"] * 14, [False] * 14
+        targets = ["-"] * 14
+        for arm_index, arm in enumerate(ARMS):
+            target = snapshot.get("targets", {}).get(arm)
+            if target and target["mode"] == mode:
+                targets[arm_index * 7:(arm_index + 1) * 7] = [f"{value:.4f}" for value in target["values"]]
         if values is not None and not snapshot.get("error"):
             text = [f"{value:.4f}" for value in values]
             for arm_index, arm in enumerate(ARMS):
@@ -23,5 +28,5 @@ def monitor_cells(snapshot, settings):
                     if mode == "epos" and component in (3, 4, 5):
                         delta = (delta + math.pi) % (2 * math.pi) - math.pi
                     red[index] = abs(delta) > settings[mode + "_thres"][index]
-        rows[mode] = {"text": text, "red": red}
+        rows[mode] = {"text": text, "red": red, "targets": targets}
     return rows

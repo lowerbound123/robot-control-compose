@@ -9,9 +9,15 @@ params:
   model_config_path: model.json
   task:
   gripper_threshold: -0.8
+  gripper_high_value: 0.04
+  gripper_low_threshold: null
+  gripper_low_value: 0.0
 hot_reloadable:
 - params.task
 - params.gripper_threshold
+- params.gripper_high_value
+- params.gripper_low_threshold
+- params.gripper_low_value
 - execution.on_connector_switch
 tui_commands:
   switch-task:
@@ -42,7 +48,16 @@ config_hints:
       help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
     params.gripper_threshold:
       type: float
-      help: 夹爪预测值严格大于此阈值时输出 0.04；热更新不清空历史或重载模型
+      help: 上限 x1；夹爪值 >= x1 时输出 gripper_high_value，优先于下限规则
+    params.gripper_high_value:
+      type: float
+      help: 上限输出 y1；热更新保留模型和历史
+    params.gripper_low_threshold:
+      type: json
+      help: 下限 x2；未命中上限且夹爪值 <= x2 时输出 gripper_low_value；null 禁用下限
+    params.gripper_low_value:
+      type: float
+      help: 下限输出 y2；两条规则均未命中时保留原值
     execution.mode:
       type: enum
       choices:

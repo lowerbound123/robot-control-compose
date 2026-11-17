@@ -13,7 +13,7 @@ from rc_policy_sdk.transitions import TrajectoryAddTransition
 from rc_policy_sdk.actions import normalize_actions
 
 from .history import HistoryBuffer
-from .configuration import DEFAULTS
+from .configuration import DEFAULTS, GRIPPER_DEFAULTS
 from .settings import SNAPSHOT
 
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
@@ -28,7 +28,7 @@ def frame(value, name):
 
 class HistoryPolicy:
     robot_type = 'arx_acone'
-    default_gripper_threshold = -.8
+    default_gripper_threshold = GRIPPER_DEFAULTS['gripper_threshold']
 
     def __init__(self, config, *, policy_config=None, backend=None, project_root=None):
         self.config = copy.deepcopy(config)
@@ -61,6 +61,7 @@ class HistoryPolicy:
                              reset_count=0, pending=0, last_trim=0, trimmed_actions_total=0, cached_actions=0,
                              consumed_actions=0, control_epoch=-1, last_submission_actions=-1,
                              load_ms=0., warmup_ms=0., predict_ms=0., predict_avg_ms=0., predict_max_ms=0.,
+                             left_gripper_raw='[]', right_gripper_raw='[]',
                              last_error='', _pending_at=0., _deadline=0.,
                              _last_prediction_at=0.)
         if backend is None:
@@ -161,6 +162,10 @@ class HistoryPolicy:
             timings = {str(k): float(v) for k, v in timings.items()}
             if not all(np.isfinite(v) and v >= 0 for v in timings.values()):
                 raise ValueError('model stage timings must be finite and nonnegative')
+            # Snapshot the full model sequence before fusion/thresholding. Keep
+            # conversion outside the monitor lock and out of monitor reads.
+            left_gripper_raw = str(actions[:, 6].tolist())
+            right_gripper_raw = str(actions[:, 13].tolist())
             finished = time.monotonic()
             elapsed = (finished-started)*1000
             with self._metrics_lock:
@@ -169,6 +174,7 @@ class HistoryPolicy:
                 self._metrics.update(timings, inference_completed=count, predict_ms=elapsed,
                                      predict_avg_ms=average+(elapsed-average)/count,
                                      predict_max_ms=max(elapsed,self._metrics['predict_max_ms']),
+                                     left_gripper_raw=left_gripper_raw, right_gripper_raw=right_gripper_raw,
                                      _last_prediction_at=finished)
             return actions.copy(), time.monotonic()
         except Exception as exc:
@@ -210,10 +216,15 @@ class HistoryPolicy:
         return new
 
     @staticmethod
-    def _process(actions, threshold=-.8):
+    def _process(actions, threshold=GRIPPER_DEFAULTS['gripper_threshold'], *,
+                 high_value=GRIPPER_DEFAULTS['gripper_high_value'],
+                 low_threshold=GRIPPER_DEFAULTS['gripper_low_threshold'],
+                 low_value=GRIPPER_DEFAULTS['gripper_low_value']):
         result = actions.copy()
         grippers = result[:, [6, 13]]
-        result[:, [6, 13]] = np.where(grippers > threshold, .04, grippers)
+        low = grippers if low_threshold is None else np.where(grippers <= low_threshold, low_value, grippers)
+        # Both rules inspect the original values; the upper rule wins overlap.
+        result[:, [6, 13]] = np.where(grippers >= threshold, high_value, low)
         return result
 
     def _observe_history(self, images, runtime):
@@ -287,8 +298,11 @@ class HistoryPolicy:
                 new = self._collect()
             self.canonical = self.transition.apply(old, new) if self.pipelined else new.copy()
             self._record(cached_actions=len(self.canonical))
-            threshold = self.policy_config.get('params', {}).get('gripper_threshold', self.default_gripper_threshold)
-            return self._process(self.canonical, threshold=threshold)
+            params = self.policy_config.get('params', {})
+            gripper = {name: params.get(name, default) for name, default in GRIPPER_DEFAULTS.items()}
+            return self._process(self.canonical, threshold=gripper['gripper_threshold'],
+                                 high_value=gripper['gripper_high_value'],
+                                 low_threshold=gripper['gripper_low_threshold'], low_value=gripper['gripper_low_value'])
         except Exception as exc:
             self._failure = exc
             self._record(context_state='failed', last_error=f'{type(exc).__name__}: {exc}'[:512])
@@ -334,6 +348,7 @@ class HistoryPolicy:
             self._metrics.update(history_tick=0, history_frames=0, context_slots=0,
                                  pending=0, last_trim=0, cached_actions=0, consumed_actions=0, control_epoch=-1,
                                  last_submission_actions=-1, _pending_at=0., _deadline=0.,
+                                 left_gripper_raw='[]', right_gripper_raw='[]',
                                  reset_count=self._metrics['reset_count']+1)
 
     def close(self):

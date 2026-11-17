@@ -9,6 +9,8 @@ import numpy as np
 PARTS = ('left_joint', 'left_gripper', 'right_joint', 'right_gripper')
 WIDTHS = (6, 1, 6, 1)
 LANGUAGE_FIELDS = ('Memory', 'Scene', 'Subtask')
+GRIPPER_DEFAULTS = {'gripper_threshold': -.8, 'gripper_high_value': .04,
+                    'gripper_low_threshold': None, 'gripper_low_value': 0.}
 DEFAULTS = {
     'model': {'checkpoint': '', 'vlm_model_name_or_path': 'Qwen/Qwen3.5-4B'},
     'runtime': {'instruction': ''},
@@ -164,14 +166,19 @@ def validate_manifest(config):
     # RC owns call scheduling; policies only constrain their action format.
     if execution.get('control_mode') != 'qpos':
         raise ValueError('history returns qpos actions')
-    if any(path not in ('execution.mode', 'execution.call_every_actions', 'params.task', 'params.gripper_threshold', 'execution.on_connector_switch')
+    if any(path not in ('execution.mode', 'execution.call_every_actions', 'params.task',
+                       'execution.on_connector_switch', *('params.' + name for name in GRIPPER_DEFAULTS))
            for path in config.get('hot_reloadable', [])):
-        raise ValueError('only task/threshold params and RC scheduling/connector-switch settings are hot reloadable')
+        raise ValueError('only task/gripper params and RC scheduling/connector-switch settings are hot reloadable')
     params = config.get('params', {})
-    if 'gripper_threshold' in params:
-        threshold = params['gripper_threshold']
-        if type(threshold) not in (int, float) or not math.isfinite(threshold):
-            raise ValueError('params.gripper_threshold must be a finite number')
+    for name, default in GRIPPER_DEFAULTS.items():
+        value = params.get(name, default)
+        if name == 'gripper_low_threshold' and value is None:
+            continue
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f'params.{name} must be a finite number')
+        if name.endswith('_value') and abs(value) > float(np.finfo(np.float32).max):
+            raise ValueError(f'params.{name} must fit a finite float32 action')
     if 'arm_clip_max_delta_rad' in params:
         positive(params['arm_clip_max_delta_rad'], 'params.arm_clip_max_delta_rad')
     task = config.get('params', {}).get('task')

@@ -37,8 +37,8 @@ def test_gripper_threshold_only_changes_output_copy_and_preserves_original_polic
     actions.flags.writeable = False
     output = module.HistoryPolicy._process(actions)
     np.testing.assert_array_equal(output[:, ARM_COLUMNS], before[:, ARM_COLUMNS])
-    np.testing.assert_allclose(output[:, 6], [0., 0., 0., 0., 4.9, 4.9])
-    np.testing.assert_allclose(output[:, 13], [4.9, 4.9, 0., 0., 0., 0.])
+    np.testing.assert_allclose(output[:, 6], [0., 0., 0., 4.9, 4.9, 4.9])
+    np.testing.assert_allclose(output[:, 13], [4.9, 4.9, 4.9, 0., 0., 0.])
     np.testing.assert_array_equal(actions, before)
     assert not np.shares_memory(output, actions)
     original = Original._process(actions)
@@ -60,7 +60,7 @@ def test_history_passthrough_preserves_received_targets_and_raw_model_output(pip
                 remaining = remaining[count-previous:]
             remaining = context.step({'qpos': np.zeros(14, np.float32)}, remaining, frames(count),
                                      runtime=SimpleNamespace(consumed_actions=count, control_epoch=1))
-            np.testing.assert_array_equal(remaining[:, 6], 0.)
+            np.testing.assert_allclose(remaining[:, 6], 4.9)
             np.testing.assert_allclose(remaining[:, 13], 4.9)
             np.testing.assert_array_equal(backend.output[:, 6], 2.5)
             np.testing.assert_array_equal(backend.output[:, 13], 3.)
@@ -169,7 +169,7 @@ def HistoryPolicy(config, *, policy_config, project_root):
         assert controller.exit_code == 0 and controller._pool._bytes == 0
 
 
-def test_hot_gripper_threshold_updates_robot_output_without_reset(running_lift2):
+def test_hot_gripper_rules_update_and_save_without_reset(running_lift2):
     from test_controller import until
     from test_example_controller import command
     from test_qwen35_history_worker import events
@@ -178,9 +178,19 @@ def test_hot_gripper_threshold_updates_robot_output_without_reset(running_lift2)
     until(lambda: controller.status()['consumed'] >= 3)
     worker = controller._worker
     resets = len(events(directory, 'reset'))
-    index = len(controller.robot.commands)
-    command(controller, 'policy qwen35_history_lift2 config set params.gripper_threshold 3.5')
-    until(lambda: any(np.allclose(row[[6, 13]], 0.) for row in controller.robot.commands[index:]))
+    for field, value, expected in [
+        ('gripper_threshold', 3.5, [0., 3.]),
+        ('gripper_high_value', 4., [0., 3.]),
+        ('gripper_threshold', 3., [0., 4.]),
+        ('gripper_low_value', 1., [1., 4.]),
+        ('gripper_low_threshold', 2., [2.5, 4.]),
+    ]:
+        index = len(controller.robot.commands)
+        command(controller, f'policy qwen35_history_lift2 config set params.{field} {value}')
+        until(lambda: any(np.allclose(row[[6, 13]], expected) for row in controller.robot.commands[index:]))
+    command(controller, 'policy qwen35_history_lift2 config save')
+    saved = read_config(directory/'policy.yaml')['params']
+    assert [saved[name] for name in ('gripper_threshold','gripper_high_value','gripper_low_threshold','gripper_low_value')] == [3.,4.,2.,1.]
     assert controller._worker is worker and controller.status()['state'] == 'running'
     assert len(events(directory, 'reset')) == resets and len(events(directory, 'load')) == 1
 
@@ -195,7 +205,7 @@ def test_real_worker_then_example_self_chain_keep_lift2_grippers_and_independent
     commands = [row for row in controller.robot.commands if np.isclose(row[0], .1)]
     assert commands
     np.testing.assert_allclose(np.asarray(commands)[:, ARM_COLUMNS], .1)
-    np.testing.assert_array_equal(np.asarray(commands)[:, 6], 0.)
+    np.testing.assert_allclose(np.asarray(commands)[:, 6], 4.9)
     np.testing.assert_allclose(np.asarray(commands)[:, 13], 4.9)
     original_worker = controller._worker
     command(controller, 'policy qwen35_history_lift2 config set params.task "LIFT2 test"')
@@ -214,4 +224,4 @@ def test_real_worker_then_example_self_chain_keep_lift2_grippers_and_independent
     until(lambda: controller.status()['consumed'] >= baseline + 4)
     command(controller, 'pause')
     assert all(worker.runnable for worker in members.values())
-    np.testing.assert_allclose(controller.robot.commands[-1][[6, 13]], [0., 4.9])
+    np.testing.assert_allclose(controller.robot.commands[-1][[6, 13]], [4.9, 4.9])

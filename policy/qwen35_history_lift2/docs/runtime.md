@@ -40,7 +40,7 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 | `inference.generate_language` | 示例为 `["Memory", "Scene", "Subtask"]` | 生成所选语言字段；`[]` 关闭，旧配置缺少该字段时保持关闭 |
 | `history.enabled` | true | 使用进程内头相机历史 |
 
-上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task`、`params.gripper_threshold` 支持热改；后者默认 2.5，可用 `policy qwen35_history_lift2 config set params.gripper_threshold 3.5` 修改。阈值更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
+上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task` 及 `params.gripper_threshold`、`gripper_high_value`、`gripper_low_threshold`、`gripper_low_value` 支持热改；四个夹爪默认值分别为 2.5、4.9、2.5、0.0，完整语义和命令见[夹爪输出规则](../../../docs/history-policy-configuration.md#夹爪输出规则)。夹爪参数更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
 
 每次策略调用先检查 RC 传入的剩余 chunk。剩余数量大于 `50-X` 时直接原样返回，不推理、不重复做夹爪或硬裁剪处理；否则完成一次模型推理。`pipelined=false` 返回完整 50 条新预测，`true` 使用 SDK 接近点拼接融合输入旧 chunk 和新预测。默认旧段尾点匹配新段最近点，全部 14 维包含夹爪参与融合。
 
@@ -56,7 +56,7 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 
 共享图像在回调内复制，缩放后的历史拥有独立内存。后台推理仅持有自有当前图像与不可变历史快照；不保留共享 mmap、切片或旧 runtime。reset/release 清空历史，重复来源实例互相隔离。
 
-前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后夹爪严格大于 `params.gripper_threshold`（默认 2.5）时置为 4.9，否则置为 0。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
+前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后夹爪按配置的上下限规则替换：先判断 `>= x1`，再判断 `<= x2`，未命中保留原值；默认大于等于 2.5 输出 4.9，其余输出 0。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
 
 
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
@@ -71,7 +71,7 @@ VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480
 
 ## 策略监控
 
-两个 history 来源分别提供同一套执行指标。在策略加载成功后，用当前实例名打开面板：
+LIFT2 提供通用 history 执行指标及左右夹爪原始序列。在策略加载成功后，用当前实例名打开面板：
 
 ```text
 monitor qwen35_history_lift2
@@ -90,12 +90,15 @@ monitor qwen35_history_lift2
 | 耗时 | `load_ms`、`warmup_ms`、`processor_ms`、`prefix_ms`、`denoise_ms`、`post_ms`、`predict_ms`、`predict_avg_ms`、`predict_max_ms` |
 | 历史与图像 | `history_enabled`、`history_tick`、`history_frames`、`history_capacity_frames`、`history_slot_count`、`history_slot_stride`、`context_slots`，以及三路 `*_image_shape` 和图像缩放配置 |
 | 动作缓存 | `chunk_size`、`cached_actions`、`consumed_actions`、`control_epoch`、`last_trim`、`trimmed_actions_total` |
+| 原始夹爪 | `left_gripper_raw`、`right_gripper_raw`（LIFT2 专有，完整列表的字符串） |
 | 加速路径 | `denoise_graph_requested`、`prefix_graph_requested`、`denoise_graph_ready`、`prefix_graph_layouts`、`prediction_path`、`prefix_tokens`、`max_prefix_tokens`、`graph_error` |
 | 故障 | `last_error`；后台监控读取自身出错时显示 `backend_monitor_error`，不影响推理结果 |
 
 `context_state=ready` 表示策略 context 已就绪，不代表 RC 已恢复发送；RC 的暂停/控制权仍看主状态栏。`model_stage` 显示预处理、prefix、去噪、后处理等当前阶段，空闲时为 `idle`。`inference_busy=0` 且 `pending=1` 表示请求仍待 RC 回调收取，不能仅凭 pending 判断模型仍在计算。
 
 耗时为最近一次成功预测的墙钟耗时；平均/最大耗时、推理次数和裁剪累计值覆盖当前 context 生命周期，普通 reset 不清零，冷重载或重新初始化 context 后重新统计。历史与动作缓存指标随 reset 清零。毫秒字段以 `_ms` 结尾，秒字段以 `_s` 结尾；时间年龄为 `-1` 表示尚无成功预测。任务和错误文本最多显示 512 个字符。
+
+左右夹爪序列取最近一次成功推理的反归一化输出第 6、13 列（从 0 开始），在轨迹融合、阈值化和 RC 裁剪之前按 `str(column.tolist())` 保存，不取已处理的动作缓存。每项包含整个预测 chunk，缓存直返不缩短它；下一次成功推理时两项一起更新。等待中或推理失败时保留上次成功结果，初始和 reset 后显示 `[]`。monitor 直接读取已保存的字符串，不调用模型或转换 Tensor。
 
 初始化完成前 SDK 尚未创建 monitor，初始化失败应查看日志；日志会补充失败的模型阶段。监控不触发初始化、重载或恢复运动。
 

@@ -19,14 +19,14 @@ _IMAGE_IDS = count(randint(1, 2**24 - 1))
 
 class MonitorPanel(HorizontalScroll):
     DEFAULT_CSS = """
-    MonitorPanel { display: none; height: 7; border: solid $accent; overflow-x: auto; overflow-y: hidden; }
-    #monitor-values { width: 119; height: 4; }
+    MonitorPanel { display: none; height: 9; border: solid $accent; overflow-x: auto; overflow-y: hidden; }
+    #monitor-values { width: 119; height: 6; }
     """
 
     def __init__(self, settings):
         super().__init__(id="monitor-panel")
         self.settings = settings
-        self.border_title = "monitor · qpos rad · epos m/rad · G raw"
+        self.border_title = "monitor · → 发送目标 · qpos rad · epos m/rad · G raw"
 
     def compose(self):
         yield Static("", id="monitor-values")
@@ -43,16 +43,18 @@ class MonitorPanel(HorizontalScroll):
             for side in ("L", "R"):
                 for name in names:
                     content.append(f"{side}.{name}".ljust(8), style="bold")
-            content.append("\n" + row.ljust(7))
-            for value, red in zip(rows[row]["text"], rows[row]["red"]):
-                if len(value) > 8:
-                    # Sign + three-digit exponent can consume six cells.
-                    number = float(value)
-                    for precision in (2, 1, 0):
-                        value = f"{number:.{precision}e}"
-                        if len(value) <= 8:
-                            break
-                content.append(value.rjust(8), style="red" if red else "")
+            for label, values, highlights in ((row, rows[row]["text"], rows[row]["red"]),
+                                               (row + "→", rows[row]["targets"], [False] * 14)):
+                content.append("\n" + label.ljust(7))
+                for value, red in zip(values, highlights):
+                    if len(value) > 8:
+                        # Sign + three-digit exponent can consume six cells.
+                        number = float(value)
+                        for precision in (2, 1, 0):
+                            value = f"{number:.{precision}e}"
+                            if len(value) <= 8:
+                                break
+                    content.append(value.rjust(8), style="red" if red else "")
             if row == "qpos":
                 content.append("\n")
         self.query_one("#monitor-values", Static).update(content)

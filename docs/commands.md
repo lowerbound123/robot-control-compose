@@ -103,6 +103,8 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 
 `monitor` 切换机器人面板，`monitor <实例>` 切换该实例面板；不接受 on/off 参数。
 
+机器人基础 monitor 在 `qpos`、`epos` 反馈值下各显示一行 `qpos→`、`epos→` 发送目标，取最近一次已确认发布的限速后目标，包含 hold。未使用的坐标模式显示 `-`；左右臂混合模式时分别显示各自七维目标，另一种模式的对应列显示 `-`。尚无有效发布目标时两行均显示 `-`。
+
 camera、monitor、snapshot 和 policy manage 是本地界面操作，人工文本批次不接受这些路径，也不允许递归 mcp。文本批次仍逐行 FIFO，exit 只能在末行。所有固定命令树关键字均为自定义策略命令保留字，policy 根下 help/list/switch/manage 也不能用作来源 ID。
 
 ## 输入辅助（RC/SDK 0.15）

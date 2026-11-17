@@ -44,13 +44,13 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 | `inference.generate_language` | 示例为 `["Memory", "Scene", "Subtask"]` | 生成所选语言字段；`[]` 关闭，旧配置缺少该字段时保持关闭 |
 | `history.enabled` | true | 使用进程内头相机历史 |
 
-上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task`、`params.gripper_threshold` 支持热改。
+上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task` 和四个夹爪规则参数支持热改。
 
-夹爪阈值配置为 `params.gripper_threshold`，默认 `-0.8`，只接受有限数值。用
+夹爪上限 x1 为 `params.gripper_threshold`（默认 `-0.8`），上限输出 y1 为 `params.gripper_high_value`（默认 `0.04`）。下限 x2 为 `params.gripper_low_threshold`（默认 `null`，禁用下限），下限输出 y2 为 `params.gripper_low_value`（默认 `0.0`）。`g >= x1` 输出 y1；否则启用下限且 `g <= x2` 输出 y2；均未命中则保留原值。规则重叠时上限优先，所有比较使用处理前的夹爪值。用
 `policy qwen35_history config set params.gripper_threshold -1.2` 热更新，
 `policy qwen35_history config save` 保存到本来源配置；重复实例使用精确实例名。
-修改阈值不重载模型、不清空历史。RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，
-从新观测重新规划并应用新阈值；已经提交给 connector 的动作不撤回。
+修改任一夹爪参数不重载模型、不清空历史。RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，
+从新观测重新规划并应用新规则；已经提交给 connector 的动作不撤回。完整字段、默认值和命令见[夹爪输出规则](../../docs/history-policy-configuration.md#夹爪输出规则)。
 
 每次策略调用先检查 RC 传入的剩余 chunk。剩余数量大于 `50-X` 时直接原样返回，不推理、不重复做夹爪或硬裁剪处理；否则完成一次模型推理。`pipelined=false` 返回完整 50 条新预测，`true` 使用 SDK 接近点拼接融合输入旧 chunk 和新预测。默认旧段尾点匹配新段最近点，全部 14 维包含夹爪参与融合。
 
@@ -66,9 +66,9 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 
 共享图像在回调内复制，缩放后的历史拥有独立内存。后台推理仅持有自有当前图像与不可变历史快照；不保留共享 mmap、切片或旧 runtime。reset/release 清空历史，重复来源实例互相隔离。
 
-前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后夹爪严格大于 `params.gripper_threshold`（默认−0.8）时置为0.04，否则保留原值。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
+前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后按上述上下限规则处理夹爪，默认大于等于−0.8时置为0.04，其余保留原值。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
 
-另有正式来源 [`qwen35_history_lift2`](../qwen35_history_lift2/README.md)：独立配置和执行实例，各自持有 history 实现与配置，并使用同一依赖镜像，固定使用所选 checkpoint 的 `stats.json["arx_lift2"]` 分别做状态归一化、动作反归一化，并按 LIFT2 schema 重排和还原。输出夹爪严格大于本实例配置阈值（默认 2.5）时输出 4.9、否则输出 0；该夹爪步骤保留手臂值和原始预测缓存。缺少 LIFT2 统计量会在初始化或模型切换预检时报错。本来源仍使用 ACOne 统计量与原夹爪规则；两者都要求 history 模型格式。
+另有正式来源 [`qwen35_history_lift2`](../qwen35_history_lift2/README.md)：独立配置和执行实例，各自持有 history 实现与配置，并使用同一依赖镜像，固定使用所选 checkpoint 的 `stats.json["arx_lift2"]` 分别做状态归一化、动作反归一化，并按 LIFT2 schema 重排和还原。该来源也使用四参数夹爪规则，默认大于等于 2.5 输出 4.9、其余输出 0；手臂值和原始预测缓存保持不变。缺少 LIFT2 统计量会在初始化或模型切换预检时报错。本来源仍使用 ACOne 统计量及自身夹爪默认值；两者都要求 history 模型格式。
 
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
 

@@ -4,9 +4,7 @@ import shlex
 import json
 from pathlib import Path
 
-import numpy as np
-
-from rc_qwen35_history_lift2.configuration import load_model_config as _load_model_config, validate_manifest
+from rc_qwen35_history_lift2.configuration import GRIPPER_DEFAULTS, load_model_config as _load_model_config, validate_manifest
 from rc_qwen35_history_lift2.runtime import HistoryPolicy as BaseHistoryPolicy
 from rc_qwen35_history_lift2.settings import initial_settings, configure_model, export_settings, SNAPSHOT
 
@@ -19,17 +17,9 @@ def load_model_config(path, *, project_root):
 
 
 class HistoryPolicy(BaseHistoryPolicy):
-    """Bind LIFT2 checkpoint statistics and threshold detached output grippers."""
+    """Bind LIFT2 checkpoint statistics and configurable output gripper rules."""
 
     robot_type = ROBOT_TYPE
-    default_gripper_threshold = 2.5
-
-    @staticmethod
-    def _process(actions, threshold=2.5):
-        result = actions.copy()
-        grippers = result[:, [6, 13]]
-        result[:, [6, 13]] = np.where(grippers > threshold, np.float32(4.9), np.float32(0.0))
-        return result
 
 
 def initialize(config, *, runtime):
@@ -101,7 +91,7 @@ def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
     if key.startswith('model_config.'):
         return configure_model(context, config, key, _configuration_value(value), callback)
-    allowed_params = {'model_config_path', 'task', 'gripper_threshold'}
+    allowed_params = {'model_config_path', 'task', *GRIPPER_DEFAULTS}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)

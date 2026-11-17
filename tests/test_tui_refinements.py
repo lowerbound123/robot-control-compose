@@ -53,11 +53,17 @@ def test_log_queue_history_and_file_share_iso_timestamp(setup_controller, monkey
 
 @pytest.mark.asyncio
 async def test_monitor_fits_all_fourteen_narrower_cells_and_scrolls_only_when_needed():
+    def cells(line):
+        return [line[offset:offset + 8].strip() for offset in range(7, len(line), 8)]
+
     app = RobotControlApp(FakeController())
     async with app.run_test(size=(121, 30)) as pilot:
         panel = app.query_one(MonitorPanel)
         panel.display = True
-        panel.update_snapshot({'qpos': [-123456789.123] * 14, 'epos': [1e100] * 14})
+        snapshot = {'qpos': [-123456789.123] * 14, 'epos': [1e100] * 14,
+                    'targets': {'left': {'mode': 'qpos', 'values': [2e100] * 7},
+                                'right': {'mode': 'epos', 'values': [.25] * 7}}}
+        panel.update_snapshot(snapshot)
         await pilot.pause()
         assert panel.max_scroll_x == 0
         assert not panel.show_horizontal_scrollbar
@@ -65,10 +71,33 @@ async def test_monitor_fits_all_fourteen_narrower_cells_and_scrolls_only_when_ne
         assert 'R.G' in lines[0]
         # All 14 fixed-width cells keep a non-zero value, including when the
         # value needs scientific notation instead of plain decimal text.
-        for line in (lines[1], lines[3]):
-            cells = [line[offset:offset + 8] for offset in range(7, len(line), 8)]
-            assert len(cells) == 14
-            assert all(float(cell) != 0 for cell in cells)
+        assert len(lines) == 6
+        for line in (lines[1], lines[4]):
+            values = cells(line)
+            assert len(values) == 14
+            assert all(float(value) != 0 for value in values)
+        assert lines[2].startswith('qpos→') and lines[5].startswith('epos→')
+        q_targets, e_targets = cells(lines[2]), cells(lines[5])
+        assert [float(value) for value in q_targets[:7]] == [2e100] * 7
+        assert q_targets[7:] == ['-'] * 7
+        assert e_targets[:7] == ['-'] * 7 and e_targets[7:] == ['0.2500'] * 7
+        assert panel.query_one('#monitor-values').content_size.height >= 6
+        # Changing both arms to one coordinate mode clears the other row.
+        snapshot['targets']['right'] = {'mode': 'qpos', 'values': [.125] * 7}
+        panel.update_snapshot(snapshot)
+        lines = panel.query_one('#monitor-values').content.plain.splitlines()
+        assert [float(value) for value in cells(lines[2])] == [2e100] * 7 + [.125] * 7
+        assert cells(lines[5]) == ['-'] * 14
+        snapshot['targets'] = {'left': {'mode': 'epos', 'values': [.5] * 7},
+                               'right': {'mode': 'epos', 'values': [.25] * 7}}
+        panel.update_snapshot(snapshot)
+        lines = panel.query_one('#monitor-values').content.plain.splitlines()
+        assert cells(lines[2]) == ['-'] * 14
+        assert cells(lines[5]) == ['0.5000'] * 7 + ['0.2500'] * 7
+        snapshot['targets'] = {}
+        panel.update_snapshot(snapshot)
+        lines = panel.query_one('#monitor-values').content.plain.splitlines()
+        assert cells(lines[2]) == cells(lines[5]) == ['-'] * 14
         await pilot.resize_terminal(80, 30)
         assert panel.show_horizontal_scrollbar and panel.max_scroll_x > 0
         panel.scroll_end(animate=False, immediate=True)

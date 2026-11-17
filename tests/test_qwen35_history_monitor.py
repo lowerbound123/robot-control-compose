@@ -28,6 +28,10 @@ def test_monitor_reports_configuration_counters_history_and_errors_without_chang
         assert initial['context_state'] == 'ready'
         assert initial['pipelined'] == 0 and initial['history_enabled'] == 1
         assert initial['history_capacity_frames'] == 481
+        if lift2:
+            assert initial['left_gripper_raw'] == initial['right_gripper_raw'] == '[]'
+        else:
+            assert 'left_gripper_raw' not in initial and 'right_gripper_raw' not in initial
         chunk = step(policy, [], 0)
         before = policy.canonical.copy()
         snapshot = normalize_snapshot(policy.monitor())
@@ -46,6 +50,8 @@ def test_monitor_reports_configuration_counters_history_and_errors_without_chang
         reset = policy.monitor()
         assert reset['reset_count'] == 1 and reset['inference_count'] == 1
         assert reset['cached_actions'] == reset['history_frames'] == 0
+        if lift2:
+            assert reset['left_gripper_raw'] == reset['right_gripper_raw'] == '[]'
         backend.error = RuntimeError('model failure for monitor test')
         with pytest.raises(RuntimeError, match='model failure'):
             step(policy, [], 0)
@@ -58,9 +64,10 @@ def test_monitor_reports_configuration_counters_history_and_errors_without_chang
         policy.close()
 
 
-def test_monitor_stays_responsive_while_inference_is_blocked_and_does_not_collect():
+@pytest.mark.parametrize('lift2', [False, True])
+def test_monitor_stays_responsive_while_inference_is_blocked_and_does_not_collect(lift2):
     backend = Backend()
-    policy = implementation()(config(), backend=backend)
+    policy = (entry().HistoryPolicy if lift2 else implementation())(config(), backend=backend)
     backend.gate.clear()
     with ThreadPoolExecutor(max_workers=1) as caller:
         running = caller.submit(step, policy, [], 0)
@@ -70,11 +77,53 @@ def test_monitor_stays_responsive_while_inference_is_blocked_and_does_not_collec
             assert snapshot['pending'] == snapshot['inference_busy'] == 1
             assert snapshot['pending_age_ms'] >= 0 and snapshot['pending_remaining_ms'] > 0
             assert snapshot['inference_count'] == 1 and snapshot['inference_completed'] == 0
+            if lift2:
+                assert snapshot['left_gripper_raw'] == snapshot['right_gripper_raw'] == '[]'
             assert not running.done() and len(backend.calls) == 1
         finally:
             backend.gate.set()
             running.result(2)
             policy.close()
+
+
+@pytest.mark.parametrize('pipelined', [False, True])
+def test_lift2_monitor_keeps_complete_raw_grippers_before_fusion_and_threshold(pipelined):
+    backend = Backend()
+    left = [-1., .125, 2.5, 2.75, 5.] * 10
+    right = [4., 3., 2.5, .25, -2.] * 10
+    backend.output[:, 6], backend.output[:, 13] = left, right
+    policy = entry().HistoryPolicy(config(x=25, pipelined=pipelined), backend=backend)
+    try:
+        chunk = step(policy, [], 0)
+        snapshot = normalize_snapshot(policy.monitor())
+        assert snapshot['left_gripper_raw'] == str(left)
+        assert snapshot['right_gripper_raw'] == str(right)
+        np.testing.assert_allclose(chunk[:, 6], [0., 0., 4.9, 4.9, 4.9] * 10)
+        np.testing.assert_allclose(chunk[:, 13], [4.9, 4.9, 4.9, 0., 0.] * 10)
+        np.testing.assert_array_equal(backend.output[:, 6], left)
+        np.testing.assert_array_equal(backend.output[:, 13], right)
+        # Cached returns keep the full inference sequence, not the shorter or
+        # already thresholded action chunk, even if the next model output differs.
+        backend.output[:, 6], backend.output[:, 13] = 1.125, 4.125
+        cached = step(policy, chunk[1:], 1)
+        assert len(backend.calls) == 1 and len(cached) == 49
+        assert policy.monitor()['left_gripper_raw'] == str(left)
+        assert policy.monitor()['right_gripper_raw'] == str(right)
+        # Real fusion can preserve old grippers at its beginning; diagnostics
+        # must still describe all fifty newly predicted grippers.
+        step(policy, cached[24:], 25)
+        latest = normalize_snapshot(policy.monitor())
+        assert latest['inference_completed'] == 2
+        assert latest['left_gripper_raw'] == str([1.125] * 50)
+        assert latest['right_gripper_raw'] == str([4.125] * 50)
+        backend.error = RuntimeError('next prediction failed')
+        with pytest.raises(RuntimeError, match='next prediction failed'):
+            step(policy, [], 26)
+        failed = normalize_snapshot(policy.monitor())
+        assert failed['left_gripper_raw'] == latest['left_gripper_raw']
+        assert failed['right_gripper_raw'] == latest['right_gripper_raw']
+    finally:
+        policy.close()
 
 
 def test_backend_monitor_is_a_detached_scalar_snapshot_without_any_torch_calls(monkeypatch):
@@ -147,6 +196,8 @@ def assert_worker_monitor(controller, robot_type):
     assert first['result']['robot_type'] == robot_type
     assert first['result']['context_state'] == 'ready'
     assert first['result']['subtask'] == ''
+    if robot_type == 'arx_lift2':
+        assert first['result']['left_gripper_raw'] == first['result']['right_gripper_raw'] == '[]'
     assert completed(controller, 'resume')['status'] == 'succeeded'
     wait(lambda: controller.status()['consumed'] >= 5)
     assert completed(controller, 'pause')['status'] == 'succeeded'
@@ -157,6 +208,9 @@ def assert_worker_monitor(controller, robot_type):
     assert snapshot['inference_count'] >= 1 and snapshot['inference_completed'] >= 1
     assert snapshot['predict_avg_ms'] > 0 and snapshot['head_image_shape'] == '4x5x3'
     assert snapshot['subtask'] == ''
+    if robot_type == 'arx_lift2':
+        assert snapshot['left_gripper_raw'] == str([2.5] * 50)
+        assert snapshot['right_gripper_raw'] == str([3.] * 50)
     assert worker is controller._worker and worker.runnable
 
 
