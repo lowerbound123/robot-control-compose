@@ -9,8 +9,8 @@ import numpy as np
 PARTS = ('left_joint', 'left_gripper', 'right_joint', 'right_gripper')
 WIDTHS = (6, 1, 6, 1)
 LANGUAGE_FIELDS = ('Memory', 'Scene', 'Subtask')
-GRIPPER_DEFAULTS = {'gripper_threshold': 2.5, 'gripper_high_value': 4.9,
-                    'gripper_low_threshold': 2.5, 'gripper_low_value': 0.}
+GRIPPER_DEFAULTS = {'gripper_upper_threshold': 2.5, 'gripper_upper_value': 4.9,
+                    'gripper_lower_threshold': 2.5, 'gripper_lower_value': 0.}
 DEFAULTS = {
     'model': {'checkpoint': '', 'vlm_model_name_or_path': 'Qwen/Qwen3.5-4B'},
     'runtime': {'instruction': ''},
@@ -162,6 +162,10 @@ def load_model_config(path, *, project_root, robot_type='arx_acone', raw=None):
 
 
 def validate_manifest(config):
+    params = config.get('params', {})
+    unsupported = sorted(name for name in params if name.startswith('gripper_') and name not in GRIPPER_DEFAULTS)
+    if unsupported:
+        raise ValueError(f'unsupported gripper parameters: {", ".join(unsupported)}')
     execution = config.get('execution', {})
     # RC owns call scheduling; policies only constrain their action format.
     if execution.get('control_mode') != 'qpos':
@@ -170,10 +174,9 @@ def validate_manifest(config):
                        'execution.on_connector_switch', *('params.' + name for name in GRIPPER_DEFAULTS))
            for path in config.get('hot_reloadable', [])):
         raise ValueError('only task/gripper params and RC scheduling/connector-switch settings are hot reloadable')
-    params = config.get('params', {})
     for name, default in GRIPPER_DEFAULTS.items():
         value = params.get(name, default)
-        if name == 'gripper_low_threshold' and value is None:
+        if name == 'gripper_lower_threshold' and value is None:
             continue
         if type(value) not in (int, float) or not math.isfinite(value):
             raise ValueError(f'params.{name} must be a finite number')

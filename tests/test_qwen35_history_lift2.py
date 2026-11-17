@@ -27,7 +27,7 @@ def entry():
     return module
 
 
-def test_gripper_threshold_only_changes_output_copy_and_preserves_original_policy():
+def test_gripper_upper_threshold_only_changes_output_copy_and_preserves_original_policy():
     from rc_qwen35_history.runtime import HistoryPolicy as Original
     module = entry()
     actions = np.arange(84, dtype=np.float32).reshape(6, 14) / 100
@@ -179,18 +179,18 @@ def test_hot_gripper_rules_update_and_save_without_reset(running_lift2):
     worker = controller._worker
     resets = len(events(directory, 'reset'))
     for field, value, expected in [
-        ('gripper_threshold', 3.5, [0., 3.]),
-        ('gripper_high_value', 4., [0., 3.]),
-        ('gripper_threshold', 3., [0., 4.]),
-        ('gripper_low_value', 1., [1., 4.]),
-        ('gripper_low_threshold', 2., [2.5, 4.]),
+        ('gripper_upper_threshold', 3.5, [0., 3.]),
+        ('gripper_upper_value', 4., [0., 3.]),
+        ('gripper_upper_threshold', 3., [0., 4.]),
+        ('gripper_lower_value', 1., [1., 4.]),
+        ('gripper_lower_threshold', 2., [2.5, 4.]),
     ]:
         index = len(controller.robot.commands)
         command(controller, f'policy qwen35_history_lift2 config set params.{field} {value}')
         until(lambda: any(np.allclose(row[[6, 13]], expected) for row in controller.robot.commands[index:]))
     command(controller, 'policy qwen35_history_lift2 config save')
     saved = read_config(directory/'policy.yaml')['params']
-    assert [saved[name] for name in ('gripper_threshold','gripper_high_value','gripper_low_threshold','gripper_low_value')] == [3.,4.,2.,1.]
+    assert [saved[name] for name in ('gripper_upper_threshold','gripper_upper_value','gripper_lower_threshold','gripper_lower_value')] == [3.,4.,2.,1.]
     assert controller._worker is worker and controller.status()['state'] == 'running'
     assert len(events(directory, 'reset')) == resets and len(events(directory, 'load')) == 1
 

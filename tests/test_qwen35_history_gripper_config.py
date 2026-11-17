@@ -10,7 +10,7 @@ from config_helpers import read_config
 from history_helpers import ROOT
 from test_qwen35_history_runtime import Backend, config, frames
 
-GRIPPER_FIELDS = ('gripper_threshold', 'gripper_high_value', 'gripper_low_threshold', 'gripper_low_value')
+GRIPPER_FIELDS = ('gripper_upper_threshold', 'gripper_upper_value', 'gripper_lower_threshold', 'gripper_lower_value')
 
 
 @pytest.fixture(params=['qwen35_history', 'qwen35_history_lift2'])
@@ -24,8 +24,8 @@ def entry(request):
 
 def test_inclusive_rules_use_original_values_and_keep_unmatched_grippers(entry):
     module, active, _ = entry
-    active['params'].update(gripper_threshold=2., gripper_high_value=-4.,
-                            gripper_low_threshold=-1., gripper_low_value=5.)
+    active['params'].update(gripper_upper_threshold=2., gripper_upper_value=-4.,
+                            gripper_lower_threshold=-1., gripper_lower_value=5.)
     module.validate_config(active)
     backend = Backend()
     left = [-2., -1., 0., 2., 3.] * 10
@@ -50,8 +50,8 @@ def test_inclusive_rules_use_original_values_and_keep_unmatched_grippers(entry):
 @pytest.mark.parametrize('low_threshold', [2., 3.])
 def test_upper_rule_wins_when_both_inclusive_rules_match(entry, low_threshold):
     module, active, _ = entry
-    active['params'].update(gripper_threshold=2., gripper_high_value=4.,
-                            gripper_low_threshold=low_threshold, gripper_low_value=-2.)
+    active['params'].update(gripper_upper_threshold=2., gripper_upper_value=4.,
+                            gripper_lower_threshold=low_threshold, gripper_lower_value=-2.)
     module.validate_config(active)
     backend = Backend()
     backend.output[:, [6, 13]] = [2., 1.]
@@ -66,10 +66,11 @@ def test_upper_rule_wins_when_both_inclusive_rules_match(entry, low_threshold):
 
 
 @pytest.mark.parametrize('field,raw,value', [
-    ('gripper_high_value', '3.75', 3.75),
-    ('gripper_low_threshold', '-2.25', -2.25),
-    ('gripper_low_threshold', 'null', None),
-    ('gripper_low_value', '-3.25', -3.25),
+    ('gripper_upper_threshold', '2.5', 2.5),
+    ('gripper_upper_value', '3.75', 3.75),
+    ('gripper_lower_threshold', '-2.25', -2.25),
+    ('gripper_lower_threshold', 'null', None),
+    ('gripper_lower_value', '-3.25', -3.25),
 ])
 def test_new_gripper_settings_accept_hot_candidates_without_lifecycle_effect(entry, field, raw, value):
     module, active, _ = entry
@@ -90,9 +91,9 @@ def test_existing_manifest_can_add_new_fields_without_updating_old_hints(entry):
         active['config_hints']['settings'].pop('params.'+field, None)
     effects = []
     module.validate_config(active)
-    module.configure(None, active, 'params.gripper_high_value', '3.75', effects.append)
-    module.configure(None, active, 'params.gripper_low_threshold', '-2.25', effects.append)
-    module.configure(None, active, 'params.gripper_low_value', '-3.25', effects.append)
+    module.configure(None, active, 'params.gripper_upper_value', '3.75', effects.append)
+    module.configure(None, active, 'params.gripper_lower_threshold', '-2.25', effects.append)
+    module.configure(None, active, 'params.gripper_lower_value', '-3.25', effects.append)
     assert [active['params'][key] for key in GRIPPER_FIELDS[1:]] == [3.75, -2.25, -3.25]
     assert effects == []
 
@@ -102,8 +103,8 @@ def test_threshold_commit_replans_grippers_without_reset_or_model_reload(entry, 
     module, active, source = entry
     lift2 = source.endswith('lift2')
     initial, updated = (2.5, 3.5) if lift2 else (-.8, -1.2)
-    assert active['params']['gripper_threshold'] == initial
-    assert 'params.gripper_threshold' in active['hot_reloadable']
+    assert active['params']['gripper_upper_threshold'] == initial
+    assert 'params.gripper_upper_threshold' in active['hot_reloadable']
     backend = Backend()
     backend.output[:, [6, 13]] = [3., 3.5] if lift2 else [-1., -1.2]
     raw = backend.output.copy()
@@ -114,9 +115,9 @@ def test_threshold_commit_replans_grippers_without_reset_or_model_reload(entry, 
         np.testing.assert_allclose(output[:, [6, 13]], np.tile([4.9, 4.9] if lift2 else [-1., -1.2], (len(output), 1)))
         candidate = copy.deepcopy(active)
         effects = []
-        module.configure(context, candidate, 'params.gripper_threshold', str(updated), effects.append)
-        assert effects == [] and active['params']['gripper_threshold'] == initial
-        assert candidate['params']['gripper_threshold'] == updated
+        module.configure(context, candidate, 'params.gripper_upper_threshold', str(updated), effects.append)
+        assert effects == [] and active['params']['gripper_upper_threshold'] == initial
+        assert candidate['params']['gripper_upper_threshold'] == updated
         # Normal SDK commits update the existing dict; the context retains that reference.
         active['params'].update(candidate['params'])
         output = context.step(state, [], frames(1),
@@ -137,7 +138,7 @@ def test_gripper_candidate_validation_preserves_rejected_config(entry, field, ra
     module, active, _ = entry
     candidate = copy.deepcopy(active)
     effects = []
-    if field == 'gripper_low_threshold' and raw == 'null':
+    if field == 'gripper_lower_threshold' and raw == 'null':
         module.configure(None, candidate, 'params.'+field, raw, effects.append)
         assert candidate['params'][field] is None and effects == []
     else:
@@ -151,14 +152,14 @@ def test_gripper_candidate_validation_preserves_rejected_config(entry, field, ra
 def test_manifest_validates_gripper_rules_before_initialization(entry, field, value):
     module, active, _ = entry
     active['params'][field] = value
-    if field == 'gripper_low_threshold' and value is None:
+    if field == 'gripper_lower_threshold' and value is None:
         module.validate_config(active)
     else:
         with pytest.raises(ValueError, match=field):
             module.validate_config(active)
 
 
-@pytest.mark.parametrize('field', ['gripper_high_value', 'gripper_low_value'])
+@pytest.mark.parametrize('field', ['gripper_upper_value', 'gripper_lower_value'])
 def test_gripper_replacement_rejects_float32_overflow(entry, field):
     module, active, _ = entry
     candidate = copy.deepcopy(active)
@@ -169,8 +170,8 @@ def test_gripper_replacement_rejects_float32_overflow(entry, field):
 
 def test_null_low_threshold_disables_lower_replacement(entry):
     module, active, _ = entry
-    active['params'].update(gripper_threshold=2., gripper_high_value=4.,
-                            gripper_low_threshold=None, gripper_low_value=-5.)
+    active['params'].update(gripper_upper_threshold=2., gripper_upper_value=4.,
+                            gripper_lower_threshold=None, gripper_lower_value=-5.)
     backend = Backend()
     backend.output[:, [6,13]] = [1., 2.]
     context = module.HistoryPolicy(config(), policy_config=active, backend=backend)
@@ -216,7 +217,7 @@ def test_committed_config_epoch_keeps_history_and_replans_from_fresh_observation
             assert context.pending is None
         before_calls = 2 if pipelined else 1
         threshold = 3.5 if source.endswith('lift2') else -1.2
-        module.configure(context, active, 'params.gripper_threshold', str(threshold), lambda _: pytest.fail('no reset'))
+        module.configure(context, active, 'params.gripper_upper_threshold', str(threshold), lambda _: pytest.fail('no reset'))
         new_state = {'qpos': np.full(14, .3, np.float32)}
         # RC clears its action buffer but retains its consumed counter on commit.
         output = context.step(new_state, [], frames(9), runtime=SimpleNamespace(

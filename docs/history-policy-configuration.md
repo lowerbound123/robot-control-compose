@@ -21,7 +21,7 @@ policy qwen35_history config save
 | 设置 | 生效方式 |
 | --- | --- |
 | `execution.mode`、`execution.call_every_actions` | RC 调用调度更新，保留动作缓存、动作代次和策略上下文；仍确认配置版本 |
-| `params.gripper_threshold`、`gripper_high_value`、`gripper_low_threshold`、`gripper_low_value` | 普通提交，保留模型及历史；已提交动作不撤回 |
+| `params.gripper_upper_threshold`、`gripper_upper_value`、`gripper_lower_threshold`、`gripper_lower_value` | 普通提交，保留模型及历史；已提交动作不撤回 |
 | `model_config.execution.inference_timeout_s` | 普通提交，用于后续请求，原请求期限不变 |
 | `model_config.execution.pipelined`、`replan_every_actions`、`model_config.transition.*` | reset，排空旧推理、清空动作及历史，保留权重 |
 | `params.task`、`model_config.runtime.instruction`、`model_config.history.enabled` | reset，保留权重 |
@@ -39,26 +39,48 @@ policy qwen35_history config save
 
 | 参数 | 含义 | qwen35_history 默认 | qwen35_history_lift2 默认 |
 | --- | --- | --- | --- |
-| `params.gripper_threshold` | 上限 x1，沿用原配置名 | -0.8 | 2.5 |
-| `params.gripper_high_value` | 上限输出 y1 | 0.04 | 4.9 |
-| `params.gripper_low_threshold` | 下限 x2；null 禁用下限规则 | null | 2.5 |
-| `params.gripper_low_value` | 下限输出 y2 | 0.0 | 0.0 |
+| `params.gripper_upper_threshold` | 上限 x1 | -0.8 | 2.5 |
+| `params.gripper_upper_value` | 上限输出 y1 | 0.04 | 4.9 |
+| `params.gripper_lower_threshold` | 下限 x2；null 禁用下限规则 | null | 2.5 |
+| `params.gripper_lower_value` | 下限输出 y2 | 0.0 | 0.0 |
 
 令处理前夹爪值为 g：若 `g >= x1`，输出 y1；否则，启用下限且 `g <= x2` 时输出 y2；均未命中则保留 g。两条规则都比较同一个处理前的值，不会对 y1/y2 再做替换。阈值相等或范围重叠时，上限规则优先。所有数值须有限，y1/y2 还须在 float32 有限范围内；仅 x2 允许 null。
 
 例如给 LIFT2 设置一个保留中间值的区间：
 
 ```text
-policy qwen35_history_lift2 config set params.gripper_threshold 3.0
-policy qwen35_history_lift2 config set params.gripper_high_value 4.9
-policy qwen35_history_lift2 config set params.gripper_low_threshold 2.0
-policy qwen35_history_lift2 config set params.gripper_low_value 0.0
+policy qwen35_history_lift2 config set params.gripper_upper_threshold 3.0
+policy qwen35_history_lift2 config set params.gripper_upper_value 4.9
+policy qwen35_history_lift2 config set params.gripper_lower_threshold 2.0
+policy qwen35_history_lift2 config set params.gripper_lower_value 0.0
 policy qwen35_history_lift2 config save
 ```
 
-同样的字段适用于 `qwen35_history`，重复来源使用精确实例名。旧配置缺少新增字段时使用表中默认值，也可直接用完整字段名 `config set` 添加。四项都支持普通热更新和保存，不重载模型或清空历史；配置换代后从新观测重新规划。缓存直返不重复处理夹爪，原始预测和 canonical 缓存不受输出替换影响，LIFT2 的原始夹爪 monitor 仍展示处理前的完整模型预测。
+同样的字段适用于 `qwen35_history`，重复来源使用精确实例名。缺少的字段使用表中默认值，也可直接用完整字段名 `config set` 添加；含旧名称的配置须先按下一节迁移。四项都支持普通热更新和保存，不重载模型或清空历史；配置换代后从新观测重新规划。缓存直返不重复处理夹爪，原始预测和 canonical 缓存不受输出替换影响，LIFT2 的原始夹爪 monitor 仍展示处理前的完整模型预测。
 
-比较包含等号：默认 LIFT2 在 g 恰为 2.5 时输出 4.9；默认原 history 在 g 恰为 -0.8 时输出 0.04。这是本次从严格大于改为大于等于后的边界变化。
+比较包含等号：默认 LIFT2 在 g 恰为 2.5 时输出 4.9；默认原 history 在 g 恰为 -0.8 时输出 0.04。此次统一命名保持这些比较规则与默认值不变。
+
+## 夹爪参数改名升级
+
+`qwen35_history`、`qwen35_history_lift2` 和 `pi05_lift2` 统一使用 `upper/lower` 和 `threshold/value` 两组名称：
+
+| 旧 params 字段 | 新 params 字段 |
+| --- | --- |
+| `gripper_threshold` | `gripper_upper_threshold` |
+| `gripper_high_value` | `gripper_upper_value` |
+| `gripper_low_threshold` | `gripper_lower_threshold` |
+| `gripper_low_value` | `gripper_lower_value` |
+
+更新源码后，在项目根目录用安装过 `requirements/setup.lock` 的宿主 Python 执行：
+
+```bash
+python3 scripts/migrate_gripper_params.py          # 预览，不修改文件
+python3 scripts/migrate_gripper_params.py --apply  # 备份后改名
+```
+
+脚本只处理这三个来源已有的 `policy.yaml`，保留原值，并同步改名热更新白名单和配置提示；原文件备份到 `.setup/backups/`。它不会创建缺失的策略配置或重载进程。新旧字段同时存在且值不同时会报错，所有文件预检完成后才开始写入；重复执行不产生额外改动。`./setup.sh --config-only` 也会先迁移这些名字，再合并模板默认值。
+
+运行时不再接受旧名称，避免旧自定义值被忽略后回退到默认值。脚本中的命令也要改成新名称。运行中的实例需通过现有流程重新加载策略源码，不能用仅重新初始化 context 的操作代替；迁移本身不改变已加载实例的参数。本次命名修改无需重建依赖镜像。
 
 ## 暂停、恢复与复位
 

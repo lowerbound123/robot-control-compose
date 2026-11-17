@@ -46,9 +46,10 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 
 上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task` 和四个夹爪规则参数支持热改。
 
-夹爪上限 x1 为 `params.gripper_threshold`（默认 `-0.8`），上限输出 y1 为 `params.gripper_high_value`（默认 `0.04`）。下限 x2 为 `params.gripper_low_threshold`（默认 `null`，禁用下限），下限输出 y2 为 `params.gripper_low_value`（默认 `0.0`）。`g >= x1` 输出 y1；否则启用下限且 `g <= x2` 输出 y2；均未命中则保留原值。规则重叠时上限优先，所有比较使用处理前的夹爪值。用
-`policy qwen35_history config set params.gripper_threshold -1.2` 热更新，
+夹爪上限 x1 为 `params.gripper_upper_threshold`（默认 `-0.8`），上限输出 y1 为 `params.gripper_upper_value`（默认 `0.04`）。下限 x2 为 `params.gripper_lower_threshold`（默认 `null`，禁用下限），下限输出 y2 为 `params.gripper_lower_value`（默认 `0.0`）。`g >= x1` 输出 y1；否则启用下限且 `g <= x2` 输出 y2；均未命中则保留原值。规则重叠时上限优先，所有比较使用处理前的夹爪值。用
+`policy qwen35_history config set params.gripper_upper_threshold -1.2` 热更新，
 `policy qwen35_history config save` 保存到本来源配置；重复实例使用精确实例名。
+已有旧名称配置须先按[参数改名升级说明](../../docs/history-policy-configuration.md#夹爪参数改名升级)迁移；新旧名称不混用。
 修改任一夹爪参数不重载模型、不清空历史。RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，
 从新观测重新规划并应用新规则；已经提交给 connector 的动作不撤回。完整字段、默认值和命令见[夹爪输出规则](../../docs/history-policy-configuration.md#夹爪输出规则)。
 

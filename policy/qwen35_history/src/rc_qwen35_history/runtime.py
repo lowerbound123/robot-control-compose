@@ -28,7 +28,7 @@ def frame(value, name):
 
 class HistoryPolicy:
     robot_type = 'arx_acone'
-    default_gripper_threshold = GRIPPER_DEFAULTS['gripper_threshold']
+    default_gripper_upper_threshold = GRIPPER_DEFAULTS['gripper_upper_threshold']
 
     def __init__(self, config, *, policy_config=None, backend=None, project_root=None):
         self.config = copy.deepcopy(config)
@@ -210,15 +210,15 @@ class HistoryPolicy:
         return new
 
     @staticmethod
-    def _process(actions, threshold=GRIPPER_DEFAULTS['gripper_threshold'], *,
-                 high_value=GRIPPER_DEFAULTS['gripper_high_value'],
-                 low_threshold=GRIPPER_DEFAULTS['gripper_low_threshold'],
-                 low_value=GRIPPER_DEFAULTS['gripper_low_value']):
+    def _process(actions, upper_threshold=GRIPPER_DEFAULTS['gripper_upper_threshold'], *,
+                 upper_value=GRIPPER_DEFAULTS['gripper_upper_value'],
+                 lower_threshold=GRIPPER_DEFAULTS['gripper_lower_threshold'],
+                 lower_value=GRIPPER_DEFAULTS['gripper_lower_value']):
         result = actions.copy()
         grippers = result[:, [6, 13]]
-        low = grippers if low_threshold is None else np.where(grippers <= low_threshold, low_value, grippers)
+        lower = grippers if lower_threshold is None else np.where(grippers <= lower_threshold, lower_value, grippers)
         # Both rules inspect the original values; the upper rule wins overlap.
-        result[:, [6, 13]] = np.where(grippers >= threshold, high_value, low)
+        result[:, [6, 13]] = np.where(grippers >= upper_threshold, upper_value, lower)
         return result
 
     def _observe_history(self, images, runtime):
@@ -294,9 +294,9 @@ class HistoryPolicy:
             self._record(cached_actions=len(self.canonical))
             params = self.policy_config.get('params', {})
             gripper = {name: params.get(name, default) for name, default in GRIPPER_DEFAULTS.items()}
-            return self._process(self.canonical, threshold=gripper['gripper_threshold'],
-                                 high_value=gripper['gripper_high_value'],
-                                 low_threshold=gripper['gripper_low_threshold'], low_value=gripper['gripper_low_value'])
+            return self._process(self.canonical, upper_threshold=gripper['gripper_upper_threshold'],
+                                 upper_value=gripper['gripper_upper_value'],
+                                 lower_threshold=gripper['gripper_lower_threshold'], lower_value=gripper['gripper_lower_value'])
         except Exception as exc:
             self._failure = exc
             self._record(context_state='failed', last_error=f'{type(exc).__name__}: {exc}'[:512])

@@ -14,8 +14,8 @@ LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7�
 
 随后处理输出副本的两个夹爪列（从 0 开始的第 6、13 维）：
 
-- 夹爪值大于等于 `params.gripper_threshold`（x1，默认 `2.5`）：输出 `params.gripper_high_value`（y1，默认 `4.9`）。
-- 未命中上限且小于等于 `params.gripper_low_threshold`（x2，默认 `2.5`）：输出 `params.gripper_low_value`（y2，默认 `0.0`）；x2 为 `null` 时禁用下限。
+- 夹爪值大于等于 `params.gripper_upper_threshold`（x1，默认 `2.5`）：输出 `params.gripper_upper_value`（y1，默认 `4.9`）。
+- 未命中上限且小于等于 `params.gripper_lower_threshold`（x2，默认 `2.5`）：输出 `params.gripper_lower_value`（y2，默认 `0.0`）；x2 为 `null` 时禁用下限。
 - 均未命中时保留原值；阈值相等或范围重叠时上限优先，因此默认恰好等于 `2.5` 时输出 `4.9`。
 
 两条规则使用同一个处理前的夹爪值，不会把替换后的 y1 再交给下限处理。这个步骤不修改已反归一化的 12 个手臂关节，原始预测不被替换；是否融合和 RC 的 sync/async 模式均不改变该规则。原 `qwen35_history` 使用相同四参数规则，但保留自身 ACOne 统计量和默认值。RC 的设备限速仍在后续发送阶段执行。
@@ -42,16 +42,17 @@ RC 中可独立选择和配置：
 policy switch qwen35_history_lift2
 policy qwen35_history_lift2 config show
 policy qwen35_history_lift2 config set params.task "新的任务"
-policy qwen35_history_lift2 config set params.gripper_threshold 3.5
-policy qwen35_history_lift2 config set params.gripper_high_value 4.9
-policy qwen35_history_lift2 config set params.gripper_low_threshold 2.0
-policy qwen35_history_lift2 config set params.gripper_low_value 0.0
+policy qwen35_history_lift2 config set params.gripper_upper_threshold 3.5
+policy qwen35_history_lift2 config set params.gripper_upper_value 4.9
+policy qwen35_history_lift2 config set params.gripper_lower_threshold 2.0
+policy qwen35_history_lift2 config set params.gripper_lower_value 0.0
 policy qwen35_history_lift2 config save
 ```
 
 四个夹爪参数保存在本目录 `policy.yaml`，数值须有限，两个输出值须可表示为有限 float32；只有下限允许 `null`。热更新不重载模型、不清空历史；
 RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，从新观测重新规划并应用新规则。
 已经提交给 connector 的动作不撤回。重复实例使用精确实例名。
+已有旧名称配置须先按[参数改名升级说明](../../docs/history-policy-configuration.md#夹爪参数改名升级)迁移；新旧名称不混用。
 ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 RC 频率需重启 RC。
 
 切换完成后保持暂停；确认设备、模型和任务后再显式 `resume`。`switch-task`、`switch-model`、monitor、重初始化和重载接口与原 history 相同，也可将本来源放入原生 chain。切换 connector 不会自动替换 policy。

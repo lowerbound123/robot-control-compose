@@ -137,6 +137,7 @@ mcp get_policy_result {"operation_id":"<operation_id>"}
 - [Python 3.14 本地范例策略](policy/example/README.md)
 - [Qwen 策略](policy/qwen35_single/README.md)
 - [Qwen 视觉历史策略](policy/qwen35_history/README.md)
+- [π0.5 LIFT2 策略](policy/pi05_lift2/README.md)：独立 LeRobot checkpoint、配置及 LIFT2 四参数夹爪规则，复用 pi05 依赖镜像。
 - [InternVLA MaaS 网络策略](policy/internvla_maas/README.md)：独立 Python 3.11 轻量容器，复用 Qwen 单阶段动作处理，通过 WebSocket 获取 action chunk。
 - [LLM 离散动作策略](policy/llm_direction/README.md)
 - [LLM 异步失败检测策略](policy/llm_failure/README.md)：原样透传动作，每 60 个实际执行步用当前与历史图像检查失败，通过 MCP 等待回执返回。

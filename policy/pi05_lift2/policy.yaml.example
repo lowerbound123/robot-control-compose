@@ -1,0 +1,79 @@
+schema_version: 3
+id: pi05_lift2
+help: 使用 LIFT2 checkpoint 和夹爪上下限规则的独立 LeRobot pi05 策略
+execution:
+  mode: sync
+  call_every_actions: 1
+  control_mode: qpos
+  on_connector_switch: reinitialize_policy
+params:
+  model_config_path: model.json
+  gripper_upper_threshold: 2.5
+  gripper_upper_value: 4.9
+  gripper_lower_threshold: 2.5
+  gripper_lower_value: 0.0
+hot_reloadable:
+- execution.on_connector_switch
+- params.gripper_upper_threshold
+- params.gripper_upper_value
+- params.gripper_lower_threshold
+- params.gripper_lower_value
+tui_commands:
+  switch-model:
+    handler: switch_model
+    args:
+    - name: config_path
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
+    help: 验证本地 LeRobot checkpoint 配置并完整重载；成功后等待 resume
+    timeout_s: 30
+    effect: reload_policy
+config_hints:
+  help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
+  settings:
+    params.model_config_path:
+      type: path
+      help: 模型配置文件
+      root: .
+      kind: file
+      suffixes:
+      - .json
+    params.gripper_upper_threshold:
+      type: float
+      help: 上限 x1；夹爪值 >= x1 时输出 gripper_upper_value，优先于下限规则
+    params.gripper_upper_value:
+      type: float
+      help: 上限输出 y1；热更新保留已加载模型，旧预测和缓存失效
+    params.gripper_lower_threshold:
+      type: json
+      help: 下限 x2；未命中上限且夹爪值 <= x2 时输出 gripper_lower_value；null 禁用下限
+    params.gripper_lower_value:
+      type: float
+      help: 下限输出 y2；均未命中保留原值
+    execution.mode:
+      type: enum
+      choices:
+      - sync
+      - async
+      help: RC 调用调度：sync 等待回调时发送 hold，async 继续发送缓存；策略独立决定是否推理
+    execution.call_every_actions:
+      type: int
+      help: RC 每消费 N 个目标调用策略（正整数）；不是模型推理阈值
+    execution.control_mode:
+      type: enum
+      choices:
+      - qpos
+      help: 动作坐标模式；修改后重新初始化并暂停
+    execution.tui_command_workers:
+      type: int
+      help: 命令执行线程数；修改后重新初始化并暂停
+    execution.on_connector_switch:
+      type: enum
+      choices:
+      - reset
+      - reinitialize_policy
+      help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换

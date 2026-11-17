@@ -40,7 +40,8 @@ def test_base_and_simulator_mount_source_readonly():
 
 
 @pytest.mark.parametrize('identity,module', [('qwen35_single','rc_qwen35_policy'), ('qwen35_twostage','rc_qwen35_twostage'),
-    ('llm_direction','rc_llm_direction'), ('llm_failure','rc_llm_failure'), ('pi05','rc_pi05_policy')])
+    ('llm_direction','rc_llm_direction'), ('llm_failure','rc_llm_failure'), ('pi05','rc_pi05_policy'),
+    ('pi05_lift2','rc_pi05_lift2')])
 def test_policy_declares_own_source_paths(identity, module):
     service = read_compose(ROOT / 'policy' / identity / 'compose.yaml')['services']['policy']
     origins = json.loads(service['environment']['RC_SOURCE_MODULES'])

@@ -11,6 +11,57 @@ import tempfile
 import uuid
 
 
+GRIPPER_SOURCES = ('qwen35_history', 'qwen35_history_lift2', 'pi05_lift2')
+GRIPPER_PARAM_RENAMES = {
+    'gripper_threshold': 'gripper_upper_threshold',
+    'gripper_high_value': 'gripper_upper_value',
+    'gripper_low_threshold': 'gripper_lower_threshold',
+    'gripper_low_value': 'gripper_lower_value',
+}
+
+
+def migrate_gripper_config(config):
+    """Rename known field names and hints without rewriting arbitrary user values."""
+    from robot_control.yaml_config import strict_equal
+
+    def rename_keys(values, names, location):
+        renamed = {}
+        for key, value in values.items():
+            new = names.get(key, key)
+            if new in renamed and not strict_equal(renamed[new], value):
+                raise ValueError(f'{location}.{new}: conflicting old and new settings; resolve before migration')
+            renamed[new] = value
+        return renamed
+
+    help_names = re.compile(r'\b(' + '|'.join(GRIPPER_PARAM_RENAMES) + r')\b')
+
+    def rename_help(settings):
+        if isinstance(settings, dict) and isinstance(settings.get('help'), str):
+            settings['help'] = help_names.sub(lambda match: GRIPPER_PARAM_RENAMES[match[0]], settings['help'])
+
+    result = copy.deepcopy(config)
+    if 'params' in result:
+        if not isinstance(result['params'], dict):
+            raise ValueError('params must be an object')
+        result['params'] = rename_keys(result['params'], GRIPPER_PARAM_RENAMES, 'params')
+    names = {'params.' + old: 'params.' + new for old, new in GRIPPER_PARAM_RENAMES.items()}
+    if isinstance(result.get('hot_reloadable'), list):
+        paths = []
+        for path in result['hot_reloadable']:
+            new = names.get(path, path)
+            if new not in names.values() or new not in paths:
+                paths.append(new)
+        result['hot_reloadable'] = paths
+    hints = result.get('config_hints')
+    if isinstance(hints, dict):
+        rename_help(hints)
+        if isinstance(hints.get('settings'), dict):
+            for settings in hints['settings'].values():
+                rename_help(settings)
+            hints['settings'] = rename_keys(hints['settings'], names, 'config_hints.settings')
+    return result
+
+
 def _pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -102,7 +153,15 @@ def configuration_updates(root):
                 ('profile' in current['robot']) != ('profile' in default['robot'])):
             default = copy.deepcopy(default)
             default['robot'] = copy.deepcopy(current['robot'])
-        value = merge_json(default, current, str(target.relative_to(root))) if current is not None and default is not None else (current if current is not None else default)
+        prepared_current = current
+        if (current is not None and target.name == 'policy.yaml' and
+                target.parent.parent == root / 'policy' and target.parent.name in GRIPPER_SOURCES):
+            # Rename before adding template defaults, preserving customized old
+            # values. Compare against the original below so the rename is saved.
+            prepared_current = migrate_gripper_config(current)
+        value = (merge_json(default, prepared_current, str(target.relative_to(root)))
+                 if prepared_current is not None and default is not None else
+                 (prepared_current if prepared_current is not None else default))
         if (target.name == 'policy.yaml' and isinstance(value, dict) and
                 isinstance(value.get('execution'), dict) and value.get('kind') != 'chain'):
             value = copy.deepcopy(value)

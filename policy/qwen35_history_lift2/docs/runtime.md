@@ -40,7 +40,7 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 | `inference.generate_language` | 示例为 `["Memory", "Scene", "Subtask"]` | 生成所选语言字段；`[]` 关闭，旧配置缺少该字段时保持关闭 |
 | `history.enabled` | true | 使用进程内头相机历史 |
 
-上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task` 及 `params.gripper_threshold`、`gripper_high_value`、`gripper_low_threshold`、`gripper_low_value` 支持热改；四个夹爪默认值分别为 2.5、4.9、2.5、0.0，完整语义和命令见[夹爪输出规则](../../../docs/history-policy-configuration.md#夹爪输出规则)。夹爪参数更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
+上述字段均可通过 TUI 的 `model_config.<section>.<field>` 设置；执行/历史参数重置上下文并保留权重，模型/推理参数重新初始化。外部编辑文件后用 `switch-model` 显式重载。policy.yaml 的 `params.task` 及 `params.gripper_upper_threshold`、`gripper_upper_value`、`gripper_lower_threshold`、`gripper_lower_value` 支持热改；四个夹爪默认值分别为 2.5、4.9、2.5、0.0，完整语义和命令见[夹爪输出规则](../../../docs/history-policy-configuration.md#夹爪输出规则)。夹爪参数更新保留模型和历史；RC 配置提交推进代次后，丢弃旧代次的剩余计划和在途预测，从新观测重新规划。
 
 每次策略调用先检查 RC 传入的剩余 chunk。剩余数量大于 `50-X` 时直接原样返回，不推理、不重复做夹爪或硬裁剪处理；否则完成一次模型推理。`pipelined=false` 返回完整 50 条新预测，`true` 使用 SDK 接近点拼接融合输入旧 chunk 和新预测。默认旧段尾点匹配新段最近点，全部 14 维包含夹爪参与融合。
 

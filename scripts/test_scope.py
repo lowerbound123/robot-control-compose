@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 QWEN = {"qwen35_single", "qwen35_twostage"}
 HISTORY = {"qwen35_history", "qwen35_history_lift2"}
 LLM = {"llm_direction", "llm_failure"}
-POLICIES = {"example", "hold", "pi05", "internvla_maas"} | QWEN | HISTORY | LLM
+POLICIES = {"example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM
 
 
 def suite(policies, interface):
@@ -22,7 +22,8 @@ def suite(policies, interface):
             raise ValueError(f"未找到回归用例：{pattern}")
         paths.update("tests/" + path.name for path in matches
                      if (policies & HISTORY or not path.name.startswith("test_qwen35_history_"))
-                     and ("qwen35_history_lift2" in policies or not path.name.startswith("test_qwen35_history_lift2")))
+                     and ("qwen35_history_lift2" in policies or not path.name.startswith("test_qwen35_history_lift2"))
+                     and ("pi05_lift2" in policies or not path.name.startswith("test_pi05_lift2")))
 
     add("test_example_*.py")
     if policies & HISTORY:
@@ -31,6 +32,8 @@ def suite(policies, interface):
         paths.add("tests/test_end_to_end.py::test_real_hold_example_consumes_absolute_targets")
     if "pi05" in policies:
         add("test_pi05_*.py")
+    if "pi05_lift2" in policies:
+        add("test_pi05_lift2*.py")
     if "internvla_maas" in policies:
         add("test_internvla_maas_*.py")
     if QWEN <= policies:

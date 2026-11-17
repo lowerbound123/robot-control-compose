@@ -24,16 +24,16 @@ execution:
 params:
   model_config_path: model.json
   task:
-  gripper_threshold: 2.5
-  gripper_high_value: 4.9
-  gripper_low_threshold: 2.5
-  gripper_low_value: 0.0
+  gripper_upper_threshold: 2.5
+  gripper_upper_value: 4.9
+  gripper_lower_threshold: 2.5
+  gripper_lower_value: 0.0
 hot_reloadable:
 - params.task
-- params.gripper_threshold
-- params.gripper_high_value
-- params.gripper_low_threshold
-- params.gripper_low_value
+- params.gripper_upper_threshold
+- params.gripper_upper_value
+- params.gripper_lower_threshold
+- params.gripper_lower_value
 - execution.on_connector_switch
 tui_commands:
   switch-task:
@@ -62,16 +62,16 @@ config_hints:
     params.task:
       type: str
       help: 任务覆盖文本；输入 null 使用模型配置中的默认任务
-    params.gripper_threshold:
+    params.gripper_upper_threshold:
       type: float
-      help: 上限 x1；夹爪值 >= x1 时输出 gripper_high_value，优先于下限规则
-    params.gripper_high_value:
+      help: 上限 x1；夹爪值 >= x1 时输出 gripper_upper_value，优先于下限规则
+    params.gripper_upper_value:
       type: float
       help: 上限输出 y1；热更新保留模型和历史
-    params.gripper_low_threshold:
+    params.gripper_lower_threshold:
       type: json
-      help: 下限 x2；未命中上限且夹爪值 <= x2 时输出 gripper_low_value；null 禁用下限
-    params.gripper_low_value:
+      help: 下限 x2；未命中上限且夹爪值 <= x2 时输出 gripper_lower_value；null 禁用下限
+    params.gripper_lower_value:
       type: float
       help: 下限输出 y2；两条规则均未命中时保留原值
     execution.mode:
