@@ -27,6 +27,22 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 
 connector 镜像独立构建，默认只构建 `mock`；`--connectors mock,acone` 同时准备两种来源。设备参数位于 `connector/<source>/devices/`，setup 只创建缺失模板，不覆盖已有设备配置。旧 `robot.backend` 必须按 [connector 迁移说明](connectors.md) 改为实例引用。RC 本身不再包含 ROS，切换 policy 不会重启 connector。
 
+## Git 文件约定
+
+`.gitignore` 按目录用途匹配，不需要为每个新策略、connector 或 Compose 覆盖文件追加名字：
+
+| 文件位置 | Git 行为 |
+| --- | --- |
+| 根目录及 policy/connector 来源目录的 `compose.yaml/yml`、`compose.*.yaml/yml` | 作为共享构建、启动声明提交 |
+| policy/connector 来源目录的 `pyproject.toml`、`src/`、`vendor/`、`dependencies/` | 作为源码提交，包含 schema、来源清单和补丁校验清单 |
+| `configs/`、来源目录内的部署配置，例如 `policy.yaml`、`model.json`、`providers/*.yaml`、`devices/*.yaml` | 继续忽略，提交对应的 `*.example` 模板 |
+
+源码目录内的 env、缓存、构建产物和运行目录仍被忽略。把本机配置放在部署配置位置，不要放入源码目录；源码目录中的 JSON/YAML 会作为代码资产被 Git 发现。
+
+现场专用 Compose 覆盖文件使用 `compose.<名称>.local.yaml` 或 `.yml`，例如 `compose.lift2.local.yaml`；`compose.local.yaml/yml` 和 `compose.override.yaml/yml` 也被忽略。可显式传给 `./scripts/up.sh compose.lift2.yaml compose.lift2.local.yaml`。普通命名的 `compose.<名称>.yaml/yml` 留给共享文件。
+
+仅本机需要的额外忽略项写入 `.git/info/exclude`，避免修改共享 `.gitignore`。忽略规则不会停止跟踪已经提交的文件，也不会自动解决已跟踪文件的本地修改冲突；这类改动仍需先保留并合并。
+
 ## Compose 快捷入口
 
 完成 setup 后可使用以下入口。up 默认加入基础 `compose.yaml`，后续覆盖文件按参数顺序合并；不带参数只启动基础服务。

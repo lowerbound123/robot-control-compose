@@ -1,25 +1,3 @@
-.DS_Store
-.codex/
-**/*.env
-**/.env
-**/.env.*
-**/.global.env.*
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
-build/
-dist/
-outputs/
-snapshot/
-/models/
-/cache/
-ros_ws/build/
-ros_ws/install/
-ros_ws/log/
-
 # Actual deployment configuration stays local; ship *.example templates.
 /*.json
 /*.yaml
@@ -49,28 +27,67 @@ ros_ws/log/
 /connector/**/*.ini
 /connector/**/*.cfg
 /connector/**/*.conf
-/.setup/
-/policy/**/.runtime/
 
-# Versioned build definitions and immutable model schemas are source assets.
+# Source layout, independent of policy/connector names. These directories own
+# versioned code, schemas, provenance manifests and dependency build inputs.
 !/compose.yaml
-!/compose.acone.yaml
-!/compose.lift2.yaml
-!/compose.ros-sim.yaml
-!/compose.webui.yaml
+!/compose.yml
+!/compose.*.yaml
+!/compose.*.yml
 !/pyproject.toml
 !/policy/*/compose.yaml
+!/policy/*/compose.yml
+!/policy/*/compose.*.yaml
+!/policy/*/compose.*.yml
 !/policy/*/pyproject.toml
+!/policy/*/src/**
+!/policy/*/vendor/**
+!/policy/*/dependencies/**
 !/connector/*/compose.yaml
-!/policy/*/vendor/pyproject.toml
-!/policy/*/vendor/lerobot/dataset_schemas/configs/*.yaml
-!/policy/qwen35_history/vendor/SOURCE_MANIFEST.json
-!/policy/qwen35_history_lift2/vendor/SOURCE_MANIFEST.json
-!/policy/pi05_lift2/dependencies/transformers_patch/sha256.json
-!**/*.example
+!/connector/*/compose.yml
+!/connector/*/compose.*.yaml
+!/connector/*/compose.*.yml
+!/connector/*/pyproject.toml
+!/connector/*/src/**
+!/connector/*/vendor/**
+!/connector/*/dependencies/**
 
-# WebUI local credentials and build/test outputs
+# Machine overrides and secrets remain private, including inside source trees.
+# Use compose.<name>.local.yaml/yml for site-specific Compose overrides.
+*.local.*
+compose.override.yaml
+compose.override.yml
+**/*.env
+**/.env
+**/.env.*
+**/.global.env.*
 /webui/config.json
+
+# Keep runtime/build artifacts below source exceptions so they stay ignored.
+.DS_Store
+.codex/
+/.setup/
+.runtime/
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+outputs/
+snapshot/
+/models/
+/cache/
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
 **/node_modules/
 /webui/test-results/
 /webui/playwright-report/
+
+# Templates are source, including .env.example and *.local.yaml.example.
+# This does not reinclude files beneath ignored artifact directories.
+!**/*.example
