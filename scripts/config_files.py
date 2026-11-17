@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -159,6 +160,26 @@ def configuration_updates(root):
             # Rename before adding template defaults, preserving customized old
             # values. Compare against the original below so the rename is saved.
             prepared_current = migrate_gripper_config(current)
+            # Only these two policy settings accept number|string. Preserve
+            # signed offsets without relaxing scalar type checks elsewhere.
+            if isinstance(default, dict):
+                default = copy.deepcopy(default)
+                current_hints = prepared_current.get('config_hints', {}).get('settings', {})
+                template_hints = default.get('config_hints', {}).get('settings', {})
+                for name in ('gripper_upper_value', 'gripper_lower_value'):
+                    value = prepared_current.get('params', {}).get(name)
+                    if isinstance(value, str):
+                        decimal = r'[+-](?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?'
+                        if (not re.fullmatch(decimal, value) or not math.isfinite(float(value))
+                                or abs(float(value)) > 3.4028234663852886e38):
+                            raise ValueError(f'{target}: params.{name} must be a signed finite float32 decimal')
+                        default.setdefault('params', {})[name] = value
+                    # Old float-only prompts would otherwise survive forever
+                    # because ordinary setup preserves existing scalar values.
+                    key = 'params.'+name
+                    if isinstance(current_hints.get(key), dict) and key in template_hints:
+                        for hint in ('type', 'help'):
+                            current_hints[key][hint] = copy.deepcopy(template_hints[key][hint])
         value = (merge_json(default, prepared_current, str(target.relative_to(root)))
                  if prepared_current is not None and default is not None else
                  (prepared_current if prepared_current is not None else default))

@@ -28,6 +28,8 @@ def suite(policies, interface):
     add("test_example_*.py")
     if policies & HISTORY:
         add("test_qwen35_history_*.py")
+    if policies & (HISTORY | {"pi05_lift2"}):
+        add("test_gripper_delta*.py")
     if "hold" in policies:
         paths.add("tests/test_end_to_end.py::test_real_hold_example_consumes_absolute_targets")
     if "pi05" in policies:

@@ -56,8 +56,8 @@ def test_one_due_request_waits_for_inference_then_optionally_fuses(context, pipe
         policy.observe(state, frames(22), runtime=runtime(104))
         backend.gate.set()
         result = future.result(2)
-    raw = TrajectoryAddTransition(5., .25).apply(old, backend.output) if pipelined else backend.output
-    expected = policy._process(raw, upper_threshold=policy.default_gripper_upper_threshold)
+    processed = policy._process(backend.output, upper_threshold=policy.default_gripper_upper_threshold)
+    expected = TrajectoryAddTransition(5., .25).apply(old, processed) if pipelined else processed
     np.testing.assert_allclose(result, expected)
     assert len(backend.calls) == 1 and policy.pending is None
 

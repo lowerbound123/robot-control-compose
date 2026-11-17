@@ -84,7 +84,7 @@ def test_default_lift2_grippers_are_processed_without_changing_model_or_cached_v
     chunk = step(policy, [], 0)
     np.testing.assert_allclose(chunk[:, 6], [0.,4.9,4.9,0.,4.9]*10)
     np.testing.assert_allclose(chunk[:, 13], [4.9,0.,4.9,4.9,0.]*10)
-    np.testing.assert_array_equal(policy.canonical, before)
+    np.testing.assert_array_equal(policy.canonical, chunk)
     np.testing.assert_array_equal(model.output, before)
     cached = step(policy, chunk[1:], 1)
     np.testing.assert_array_equal(cached, chunk[1:])
@@ -124,14 +124,15 @@ def test_scheduling_only_config_version_keeps_current_plan(running_policy):
     assert len(model.calls) == 1 and not any(name == 'reset' for name, _ in model.events)
 
 
-def test_hot_config_drains_pending_inference_and_uses_fresh_observation(running_policy):
+@pytest.mark.parametrize('value,expected', [('1.5',1.5), ('"+0.75"',3.75)])
+def test_hot_config_drains_pending_inference_and_uses_fresh_observation(running_policy, value, expected):
     module, manifest, policy, model = running_policy
     chunk = step(policy, [], 0)
     model.gate.clear()
     model.started.clear()
     step(policy, chunk[21:], 21)
     assert model.started.wait(1) and policy.pending is not None
-    module.configure(policy, manifest, 'params.gripper_upper_value', '1.5', lambda _: pytest.fail('no lifecycle'))
+    module.configure(policy, manifest, 'params.gripper_upper_value', value, lambda _: pytest.fail('no lifecycle'))
     model.output[:, [6,13]] = [3.,2.]
     with ThreadPoolExecutor(1) as caller:
         changed = caller.submit(policy.step, {'qpos':np.full(14,9.)}, [], images(), runtime=runtime(22,2,2))
@@ -142,7 +143,7 @@ def test_hot_config_drains_pending_inference_and_uses_fresh_observation(running_
         fresh = changed.result(3)
     assert len(model.calls) == 3
     np.testing.assert_array_equal(model.calls[-1][0], 9.)
-    np.testing.assert_array_equal(fresh[:,6], 1.5)
+    np.testing.assert_array_equal(fresh[:,6], expected)
     assert sum(name == 'load' for name, _ in model.events) == 1
 
 
@@ -173,3 +174,37 @@ def test_test_scope_registers_only_selected_pi05_sources():
     assert 'tests/test_pi05_lift2.py' in chosen
     assert 'tests/test_pi05_worker.py' not in chosen
     assert 'tests/test_pi05_lift2.py' not in suite({'pi05'}, False)
+
+
+def test_delta_keeps_old_overlap_while_new_future_is_pending_and_after_collection(running_policy):
+    _, manifest, policy, model = running_policy
+    manifest['params'].update(gripper_upper_threshold=2., gripper_lower_threshold=2.,
+                              gripper_upper_value='+0.5', gripper_lower_value='-0.5')
+    model.output[:, [6,13]] = [3.,1.]
+    chunk = step(policy, [], 0)
+    model.gate.clear()
+    model.started.clear()
+    model.output[:, [6,13]] = [8.,4.]
+    chunk = step(policy, chunk[21:], 21)
+    assert model.started.wait(1)
+    chunk = step(policy, chunk[1:], 22)
+    np.testing.assert_allclose(chunk[:,[6,13]],np.tile([3.5,.5],(28,1)))
+    model.gate.set()
+    policy.pending.result(3)
+    output = step(policy, chunk[1:], 23)
+    np.testing.assert_allclose(output[:27,[6,13]],np.tile([3.5,.5],(27,1)))
+    np.testing.assert_allclose(output[27:,[6,13]],np.tile([8.5,4.5],(len(output)-27,1)))
+    np.testing.assert_array_equal(policy.canonical,output)
+    np.testing.assert_array_equal(model.output[:,6],8.)
+
+
+def test_gripper_processing_is_included_in_prediction_completion_deadline(running_policy, monkeypatch):
+    import time
+    import rc_pi05_lift2.runtime as implementation
+    _, _, policy, _ = running_policy
+    # Model completion uses the SDK clock. Only the postprocessing completion
+    # clock is advanced, making the deadline check independent of wall time.
+    monkeypatch.setattr(implementation, 'time', SimpleNamespace(monotonic=lambda:time.monotonic()+120))
+    with pytest.raises(TimeoutError,match='deadline'):
+        step(policy, [], 0)
+    assert policy._failure is not None and len(policy.canonical)==0

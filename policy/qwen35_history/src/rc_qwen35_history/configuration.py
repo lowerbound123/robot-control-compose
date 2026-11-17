@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .gripper import parse_gripper_value
+
 PARTS = ('left_joint', 'left_gripper', 'right_joint', 'right_gripper')
 WIDTHS = (6, 1, 6, 1)
 LANGUAGE_FIELDS = ('Memory', 'Scene', 'Subtask')
@@ -178,10 +180,10 @@ def validate_manifest(config):
         value = params.get(name, default)
         if name == 'gripper_lower_threshold' and value is None:
             continue
-        if type(value) not in (int, float) or not math.isfinite(value):
+        if name.endswith('_value'):
+            parse_gripper_value(value, 'params.'+name)
+        elif type(value) not in (int, float) or not math.isfinite(value):
             raise ValueError(f'params.{name} must be a finite number')
-        if name.endswith('_value') and abs(value) > float(np.finfo(np.float32).max):
-            raise ValueError(f'params.{name} must fit a finite float32 action')
     if 'arm_clip_max_delta_rad' in params:
         positive(params['arm_clip_max_delta_rad'], 'params.arm_clip_max_delta_rad')
     task = config.get('params', {}).get('task')

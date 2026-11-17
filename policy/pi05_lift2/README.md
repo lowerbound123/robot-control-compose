@@ -52,9 +52,9 @@ processor 状态文件名以 JSON 中的 `state_file` 为准，不能缺失或�
 | `params.gripper_lower_threshold` | x2，下限；null 禁用下限 | 2.5 |
 | `params.gripper_lower_value` | y2，下限输出 | 0.0 |
 
-先判断处理前的夹爪值 `g >= x1`，命中输出 y1；否则启用下限且 `g <= x2` 时输出 y2；均未命中保留 g。两条规则不对替换结果再次判断，重叠时上限优先。因此默认恰好等于 2.5 时输出 4.9。
+先判断新预测的夹爪值 `g >= x1`，否则判断启用下限且 `g <= x2`。命中的 y 是数字时赋值，是有正负号的字符串时计算 `g + float(y)`；均未命中保留 g。数字 `-0.5` 是赋值，字符串 `"-0.5"` 是减 0.5。两条规则不对结果再次判断，重叠时上限优先。因此默认新预测恰好等于 2.5 时处理为 4.9。
 
-规则在反归一化、单位还原和 chunk 融合后作用于输出副本，原始预测与 canonical 缓存不被修改，缓存直返不重复处理。不使用 Qwen 的 `+0.15` 夹爪修正。
+每次提交后台推理时快照规则，在反归一化、单位还原后对新预测副本处理一次，再进入 SDK 的裁剪与融合。canonical 保存已处理、已融合动作；重叠区间保留旧夹爪计划，不再次阈值化或加 delta。原始模型数组不被修改，缓存直返不重复处理；完成时间包含夹爪处理，仍受原推理期限约束。不使用 Qwen 的 `+0.15` 夹爪修正。
 
 ```text
 policy pi05_lift2 config set params.gripper_upper_threshold 3.0
@@ -63,6 +63,8 @@ policy pi05_lift2 config set params.gripper_lower_threshold 2.0
 policy pi05_lift2 config set params.gripper_lower_value 0.0
 policy pi05_lift2 config save
 ```
+
+将 y 改为 `"+0.5"` / `"-0.5"` 可配置增量，例如 `policy pi05_lift2 config set params.gripper_upper_value "+0.5"`。保存和 setup 合并保留字符串类型；有限性、溢出检查及完整示例见[统一夹爪说明](../../docs/history-policy-configuration.md#夹爪输出规则)。数字赋值也已移动到融合之前，启用融合时的输出可能不同于旧版。
 
 夹爪参数支持普通热更新并保存到本目录 `policy.yaml`，不卸载模型权重。RC 配置换代后，本策略先排空旧后台预测、清除旧计划并重置 processor 的临时状态，再以新观测规划；已提交动作按原 FIFO 规则收尾。仅改变 RC 的 `execution.mode/call_every_actions` 时保留当前动作计划。重复实例使用精确实例名。
 

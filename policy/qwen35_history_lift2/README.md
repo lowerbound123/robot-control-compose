@@ -12,13 +12,13 @@
 
 LIFT2 schema 保留 history 模型的 32 维布局，两个夹爪在模型第 7、15 维。恢复原生 14 维后，delta 模式只对 12 个手臂关节加回当前状态；夹爪保持绝对值。初始化、修改模型配置和 `switch-model` 都检查 LIFT2 统计量，缺少或不合法时直接报错，不回退到 `arx_acone`，也不从其他 checkpoint 借用统计量。
 
-随后处理输出副本的两个夹爪列（从 0 开始的第 6、13 维）：
+每次新推理完成后、轨迹融合前，处理新预测副本的两个夹爪列（从 0 开始的第 6、13 维）：
 
 - 夹爪值大于等于 `params.gripper_upper_threshold`（x1，默认 `2.5`）：输出 `params.gripper_upper_value`（y1，默认 `4.9`）。
 - 未命中上限且小于等于 `params.gripper_lower_threshold`（x2，默认 `2.5`）：输出 `params.gripper_lower_value`（y2，默认 `0.0`）；x2 为 `null` 时禁用下限。
 - 均未命中时保留原值；阈值相等或范围重叠时上限优先，因此默认恰好等于 `2.5` 时输出 `4.9`。
 
-两条规则使用同一个处理前的夹爪值，不会把替换后的 y1 再交给下限处理。这个步骤不修改已反归一化的 12 个手臂关节，原始预测不被替换；是否融合和 RC 的 sync/async 模式均不改变该规则。原 `qwen35_history` 使用相同四参数规则，但保留自身 ACOne 统计量和默认值。RC 的设备限速仍在后续发送阶段执行。
+两条规则使用同一个处理前的夹爪值，不会把替换后的 y1 再交给下限处理。y 为数字时赋值，为 `"+0.5"` / `"-0.5"` 这类字符串时加减该帧原始预测值。这个步骤不修改已反归一化的 12 个手臂关节或原始模型数组；仅在新推理完成时处理一次，再与已处理旧动作融合，缓存与旧前缀不重复累加。融合使用处理后的夹爪参与接续点计算和插值，之后不再阈值化。原 `qwen35_history` 使用相同四参数规则，但保留自身 ACOne 统计量和默认值。RC 的设备限速仍在后续发送阶段执行。
 
 ## 配置与使用
 
@@ -49,7 +49,7 @@ policy qwen35_history_lift2 config set params.gripper_lower_value 0.0
 policy qwen35_history_lift2 config save
 ```
 
-四个夹爪参数保存在本目录 `policy.yaml`，数值须有限，两个输出值须可表示为有限 float32；只有下限允许 `null`。热更新不重载模型、不清空历史；
+四个夹爪参数保存在本目录 `policy.yaml`，y 接受有限数字或带正负号的小数/科学计数法字符串，增量相加也须在 float32 有限范围内；只有下限阈值允许 `null`。热更新不重载模型、不清空历史；
 RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，从新观测重新规划并应用新规则。
 已经提交给 connector 的动作不撤回。重复实例使用精确实例名。
 已有旧名称配置须先按[参数改名升级说明](../../docs/history-policy-configuration.md#夹爪参数改名升级)迁移；新旧名称不混用。
@@ -63,7 +63,7 @@ ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 R
 
 ## 定向验证
 
-`tests/test_qwen35_history_lift2.py` 覆盖阈值边界、手臂值保留、输入与 canonical 缓存不变、原策略隔离、同步/流水线调用、独立配置和镜像复用，以及替换 GPU 后端的真实 RC/worker/example 自链。
+`tests/test_qwen35_history_lift2.py` 覆盖阈值边界、手臂值保留、原始输入保留、缓存不重复处理、原策略隔离、同步/流水线调用、独立配置和镜像复用，以及替换 GPU 后端的真实 RC/worker/example 自链。
 
 `tests/test_qwen35_history_lift2_normalization.py` 使用刻意不同的 ACOne/LIFT2 状态与动作统计量，验证数据组选择、错误预检、模型切换以及真实 CPU 变换的归一化/逆重排/反归一化/delta 还原。测试不加载真实模型或连接硬件。
 

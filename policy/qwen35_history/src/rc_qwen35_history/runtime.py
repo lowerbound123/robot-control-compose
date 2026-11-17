@@ -15,6 +15,7 @@ from rc_policy_sdk.actions import normalize_actions
 from .history import HistoryBuffer
 from .configuration import DEFAULTS, GRIPPER_DEFAULTS
 from .settings import SNAPSHOT
+from .gripper import process_grippers
 
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 
@@ -214,12 +215,8 @@ class HistoryPolicy:
                  upper_value=GRIPPER_DEFAULTS['gripper_upper_value'],
                  lower_threshold=GRIPPER_DEFAULTS['gripper_lower_threshold'],
                  lower_value=GRIPPER_DEFAULTS['gripper_lower_value']):
-        result = actions.copy()
-        grippers = result[:, [6, 13]]
-        lower = grippers if lower_threshold is None else np.where(grippers <= lower_threshold, lower_value, grippers)
-        # Both rules inspect the original values; the upper rule wins overlap.
-        result[:, [6, 13]] = np.where(grippers >= upper_threshold, upper_value, lower)
-        return result
+        return process_grippers(actions, upper_threshold=upper_threshold, upper_value=upper_value,
+                                lower_threshold=lower_threshold, lower_value=lower_value)
 
     def _observe_history(self, images, runtime):
         """Called with the history lock; observations may overtake an infer RPC."""
@@ -287,16 +284,18 @@ class HistoryPolicy:
                 self._record(cached_actions=len(old))
                 if perf: perf.mark('history.cache', remaining_actions=len(old), consumed_actions=count)
                 return old.copy()
+            # Freeze scalar rules before submission. Old/cached commands already
+            # carry their processing and must never receive another delta.
+            params = self.policy_config.get('params', {})
+            rules = {name.removeprefix('gripper_'): params.get(name, default)
+                     for name, default in GRIPPER_DEFAULTS.items()}
             with (perf.span('history.model', remaining_actions=len(old)) if perf else nullcontext()):
                 self._launch(state, images, count, epoch, contexts)
                 new = self._collect()
-            self.canonical = self.transition.apply(old, new) if self.pipelined else new.copy()
+            new = self._process(new, **rules)
+            self.canonical = self.transition.apply(old, new) if self.pipelined else new
             self._record(cached_actions=len(self.canonical))
-            params = self.policy_config.get('params', {})
-            gripper = {name: params.get(name, default) for name, default in GRIPPER_DEFAULTS.items()}
-            return self._process(self.canonical, upper_threshold=gripper['gripper_upper_threshold'],
-                                 upper_value=gripper['gripper_upper_value'],
-                                 lower_threshold=gripper['gripper_lower_threshold'], lower_value=gripper['gripper_lower_value'])
+            return self.canonical.copy()
         except Exception as exc:
             self._failure = exc
             self._record(context_state='failed', last_error=f'{type(exc).__name__}: {exc}'[:512])

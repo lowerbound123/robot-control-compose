@@ -1,11 +1,12 @@
 """Independent LIFT2 Pi05 lifecycle and configurable output gripper rules."""
 import copy
 from pathlib import Path
+import time
 
-import numpy as np
 from rc_policy_sdk.async_chunks import AsyncChunkPolicy
 
 from .configuration import GRIPPER_DEFAULTS, load_model_config, resolve_config_path
+from .gripper import process_grippers
 
 
 class AsyncPi05Policy(AsyncChunkPolicy):
@@ -23,15 +24,20 @@ class AsyncPi05Policy(AsyncChunkPolicy):
                          request_when_remaining=execution['request_when_remaining'],
                          inference_timeout_s=execution['inference_timeout_s'])
 
-    def _process(self, actions):
+    def _launch(self, state, images, runtime):
         params = self.policy_config.get('params', {})
-        settings = {name: params.get(name, default) for name, default in GRIPPER_DEFAULTS.items()}
-        result = actions.copy()
-        grippers = result[:, [6, 13]]
-        lower_threshold = settings['gripper_lower_threshold']
-        lower = grippers if lower_threshold is None else np.where(grippers <= lower_threshold, settings['gripper_lower_value'], grippers)
-        result[:, [6, 13]] = np.where(grippers >= settings['gripper_upper_threshold'], settings['gripper_upper_value'], lower)
-        return result
+        # There is one owned prediction at a time; reset drains it before a new
+        # launch can replace this detached snapshot of immutable scalar values.
+        self._prediction_rules = {name.removeprefix('gripper_'): params.get(name, default)
+                                  for name, default in GRIPPER_DEFAULTS.items()}
+        super()._launch(state, images, runtime)
+
+    def _predict(self, qpos, images, instruction):
+        rules = self._prediction_rules
+        actions, _ = super()._predict(qpos, images, instruction)
+        processed = process_grippers(actions, **rules)
+        # Include postprocessing in the existing inference completion deadline.
+        return processed, time.monotonic()
 
     def step(self, state, action_chunk, images, *, runtime):
         if self._closed:

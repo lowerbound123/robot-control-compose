@@ -49,6 +49,7 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 夹爪上限 x1 为 `params.gripper_upper_threshold`（默认 `-0.8`），上限输出 y1 为 `params.gripper_upper_value`（默认 `0.04`）。下限 x2 为 `params.gripper_lower_threshold`（默认 `null`，禁用下限），下限输出 y2 为 `params.gripper_lower_value`（默认 `0.0`）。`g >= x1` 输出 y1；否则启用下限且 `g <= x2` 输出 y2；均未命中则保留原值。规则重叠时上限优先，所有比较使用处理前的夹爪值。用
 `policy qwen35_history config set params.gripper_upper_threshold -1.2` 热更新，
 `policy qwen35_history config save` 保存到本来源配置；重复实例使用精确实例名。
+两个 y 参数也接受带正负号的字符串：数字 `-0.5` 表示赋值，字符串 `"-0.5"` 表示从该帧新预测值减 0.5，`"+0.5"` 表示加 0.5。提交推理时快照规则，新预测只处理一次，再与已处理的旧动作融合；缓存直返和旧前缀不重复累加。融合后的夹爪不会再阈值化，原始 monitor 不变。完整校验与保存语义见[夹爪输出规则](../../docs/history-policy-configuration.md#夹爪输出规则)。
 已有旧名称配置须先按[参数改名升级说明](../../docs/history-policy-configuration.md#夹爪参数改名升级)迁移；新旧名称不混用。
 修改任一夹爪参数不重载模型、不清空历史。RC 配置提交推进代次后，策略丢弃旧代次的剩余计划和在途预测，
 从新观测重新规划并应用新规则；已经提交给 connector 的动作不撤回。完整字段、默认值和命令见[夹爪输出规则](../../docs/history-policy-configuration.md#夹爪输出规则)。
@@ -67,9 +68,9 @@ RC 的 `execution.mode` 可选 `sync` / `async`，`call_every_actions` 是 RC �
 
 共享图像在回调内复制，缩放后的历史拥有独立内存。后台推理仅持有自有当前图像与不可变历史快照；不保留共享 mmap、切片或旧 runtime。reset/release 清空历史，重复来源实例互相隔离。
 
-前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。融合后按上述上下限规则处理夹爪，默认大于等于−0.8时置为0.04，其余保留原值。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
+前缀每轮重新编码当前图像、任务、状态和历史视频，获得 KV；动作专家复用这份 KV 完成10次 Euler 更新，输出 `[1,50,32]`。按 schema 逆重排到14维后反归一化，delta仅加回12个臂关节的本轮观测位置，夹爪保持绝对值。新预测先按上述上下限规则处理夹爪，再进入轨迹融合，默认大于等于−0.8时置为0.04，其余保留原值。训练 pad_keys 指定的动作维度固定为来源 home 值；不是运行时自动复位。
 
-另有正式来源 [`qwen35_history_lift2`](../qwen35_history_lift2/README.md)：独立配置和执行实例，各自持有 history 实现与配置，并使用同一依赖镜像，固定使用所选 checkpoint 的 `stats.json["arx_lift2"]` 分别做状态归一化、动作反归一化，并按 LIFT2 schema 重排和还原。该来源也使用四参数夹爪规则，默认大于等于 2.5 输出 4.9、其余输出 0；手臂值和原始预测缓存保持不变。缺少 LIFT2 统计量会在初始化或模型切换预检时报错。本来源仍使用 ACOne 统计量及自身夹爪默认值；两者都要求 history 模型格式。
+另有正式来源 [`qwen35_history_lift2`](../qwen35_history_lift2/README.md)：独立配置和执行实例，各自持有 history 实现与配置，并使用同一依赖镜像，固定使用所选 checkpoint 的 `stats.json["arx_lift2"]` 分别做状态归一化、动作反归一化，并按 LIFT2 schema 重排和还原。该来源也使用四参数夹爪规则，默认大于等于 2.5 输出 4.9、其余输出 0；夹爪处理不修改手臂列和原始模型输出。缺少 LIFT2 统计量会在初始化或模型切换预检时报错。本来源仍使用 ACOne 统计量及自身夹爪默认值；两者都要求 history 模型格式。
 
 VLM及专家主体为BF16，专家小投影保持FP32。初始化使用合成480×640观测经过真实processor预热，既不读取机器人，也不增加历史。CUDA Graph 与 eager 使用相同噪声对照，归一化动作最大差值需不超过0.05；不支持的布局或捕获失败回退eager。CPU测试不能证明CUDA捕获可用。
 

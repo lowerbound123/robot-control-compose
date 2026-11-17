@@ -7,6 +7,8 @@ import re
 
 import numpy as np
 
+from .gripper import parse_gripper_value
+
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 GRIPPER_DEFAULTS = {'gripper_upper_threshold': 2.5, 'gripper_upper_value': 4.9,
                     'gripper_lower_threshold': 2.5, 'gripper_lower_value': 0.}
@@ -238,10 +240,10 @@ def validate_manifest(config):
         value = params.get(name, default)
         if name == 'gripper_lower_threshold' and value is None:
             continue
-        if type(value) not in (int, float) or not math.isfinite(value):
+        if name.endswith('_value'):
+            parse_gripper_value(value, 'params.'+name)
+        elif type(value) not in (int, float) or not math.isfinite(value):
             raise ValueError(f'params.{name} must be a finite number')
-        if name.endswith('_value') and abs(value) > float(np.finfo(np.float32).max):
-            raise ValueError(f'params.{name} must fit a finite float32 action')
     path = config.get('params', {}).get('model_config_path')
     if not isinstance(path, str) or not path.strip():
         raise ValueError('params.model_config_path must be nonempty')

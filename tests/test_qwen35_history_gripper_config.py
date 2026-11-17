@@ -41,7 +41,7 @@ def test_inclusive_rules_use_original_values_and_keep_unmatched_grippers(entry):
         np.testing.assert_array_equal(output[:, 13], [-4., -4., 0., 5., 5.] * 10)
         np.testing.assert_array_equal(output[:, :6], raw[:, :6])
         np.testing.assert_array_equal(output[:, 7:13], raw[:, 7:13])
-        np.testing.assert_array_equal(policy.canonical, raw)
+        np.testing.assert_array_equal(policy.canonical, output)
         np.testing.assert_array_equal(backend.output, raw)
     finally:
         policy.close()
@@ -123,7 +123,7 @@ def test_threshold_commit_replans_grippers_without_reset_or_model_reload(entry, 
         output = context.step(state, [], frames(1),
                               runtime=SimpleNamespace(consumed_actions=1, control_epoch=2, config_version=2))
         np.testing.assert_allclose(output[:, [6, 13]], np.tile([3., 4.9] if lift2 else [.04, .04], (len(output), 1)))
-        np.testing.assert_array_equal(context.canonical, raw[:len(output)])
+        np.testing.assert_array_equal(context.canonical, output)
         np.testing.assert_array_equal(output[:, :6], raw[:len(output), :6])
         assert context.policy_config is active and context.history.tick == 1
         assert len(backend.calls) == 2

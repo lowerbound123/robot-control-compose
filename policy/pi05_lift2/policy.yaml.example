@@ -46,14 +46,14 @@ config_hints:
       type: float
       help: 上限 x1；夹爪值 >= x1 时输出 gripper_upper_value，优先于下限规则
     params.gripper_upper_value:
-      type: float
-      help: 上限输出 y1；热更新保留已加载模型，旧预测和缓存失效
+      type: json
+      help: 上限 y；数字表示赋值，带引号的 "+0.5" / "-0.5" 表示增量；只处理新预测一次，再融合
     params.gripper_lower_threshold:
       type: json
       help: 下限 x2；未命中上限且夹爪值 <= x2 时输出 gripper_lower_value；null 禁用下限
     params.gripper_lower_value:
-      type: float
-      help: 下限输出 y2；均未命中保留原值
+      type: json
+      help: 下限 y；数字表示赋值，带引号的 "+0.5" / "-0.5" 表示增量；只处理新预测一次，再融合
     execution.mode:
       type: enum
       choices:
