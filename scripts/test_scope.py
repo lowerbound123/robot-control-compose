@@ -36,6 +36,7 @@ def suite(policies, interface):
         add("test_pi05_*.py")
     if policies & {"pi05", "pi05_lift2"}:
         add("test_pi05_task*.py")
+        add("test_pi05_monitor.py")
     if "pi05_lift2" in policies:
         add("test_pi05_lift2*.py")
     if "internvla_maas" in policies:

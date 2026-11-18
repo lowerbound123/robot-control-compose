@@ -130,8 +130,12 @@ class PolicyRecord:
         return self.config.get("kind") == "chain"
 
     @property
+    def scheduling_member(self):
+        return self.members[0] if self.is_chain else self
+
+    @property
     def execution(self):
-        return self.members[0].config["execution"] if self.is_chain else self.config["execution"]
+        return self.scheduling_member.config["execution"]
 
 
 def validate_entry(directory: Path) -> None:

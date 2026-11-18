@@ -45,7 +45,19 @@ class Context:
 - 每次结果按插入顺序完整替换上一份；删除的 key 会消失，空字典显示“暂无信息”。
 - 没有回调的旧策略正常运行。异步函数、生成器或不接受 context 的函数不公布监控能力。
 
-本轮没有给 hold、Qwen 或 llm_direction 增加默认业务指标；需要在对应入口中添加这个可选回调后才能打开其面板。
+## π0.5 策略
+
+加载策略后输入 `monitor pi05` 或 `monitor pi05_lift2` 打开面板，再输入一次即可关闭。链中的重复实例使用完整实例名，例如 `monitor pi05_lift2-0`。
+
+| 想检查什么 | 看哪些字段 |
+| --- | --- |
+| 当前任务与模型 | `task`、`checkpoint`、`device`、`action_mode`、模型预测长度 `model_horizon` 和可执行长度 `chunk_size`。已加载配置提供时也显示 `model_dtype` 和 `num_inference_steps`。 |
+| 下一批何时预测 | 剩余动作数 `cached_actions` 低于 `request_when_remaining` 时可以提交预测。`consumed_actions` 和 `control_epoch` 来自最近的策略回调，`last_trim` 表示最近一次收取结果时裁掉的过期步数。 |
+| 后台预测卡在哪里 | `model_stage`、`model_stage_age_ms`、`inference_busy`。已提交且仍由调度器持有的请求显示 `pending=1`、`pending_age_ms`、`pending_remaining_ms`。预测成功后、回调收取结果前，可以看到 `inference_busy=0` 且 `pending=1`。 |
+| 一次预测用了多久 | `load_ms`、`warmup_ms` 单独计时。首次成功预测后显示 `predict_ms`、`predict_avg_ms`、`predict_max_ms`。生产后端另报最近一次成功预测的预处理 `processor_ms`、模型前向 `model_forward_ms`、动作还原及夹爪后处理 `post_ms`。这些是宿主线程观察到的墙钟时间，GPU 操作可异步执行。 |
+| 观测与故障 | 最近提交的三路 `*_image_shape` 按高×宽×通道显示。提交数 `inference_count`、成功预测数 `inference_completed`、后台预测异常数 `inference_errors`、裁剪累计数和复位次数按实例 context 累计。发生错误后显示 `last_error`，后台异常还会记录 `last_error_stage`。 |
+
+预热单独统计。普通 reset 清除当前计划、待取结果和错误，保留累计计数和最近成功预测的耗时。监控仅读取标量快照，打开面板不会触发推理或额外的 CUDA 同步。
 
 ## 使用面板
 

@@ -48,10 +48,13 @@ class AsyncChunkPolicy:
             raise
 
     def _load(self):
+        self._load_backend()
+        self.backend.warmup()
+
+    def _load_backend(self):
         self.backend.load()
         if self.backend.chunk_size != self.chunk_size:
             raise ValueError(f'model chunk_size must be exactly {self.chunk_size}')
-        self.backend.warmup()
 
     def _predict(self, qpos, images, instruction):
         result = np.asarray(self.backend.predict(qpos, images, instruction), dtype=np.float32)
@@ -71,8 +74,10 @@ class AsyncChunkPolicy:
             snapshot[name] = frame.copy()
         self._request = (runtime.consumed_actions, runtime.control_epoch)
         self._deadline = time.monotonic() + self.timeout
-        self.pending = self._executor.submit(self._predict, qpos.copy(), snapshot,
-                                             self.instruction)
+        self.pending = self._submit_prediction(qpos.copy(), snapshot, self.instruction)
+
+    def _submit_prediction(self, qpos, images, instruction):
+        return self._executor.submit(self._predict, qpos, images, instruction)
 
     @staticmethod
     def _process(actions):

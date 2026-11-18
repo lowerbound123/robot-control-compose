@@ -3,13 +3,13 @@ import copy
 from pathlib import Path
 import time
 
-from rc_policy_sdk.async_chunks import AsyncChunkPolicy
+from rc_policy_sdk.monitored_chunks import MonitoredAsyncChunkPolicy
 
 from .configuration import GRIPPER_DEFAULTS, load_model_config, resolve_config_path
 from .gripper import process_grippers
 
 
-class AsyncPi05Policy(AsyncChunkPolicy):
+class AsyncPi05Policy(MonitoredAsyncChunkPolicy):
     def __init__(self, config, *, policy_config=None, backend=None, project_root=None):
         self.config = copy.deepcopy(config)
         self.policy_config = policy_config if policy_config is not None else {}
@@ -17,12 +17,21 @@ class AsyncPi05Policy(AsyncChunkPolicy):
         self.project_root = Path(project_root or Path.cwd()).resolve()
         if backend is None:
             from .backend import Pi05Backend
-            backend = Pi05Backend(self.config)
+            backend = Pi05Backend(self.config, record_stage=self.prediction_stage)
         execution = self.config['execution']
         super().__init__(backend, instruction=self._task_instruction(),
                          chunk_size=execution['chunk_size'],
                          request_when_remaining=execution['request_when_remaining'],
                          inference_timeout_s=execution['inference_timeout_s'])
+        model = self.config.get('model', {})
+        loaded = getattr(backend, 'policy_config', None)
+        metadata = dict(checkpoint=model.get('checkpoint'), device=model.get('device'),
+                        model_horizon=model.get('chunk_size'),
+                        action_mode=self.config.get('actions', {}).get('representation'),
+                        num_inference_steps=getattr(loaded, 'num_inference_steps', None),
+                        model_dtype=getattr(loaded, 'dtype', None))
+        self._record(**{key: value if type(value) is int else str(value)[:512]
+                        for key, value in metadata.items() if value is not None})
 
     def _task_instruction(self):
         task = self.policy_config.get('params', {}).get('task')
@@ -71,6 +80,7 @@ class AsyncPi05Policy(AsyncChunkPolicy):
         super().reset()
         self._config_version = None
         self.instruction = self._task_instruction()
+        self._record(task=self.instruction[:512])
 
     def switch_task(self, task):
         if not isinstance(task, str) or not task.strip():

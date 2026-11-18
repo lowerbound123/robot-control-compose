@@ -66,7 +66,8 @@ def validate_normalization(pipeline, feature_name, feature, expected_mode, proce
 
 
 class Pi05Backend:
-    def __init__(self, config):
+    def __init__(self, config, *, record_stage=None):
+        self._record_stage = record_stage if record_stage is not None else lambda name: None
         self.config = copy.deepcopy(config)
         self.checkpoint = Path(config['model']['checkpoint'])
         self.chunk_size = config['execution']['chunk_size']
@@ -163,12 +164,15 @@ class Pi05Backend:
         if self._closed or self.policy is None:
             raise RuntimeError('Pi05 backend is not loaded')
         with torch.inference_mode():
+            self._record_stage('processor')
             batch = self.preprocessor(self._inputs(qpos, images, instruction))
+            self._record_stage('model_forward')
             prediction = self.policy.predict_action_chunk(batch)
             shape = (1, self.model_horizon, 14)
             if (not isinstance(prediction, torch.Tensor) or tuple(prediction.shape) != shape
                     or not torch.isfinite(prediction).all().item()):
                 raise ValueError(f'Pi05 must return finite model actions shaped {shape}')
+            self._record_stage('post')
             prediction = self.postprocessor(prediction)
             if not isinstance(prediction, torch.Tensor) or tuple(prediction.shape) != shape:
                 raise ValueError(f'Pi05 postprocessor must preserve action shape {shape}')

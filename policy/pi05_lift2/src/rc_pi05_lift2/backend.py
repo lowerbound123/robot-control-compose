@@ -48,7 +48,8 @@ def resize_with_pad(image, size=224):
 
 
 class Pi05Backend:
-    def __init__(self, config):
+    def __init__(self, config, *, record_stage=None):
+        self._record_stage = record_stage if record_stage is not None else lambda name: None
         self.config = copy.deepcopy(config)
         self.checkpoint = Path(config['model']['checkpoint'])
         self.chunk_size = config['execution']['chunk_size']
@@ -133,9 +134,11 @@ class Pi05Backend:
 
         if self._closed or self.policy is None:
             raise RuntimeError('Pi05 backend is not loaded')
+        self._record_stage('processor')
         native_state = self._native_state(qpos)
         with torch.inference_mode():
             batch = self._inputs(native_state, images, instruction)
+            self._record_stage('model_forward')
             with torch.autocast(device_type=torch.device(self.device).type, dtype=self.dtype,
                                 enabled=self.dtype != torch.float32):
                 prediction = self.policy.predict_action_chunk(batch)
@@ -143,6 +146,7 @@ class Pi05Backend:
             if (not isinstance(prediction, torch.Tensor) or tuple(prediction.shape) != shape
                     or not torch.isfinite(prediction).all().item()):
                 raise ValueError(f'Pi05 must return finite model actions shaped {shape}')
+            self._record_stage('post')
             # This export composes 14 contiguous channels then pads at the END.
             # A sparse 16-channel extraction would swap both grippers/joints.
             prediction = prediction[0, :, :14].float()

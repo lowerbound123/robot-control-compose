@@ -135,6 +135,22 @@ def test_rc_scheduling_edits_keep_action_epoch_and_cached_targets(example_rc):
     assert rc._worker is worker and worker.context_id == context_id
 
 
+def test_scheduling_shortcuts_change_only_the_active_chain_head(example_rc):
+    rc = example_rc
+    copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
+    command(rc, 'policy switch example_chain')
+    group = rc._worker
+    head, tail = (group.member_workers()[f'example-{i}'] for i in (0, 1))
+    tail_version = tail.config_version
+    with pytest.raises(PermissionError):
+        rc.submit('async', origin='mcp')
+    for mode in ('async', 'sync'):
+        command(rc, mode)
+        assert group.execution['mode'] == head.config['execution']['mode'] == mode
+        assert tail.config_version == tail_version
+        assert rc.status()['state'] == 'paused'
+
+
 @pytest.mark.parametrize('mode', ['async', 'sync'])
 def test_running_mode_edit_waits_for_inflight_and_keeps_execution_context(example_rc, mode):
     from test_controller import until
@@ -144,7 +160,8 @@ def test_running_mode_edit_waits_for_inflight_and_keeps_execution_context(exampl
     command(rc, 'resume')
     until(lambda: rc._inflight is not None)
     worker, context_id, generation = rc._worker, rc._worker.context_id, rc.buffer.generation
-    command(rc, f'policy example config set execution.mode {mode}')
+    command(rc, mode)
+    assert worker.config['execution']['mode'] == mode
     assert rc.buffer.generation == generation
     assert rc._worker is worker and worker.context_id == context_id
     consumed = rc.buffer.consumed

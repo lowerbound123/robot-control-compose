@@ -234,6 +234,9 @@ def test_native_gripper_rules_apply_once_after_saved_processors_and_unit_convers
     runtime=SimpleNamespace(consumed_actions=0,control_epoch=1,config_version=1)
     try:
         output=policy.step({'qpos':np.full(14,3.,np.float32)},[],frames(),runtime=runtime)
+        snapshot = policy.monitor()
+        assert snapshot['model_stage'] == 'idle' and snapshot['inference_completed'] == 1
+        assert 0 < sum(snapshot[key] for key in ('processor_ms', 'model_forward_ms', 'post_ms')) <= snapshot['predict_ms'] + 1e-6
         np.testing.assert_allclose(output[:,[6,13]],5.)
         np.testing.assert_allclose(output[:,:6],4.5)
         runtime.consumed_actions=1

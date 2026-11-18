@@ -58,3 +58,15 @@ def test_auto_record_completion_includes_explicit_mode_arguments():
     assert complete_command('record auto ') == ['record auto off','record auto on']
     for line in ('record auto yes','record auto on extra','record auto status'):
         with pytest.raises(ValueError): parse_command(line)
+
+
+@pytest.mark.parametrize('mode', ['async', 'sync'])
+def test_scheduling_shortcut_is_a_discoverable_config_write(mode):
+    parsed = parse_command(mode)
+    assert (parsed.kind, parsed.target, parsed.key, parsed.value) == (
+        'policy_config_set', None, 'execution.mode', f'"{mode}"')
+    assert not parsed.readonly and not parsed.local_only
+    assert mode in complete_command(mode[:2])
+    assert parse_command('help ' + mode).args == (mode,)
+    with pytest.raises(ValueError):
+        parse_command(mode + ' example')

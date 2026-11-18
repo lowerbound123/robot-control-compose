@@ -41,6 +41,16 @@ def test_old_control_tokens_never_execute_and_resume_does_not_return(setup_contr
     assert 'mcp return' in rc.get_operation(resumed)['error']
 
 
+def test_scheduling_shortcut_requires_a_loaded_policy(setup_controller):
+    rc, _, _ = setup_controller
+    rc.config['startup_policy'] = None
+    rc.start()
+    until(lambda: rc._connected)
+    reply = rc.wait_operation(rc.submit('async'), 3)
+    assert reply['status'] == 'failed'
+    assert '没有已运行的策略实例' in reply['error']
+
+
 def test_config_save_requires_a_running_instance(setup_controller):
     rc, _, root = setup_controller
     rc.start()

@@ -137,6 +137,8 @@ class HumanCommandSupport:
         if self._identity is None or self._worker is None:
             raise ValueError('没有已运行的策略实例')
         record = self.registry.get(self._identity)
+        if identity is None:
+            return record, record.scheduling_member
         if record.is_chain:
             return record, self.registry.resolve_member(record, identity)
         if identity != record.instance_id:

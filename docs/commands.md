@@ -9,6 +9,8 @@ help connector switch
 status
 pause
 resume
+async
+sync
 reset
 exit
 
@@ -94,6 +96,8 @@ TUI 输入框上方的常驻状态栏使用紧凑的字段/值表格，宽屏每
 `connector switch <名称>` 使用命名 connector profile 热切换连接，正常 policy 容器保留；成功后暂停，失败后仅显式 `connector retry` 或 `policy <实例> retry` 恢复。profile 结构及退出证明要求见 [connector 热切换](connector-switching.md)。
 
 `camera` 等同于 `camera toggle`，连续执行两次分别显示和隐藏相机面板。`camera show` 与 `camera hide` 显式设置显示状态。
+
+`async` 和 `sync` 热改当前策略的 `execution.mode`。等待策略回包时，异步模式继续发送缓存中的目标，同步模式保持当前目标。原生链使用链首实例的调度配置。单纯切换调度模式保留已有动作和当前的运行或暂停状态。要在下次加载时沿用该模式，执行 `policy <实例> config save`。
 
 `resume` 只恢复 policy 拥有控制权时的运行，不隐式归还 MCP 控制权。本地接管/归还使用 `mcp take` / `mcp return`；HTTP 的结构化工具名仍为 take/return。MCP 工具参数只能是 JSON 对象，无参数工具可省略对象。`mcp help` 显示工具目录。
 

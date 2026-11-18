@@ -184,6 +184,10 @@ policy pi05 switch-model model_alt.json
 
 用户的实际 checkpoint、NVIDIA GPU、推理延迟和机器人动作需要在目标机器另行验证。镜像构建或 CPU fixture 通过不能替代这些验收。
 
+## 推理监控
+
+在 TUI 输入 `monitor pi05` 查看当前任务、后台预测、动作余量、裁剪和阶段耗时。再次输入可关闭面板。[π0.5 监控字段说明](../../docs/policy-monitor.md#π05-策略)
+
 ## 官方来源
 
 - [LeRobot π0.5 文档](https://huggingface.co/docs/lerobot/pi05)

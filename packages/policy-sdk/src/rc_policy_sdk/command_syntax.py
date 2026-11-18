@@ -5,7 +5,8 @@ import shlex
 
 # Each entry is (literal path, argument usage). One source for help/reservation/completion.
 COMMAND_TREE = (
-    ('help', '[命令路径]'), ('status', ''), ('pause', ''), ('resume', ''), ('reset', ''), ('exit', ''),
+    ('help', '[命令路径]'), ('status', ''), ('pause', ''), ('resume', ''), ('async', ''), ('sync', ''),
+    ('reset', ''), ('exit', ''),
     ('connector list', ''), ('connector status', ''), ('connector switch', '<名称>'), ('connector retry', ''),
     ('config rc show', ''), ('config rc set', '<字段> <JSON>'), ('config rc save', ''),
     ('global show', '[key]'), ('global set', '<key> <JSON>'), ('global remove', '<key>'),
@@ -95,6 +96,8 @@ def parse_command(line: str) -> Command:
         return Command('mcp_tool', name, args=(payload,))
     words = shlex.split(raw)
     head, args = words[0], words[1:]
+    if head in ('async', 'sync') and not args:
+        return Command('policy_config_set', key='execution.mode', value=json.dumps(head))
     if head in ('status', 'pause', 'resume', 'reset', 'exit', 'snapshot') and not args:
         return Command(head)
     if head == 'connector' and (args in (['list'], ['status'], ['retry']) or

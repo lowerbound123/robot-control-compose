@@ -114,16 +114,17 @@ def test_contiguous_first14_actions_unnormalize_before_delta_anchor_and_affine(t
 def test_gripper_delta_runs_once_after_robot_coordinates_and_before_fusion(tmp_path, monkeypatch):
     from rc_pi05_lift2.runtime import AsyncPi05Policy
     backend = prepared(tmp_path, monkeypatch, affine=True)
-    # Runtime owns backend initialization, so give it an unloaded equivalent.
+    # Exercise the runtime's normal backend construction and monitor wiring.
     backend.close()
-    module = importlib.import_module('rc_pi05_lift2.backend')
-    backend = module.Pi05Backend(backend.config)
     manifest = {'params':{'gripper_upper_threshold':4.5,'gripper_upper_value':'+0.5',
                           'gripper_lower_threshold':None}}
-    policy = AsyncPi05Policy(backend.config,policy_config=manifest,backend=backend)
+    policy = AsyncPi05Policy(backend.config,policy_config=manifest)
     runtime = SimpleNamespace(consumed_actions=0,control_epoch=1,config_version=1)
     try:
         output = policy.step({'qpos':np.full(14,3.,np.float32)},[],frames(),runtime=runtime)
+        snapshot = policy.monitor()
+        assert snapshot['model_stage'] == 'idle' and snapshot['inference_completed'] == 1
+        assert 0 < sum(snapshot[key] for key in ('processor_ms', 'model_forward_ms', 'post_ms')) <= snapshot['predict_ms'] + 1e-6
         np.testing.assert_allclose(output[:,[6,13]],5.)
         np.testing.assert_allclose(output[:,:6],8.)
         runtime.consumed_actions = 1
