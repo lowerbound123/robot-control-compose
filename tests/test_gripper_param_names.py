@@ -17,7 +17,7 @@ RENAMES = {
     'gripper_low_threshold':'gripper_lower_threshold',
     'gripper_low_value':'gripper_lower_value',
 }
-SOURCES = ('qwen35_history','qwen35_history_lift2','pi05_lift2')
+SOURCES = ('qwen35_history','qwen35_history_lift2','pi05','pi05_lift2')
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -149,7 +149,7 @@ def test_setup_and_legacy_name_migration_preserve_delta_strings(tmp_path, source
 
 
 @pytest.mark.parametrize('source,field', [('qwen35_history','gripper_upper_threshold'),
-    ('pi05','gripper_upper_value'), ('example','gripper_lower_value')])
+    ('hold','gripper_upper_value'), ('example','gripper_lower_value')])
 def test_setup_delta_union_does_not_weaken_other_field_or_source_types(tmp_path, source, field):
     from config_files import configuration_updates
     target = tmp_path/'policy'/source/'policy.yaml'

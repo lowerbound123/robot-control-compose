@@ -218,3 +218,25 @@ def test_native_probe_verifies_loading_and_warmup_without_rc(tmp_path, monkeypat
     (tmp_path / 'weights/model.safetensors').unlink()
     assert probe.main(['--config', str(path)]) == 1
     assert 'model.safetensors' in capsys.readouterr().err
+
+
+def test_native_gripper_rules_apply_once_after_saved_processors_and_unit_conversion(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from rc_pi05_policy.configuration import load_model_config
+    from rc_pi05_policy.runtime import AsyncPi05Policy
+    path,raw,_=native_checkpoint_fixture(tmp_path,monkeypatch)
+    raw['observations'].update(state_scale=[2.]*14,state_offset=[1.]*14)
+    write_json(path,raw)
+    monkeypatch.setattr(implementation(),'load_local_policy',lambda checkpoint,cfg:Predictor(cfg))
+    manifest={'params':{'gripper_upper_threshold':4.5,'gripper_upper_value':'+0.5',
+                        'gripper_lower_threshold':None}}
+    policy=AsyncPi05Policy(load_model_config(path,project_root=tmp_path),policy_config=manifest)
+    runtime=SimpleNamespace(consumed_actions=0,control_epoch=1,config_version=1)
+    try:
+        output=policy.step({'qpos':np.full(14,3.,np.float32)},[],frames(),runtime=runtime)
+        np.testing.assert_allclose(output[:,[6,13]],5.)
+        np.testing.assert_allclose(output[:,:6],4.5)
+        runtime.consumed_actions=1
+        cached=policy.step({'qpos':np.full(14,30.,np.float32)},output[1:],frames(),runtime=runtime)
+        np.testing.assert_allclose(cached[:,[6,13]],5.)
+    finally:policy.close()

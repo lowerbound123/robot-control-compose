@@ -36,6 +36,7 @@ class FixtureBackend:
         assert all(image.flags.owndata and image.flags.writeable for image in images.values())
         self.event('predict')
         actions = np.full((self.chunk_size, 14), .1, np.float32)
+        actions[:, 0] = .2 if instruction == 'task B' else .1
         actions[:, 6], actions[:, 13] = 2.5, 2.
         return actions
 def AsyncPi05Policy(config, *, policy_config, project_root):
@@ -47,18 +48,24 @@ def AsyncPi05Policy(config, *, policy_config, project_root):
 
 @pytest.fixture
 def running(tmp_path, monkeypatch):
-    folder = tmp_path/'policy/pi05_lift2'
+    yield from running_source(tmp_path, monkeypatch, 'pi05_lift2')
+
+
+def running_source(tmp_path, monkeypatch, source):
+    from pi05_helpers import checkpoint_fixture as native_fixture
+    policy_source = ROOT/'policy'/source
+    folder = tmp_path/'policy'/source
     folder.mkdir(parents=True)
-    path, *_ = checkpoint_fixture(folder)
-    manifest = read_config(SOURCE/'policy.yaml.example')
+    path, *_ = (native_fixture if source == 'pi05' else checkpoint_fixture)(folder)
+    manifest = read_config(policy_source/'policy.yaml.example')
     manifest['params']['model_config_path'] = str(path)
     (folder/'policy.yaml').write_text(json.dumps(manifest))
     (folder/'compose.yaml').write_text('services:\n  policy:\n    image: fixture:local\n')
-    (folder/'main.py').write_text((SOURCE/'main.py').read_text()+MODEL_BOUNDARY)
-    monkeypatch.setenv('PYTHONPATH', str(SOURCE/'src')+os.pathsep+os.environ.get('PYTHONPATH',''))
+    (folder/'main.py').write_text((policy_source/'main.py').read_text()+MODEL_BOUNDARY)
+    monkeypatch.setenv('PYTHONPATH', str(policy_source/'src')+os.pathsep+os.environ.get('PYTHONPATH',''))
     config = read_config(ROOT/'configs/rc.mock.yaml.example')
     config['safety']['enabled'] = False
-    config.update(policy_directory=str(folder.parent), startup_policy='pi05_lift2',
+    config.update(policy_directory=str(folder.parent), startup_policy=source,
                   outputs_directory=str(tmp_path/'outputs'), frequency_hz=30,
                   timeouts={'initialize_s':10,'inference_s':5,'release_s':3})
     rc_config = tmp_path/'rc.yaml'

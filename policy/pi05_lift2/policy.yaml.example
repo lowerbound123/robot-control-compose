@@ -8,17 +8,25 @@ execution:
   on_connector_switch: reinitialize_policy
 params:
   model_config_path: model.json
+  task: null
   gripper_upper_threshold: 2.5
   gripper_upper_value: 4.9
   gripper_lower_threshold: 2.5
   gripper_lower_value: 0.0
 hot_reloadable:
+- params.task
 - execution.on_connector_switch
 - params.gripper_upper_threshold
 - params.gripper_upper_value
 - params.gripper_lower_threshold
 - params.gripper_lower_value
 tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [{name: task, type: str, help: 新的任务文本}]
+    help: 更新任务并清空旧动作计划，保留已加载模型
+    effect: update_config
+    timeout_s: 5
   switch-model:
     handler: switch_model
     args:
@@ -35,6 +43,9 @@ tui_commands:
 config_hints:
   help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
   settings:
+    params.task:
+      type: str
+      help: 任务覆盖文本；输入 null 使用 model.json 中的 runtime.instruction
     params.model_config_path:
       type: path
       help: 模型配置文件

@@ -34,6 +34,8 @@ def suite(policies, interface):
         paths.add("tests/test_end_to_end.py::test_real_hold_example_consumes_absolute_targets")
     if "pi05" in policies:
         add("test_pi05_*.py")
+    if policies & {"pi05", "pi05_lift2"}:
+        add("test_pi05_task*.py")
     if "pi05_lift2" in policies:
         add("test_pi05_lift2*.py")
     if "internvla_maas" in policies:

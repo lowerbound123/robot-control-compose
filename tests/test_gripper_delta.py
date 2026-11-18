@@ -16,7 +16,7 @@ from test_qwen35_history_runtime import Backend, config, frames
 from test_qwen35_runtime import Model
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ('qwen35_history', 'qwen35_history_lift2', 'pi05_lift2')
+SOURCES = ('qwen35_history', 'qwen35_history_lift2', 'pi05', 'pi05_lift2')
 
 
 @pytest.fixture(params=SOURCES)
@@ -34,8 +34,9 @@ def entry(request):
 @pytest.fixture
 def running(entry, tmp_path):
     module, manifest, source = entry
-    if source == 'pi05_lift2':
-        path, *_ = checkpoint_fixture(tmp_path)
+    if source in ('pi05', 'pi05_lift2'):
+        from pi05_helpers import checkpoint_fixture as native_checkpoint_fixture
+        path, *_ = (native_checkpoint_fixture if source == 'pi05' else checkpoint_fixture)(tmp_path)
         model = Model()
         policy = module.AsyncPi05Policy(module.load_model_config(path, project_root=tmp_path),
                                        policy_config=manifest, backend=model)

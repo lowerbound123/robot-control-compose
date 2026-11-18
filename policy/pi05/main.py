@@ -4,7 +4,7 @@ import shlex
 import json
 from pathlib import Path
 
-from rc_pi05_policy.configuration import load_model_config, validate_manifest
+from rc_pi05_policy.configuration import GRIPPER_DEFAULTS, load_model_config, validate_manifest
 from rc_pi05_policy.runtime import AsyncPi05Policy
 
 POLICY_ROOT = Path(__file__).resolve().parent
@@ -13,11 +13,15 @@ POLICY_ROOT = Path(__file__).resolve().parent
 def initialize(config, *, runtime):
     validate_config(config)
     model_config = load_model_config(config['params']['model_config_path'], project_root=POLICY_ROOT)
-    return AsyncPi05Policy(model_config, project_root=POLICY_ROOT)
+    return AsyncPi05Policy(model_config, policy_config=config, project_root=POLICY_ROOT)
 
 
 def policy(context, state, action_chunk, images, config, *, runtime):
     return context.step(state, action_chunk, images, runtime=runtime)
+
+
+def switch_task(context, task):
+    return context.switch_task(task)
 
 
 def switch_model(context, config_path):
@@ -54,7 +58,7 @@ def _configuration_value(raw):
 
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
-    allowed_params = {'model_config_path'}
+    allowed_params = {'model_config_path', 'task', *GRIPPER_DEFAULTS}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)

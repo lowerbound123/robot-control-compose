@@ -50,9 +50,10 @@ def test_pi05_and_qwen_share_alignment_and_blending_but_not_gripper_offset(tmp_p
         joints = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
         np.testing.assert_array_equal(pi_chunk[:, joints], qw_chunk[:, joints])
         assert pi_chunk.shape == (43, 14)
-        np.testing.assert_equal(pi_chunk[:22, [6, 13]], -1)
-        np.testing.assert_equal(pi_chunk[22:, [6, 13]], 10)
-        np.testing.assert_allclose(qw_chunk[:, [6, 13]], pi_chunk[:, [6, 13]] + .15)
+        np.testing.assert_equal(pi_chunk[:22, [6, 13]], 0)
+        np.testing.assert_equal(pi_chunk[22:, [6, 13]], 5)
+        np.testing.assert_allclose(qw_chunk[:22, [6, 13]], -.85)
+        np.testing.assert_allclose(qw_chunk[22:, [6, 13]], 10.15)
     finally:
         pi.close()
         qw.close()

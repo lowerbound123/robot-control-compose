@@ -7,9 +7,25 @@ execution:
   on_connector_switch: reinitialize_policy
 params:
   model_config_path: model.json
+  task: null
+  gripper_upper_threshold: 5.0
+  gripper_upper_value: 5.0
+  gripper_lower_threshold: 0.0
+  gripper_lower_value: 0.0
 hot_reloadable:
+- params.task
+- params.gripper_upper_threshold
+- params.gripper_upper_value
+- params.gripper_lower_threshold
+- params.gripper_lower_value
 - execution.on_connector_switch
 tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [{name: task, type: str, help: 新的任务文本}]
+    help: 更新任务并清空旧动作计划，保留已加载模型
+    effect: update_config
+    timeout_s: 5
   switch-model:
     handler: switch_model
     args:
@@ -26,6 +42,9 @@ tui_commands:
 config_hints:
   help: 修改当前实例配置；提示仅作辅助，输入仍由策略解析
   settings:
+    params.task:
+      type: str
+      help: 任务覆盖文本；输入 null 使用 model.json 中的 runtime.instruction
     params.model_config_path:
       type: path
       help: 模型配置文件
@@ -33,12 +52,24 @@ config_hints:
       kind: file
       suffixes:
       - .json
+    params.gripper_upper_threshold:
+      type: float
+      help: 上限 x1；夹爪值 >= x1 时输出 gripper_upper_value，优先于下限规则
+    params.gripper_upper_value:
+      type: json
+      help: 上限 y；数字表示赋值，带引号的 "+0.5" / "-0.5" 表示增量；只处理新预测一次，再融合
+    params.gripper_lower_threshold:
+      type: json
+      help: 下限 x2；未命中上限且夹爪值 <= x2 时输出 gripper_lower_value；null 禁用下限
+    params.gripper_lower_value:
+      type: json
+      help: 下限 y；数字表示赋值，带引号的 "+0.5" / "-0.5" 表示增量；只处理新预测一次，再融合
     execution.mode:
       type: enum
       choices:
       - sync
       - async
-      help: RC 调用调度：sync 等待策略返回，async 继续发送缓存；策略独立决定是否推理
+      help: RC 调用调度：sync 等待回调时发送 hold，async 继续发送缓存；策略独立决定是否推理
     execution.call_every_actions:
       type: int
       help: RC 每消费 N 个目标调用策略（正整数）；不是模型推理阈值

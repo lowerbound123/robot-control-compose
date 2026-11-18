@@ -7,6 +7,11 @@ import re
 
 import numpy as np
 
+from .gripper import parse_gripper_value
+
+GRIPPER_DEFAULTS = {'gripper_upper_threshold': 5., 'gripper_upper_value': 5.,
+                    'gripper_lower_threshold': 0., 'gripper_lower_value': 0.}
+
 CAMERAS = ('head', 'left_wrist', 'right_wrist')
 DEFAULTS = {
     'model': {'device': 'cuda', 'compile_model': False, 'warmup_runs': 1,
@@ -220,12 +225,29 @@ def load_model_config(path, *, project_root):
 
 
 def validate_manifest(config):
+    params = config.get('params', {})
+    unsupported = sorted(name for name in params if name.startswith('gripper_') and name not in GRIPPER_DEFAULTS)
+    if unsupported:
+        raise ValueError(f'unsupported gripper parameters: {", ".join(unsupported)}')
     execution = config.get('execution', {})
     # RC owns call scheduling; policies only constrain their action format.
     if execution.get('control_mode') != 'qpos':
         raise ValueError('Pi05 returns qpos actions')
-    if any(path not in ('execution.mode', 'execution.call_every_actions', 'execution.on_connector_switch') for path in config.get('hot_reloadable', [])):
-        raise ValueError('only RC scheduling and connector handling are hot reloadable; use switch-model for model settings')
+    allowed = {'execution.mode', 'execution.call_every_actions', 'execution.on_connector_switch', 'params.task',
+               *('params.'+name for name in GRIPPER_DEFAULTS)}
+    if any(path not in allowed for path in config.get('hot_reloadable', [])):
+        raise ValueError('only RC scheduling, connector handling and gripper rules are hot reloadable')
+    for name, default in GRIPPER_DEFAULTS.items():
+        value = params.get(name, default)
+        if name == 'gripper_lower_threshold' and value is None:
+            continue
+        if name.endswith('_value'):
+            parse_gripper_value(value, 'params.'+name)
+        elif type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f'params.{name} must be a finite number')
+    task = params.get('task')
+    if task is not None and (not isinstance(task, str) or not task.strip()):
+        raise ValueError('params.task must be null or nonempty text')
     path = config.get('params', {}).get('model_config_path')
     if not isinstance(path, str) or not path.strip():
         raise ValueError('params.model_config_path must be nonempty')

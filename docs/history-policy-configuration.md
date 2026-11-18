@@ -73,7 +73,7 @@ policy qwen35_history_lift2 config set params.gripper_lower_value "-0.5"
 policy qwen35_history_lift2 config save
 ```
 
-同样的字段适用于 `qwen35_history` 和 `pi05_lift2`，重复来源使用精确实例名。缺少的字段使用默认值；含旧名称的配置先按下一节迁移。数字配置不需要转换；保存、重载及 setup 合并保留 delta 字符串。四项支持普通热更新和保存，不重载模型；两个 history 保留历史，配置换代后从新观测重新规划。本轮推理在提交时快照规则，不在后台读取后来修改的 y。
+同样的字段适用于 `qwen35_history`、`pi05` 和 `pi05_lift2`（原 `pi05` 默认上下限为 5/0，输出为 5/0），重复来源使用精确实例名。缺少的字段使用默认值；含旧名称的配置先按下一节迁移。数字配置不需要转换；保存、重载及 setup 合并保留 delta 字符串。四项支持普通热更新和保存，不重载模型；两个 history 保留历史，配置换代后从新观测重新规划。本轮推理在提交时快照规则，不在后台读取后来修改的 y。
 
 缓存保存已处理、已融合的动作，缓存直返、消费裁剪以及下一轮融合保留的旧前缀均不再次加 delta；原始模型数组保持不变，LIFT2 原始夹爪 monitor 仍显示处理前的完整预测。每轮相同的新预测 `3.0` 配合 `"+0.5"` 都得到 `3.5`，不会跨推理轮次累计。
 
@@ -81,7 +81,7 @@ policy qwen35_history_lift2 config save
 
 ## 夹爪参数改名升级
 
-`qwen35_history`、`qwen35_history_lift2` 和 `pi05_lift2` 统一使用 `upper/lower` 和 `threshold/value` 两组名称：
+`qwen35_history`、`qwen35_history_lift2`、`pi05` 和 `pi05_lift2` 统一使用 `upper/lower` 和 `threshold/value` 两组名称：
 
 | 旧 params 字段 | 新 params 字段 |
 | --- | --- |

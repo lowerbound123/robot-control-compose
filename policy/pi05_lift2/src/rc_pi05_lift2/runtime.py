@@ -19,10 +19,14 @@ class AsyncPi05Policy(AsyncChunkPolicy):
             from .backend import Pi05Backend
             backend = Pi05Backend(self.config)
         execution = self.config['execution']
-        super().__init__(backend, instruction=self.config['runtime']['instruction'],
+        super().__init__(backend, instruction=self._task_instruction(),
                          chunk_size=execution['chunk_size'],
                          request_when_remaining=execution['request_when_remaining'],
                          inference_timeout_s=execution['inference_timeout_s'])
+
+    def _task_instruction(self):
+        task = self.policy_config.get('params', {}).get('task')
+        return self.config['runtime']['instruction'] if task is None else task
 
     def _launch(self, state, images, runtime):
         params = self.policy_config.get('params', {})
@@ -45,21 +49,33 @@ class AsyncPi05Policy(AsyncChunkPolicy):
         if self._failure is not None:
             raise self._failure
         version = getattr(runtime, 'config_version', None)
+        task_changed = self._task_instruction() != self.instruction
         if self._epoch is not None and runtime.control_epoch != self._epoch:
             if (runtime.control_epoch < self._epoch or version is None or self._config_version is None
                     or version <= self._config_version):
                 raise RuntimeError('control epoch changed without reset or a newer configuration')
-            if len(action_chunk):
+            if len(action_chunk) and not task_changed:
                 raise RuntimeError('new configuration epoch must discard the old action chunk')
             # A normal hot commit invalidates old predictions, not loaded
             # weights. Drain owned work before resetting processors/cached plan.
-            super().reset()
+            self.reset()
+        elif task_changed:
+            self.reset()
+        if task_changed:
+            # The in-flight result was drained before changing task/launching.
+            action_chunk = []
         self._config_version = version
         return super().step(state, action_chunk, images, runtime=runtime)
 
     def reset(self):
         super().reset()
         self._config_version = None
+        self.instruction = self._task_instruction()
+
+    def switch_task(self, task):
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError('task must be a nonempty string')
+        return {'params.task': task}
 
     def switch_model(self, config_path):
         path = resolve_config_path(config_path, self.project_root)

@@ -56,6 +56,21 @@ GPU_DEVICE=0
 
 这是部署示例，本轮代码修改不自动改写服务器配置或加载策略。
 
+## 运行时切换任务
+
+`params.task` 为任务覆盖值，默认 `null`，使用 `model.json` 的 `runtime.instruction`。切换命令：
+
+```text
+policy pi05_lift2 switch-task "Pick up the orange cup and place it in the tray."
+policy pi05_lift2 config save
+```
+
+也可通过 `policy pi05_lift2 config set params.task "新的任务"` 设置，输入 `null` 恢复模型配置中的默认指令。空文本和非字符串被拒绝。保存写回当前实例对应的 `policy.yaml`，重新加载后继续使用该任务；不改写 `model.json` 的默认指令。
+
+切换保留已加载模型和执行进程。先收齐并丢弃旧任务的在途结果（包括旧任务错误），清除旧动作计划及 processor 临时状态，再用新任务和新观测预测；旧动作不会混入新任务的融合。已经提交给设备的动作仍按原 FIFO/发布确认规则收尾。切换需要等待在途推理安全结束，不承诺立即取消模型计算；暂停状态不会因切换任务自动恢复运动。
+
+更新源码后先运行 `./setup.sh --config-only`，补齐旧 `policy.yaml` 的 `params.task`、`switch-task` 和 task/夹爪热更新白名单；已有参数值保留。随后重新加载对应策略实例一次。此功能不增加依赖，无需重建镜像。
+
 ## 夹爪规则
 
 输出副本的第 6、13 列（从 0 开始）使用与 LIFT2 history 相同的四参数规则：

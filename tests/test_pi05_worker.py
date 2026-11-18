@@ -30,8 +30,8 @@ class _FixtureBackend:
         actions[:, 0] = float(images['head'][0, 0, 0]) / 100
         return actions
     def close(self): (self.root / 'released').write_text('released')
-def AsyncPi05Policy(config, *, project_root):
-    return _Policy(config, project_root=project_root, backend=_FixtureBackend(config, project_root))
+def AsyncPi05Policy(config, *, policy_config, project_root):
+    return _Policy(config, policy_config=policy_config, project_root=project_root, backend=_FixtureBackend(config, project_root))
 '''
 
 
@@ -68,7 +68,7 @@ def test_shipped_pi05_entrypoint_releases_images_and_resets_in_real_worker(tmp_p
         actions = np.asarray(response['actions'])
         assert actions.shape == (50, 14)
         np.testing.assert_allclose(actions[:, 0], .07)
-        np.testing.assert_equal(actions[:, [6, 13]], -1)
+        np.testing.assert_equal(actions[:, [6, 13]], 0)
         worker.reset_context()
         worker.submit({**request, 'request_id': 2, 'generation': 2,
                        'runtime': {'observation_id': 'pi05-new', 'control_epoch': 2, 'consumed_actions': 7}})

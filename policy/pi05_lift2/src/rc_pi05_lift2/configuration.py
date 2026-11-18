@@ -211,7 +211,7 @@ def validate_manifest(config):
     # RC owns call scheduling; policies only constrain their action format.
     if execution.get('control_mode') != 'qpos':
         raise ValueError('Pi05 returns qpos actions')
-    allowed = {'execution.mode', 'execution.call_every_actions', 'execution.on_connector_switch',
+    allowed = {'execution.mode', 'execution.call_every_actions', 'execution.on_connector_switch', 'params.task',
                *('params.'+name for name in GRIPPER_DEFAULTS)}
     if any(path not in allowed for path in config.get('hot_reloadable', [])):
         raise ValueError('only RC scheduling, connector handling and gripper rules are hot reloadable')
@@ -223,6 +223,9 @@ def validate_manifest(config):
             parse_gripper_value(value, 'params.'+name)
         elif type(value) not in (int, float) or not math.isfinite(value):
             raise ValueError(f'params.{name} must be a finite number')
+    task = params.get('task')
+    if task is not None and (not isinstance(task, str) or not task.strip()):
+        raise ValueError('params.task must be null or nonempty text')
     path = config.get('params', {}).get('model_config_path')
     if not isinstance(path, str) or not path.strip():
         raise ValueError('params.model_config_path must be nonempty')

@@ -98,6 +98,44 @@ scale 必须非零且有限。这个变换发生在归一化前、反归一化�
 
 π0.5 不使用 Qwen 专属的夹爪 `+0.15` 修正。
 
+## 运行时切换任务
+
+`params.task` 为任务覆盖值，默认 `null`，使用 `model.json` 的 `runtime.instruction`。切换命令：
+
+```text
+policy pi05 switch-task "Pick up the orange cup and place it in the tray."
+policy pi05 config save
+```
+
+也可通过 `policy pi05 config set params.task "新的任务"` 设置，输入 `null` 恢复模型配置中的默认指令。空文本和非字符串被拒绝。保存写回当前实例对应的 `policy.yaml`，重新加载后继续使用该任务；不改写 `model.json` 的默认指令。
+
+切换保留已加载模型和执行进程。先收齐并丢弃旧任务的在途结果（包括旧任务错误），清除旧动作计划及 processor 临时状态，再用新任务和新观测预测；旧动作不会混入新任务的融合。已经提交给设备的动作仍按原 FIFO/发布确认规则收尾。切换需要等待在途推理安全结束，不承诺立即取消模型计算；暂停状态不会因切换任务自动恢复运动。
+
+更新源码后先运行 `./setup.sh --config-only`，补齐旧 `policy.yaml` 的 `params.task`、`switch-task` 和 task/夹爪热更新白名单；已有参数值保留。随后重新加载对应策略实例一次。此功能不增加依赖，无需重建镜像。
+
+## 夹爪阈值与增量
+
+默认将新预测的两个夹爪限制在 0～5，区间内保留原值：
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `gripper_upper_threshold` | 5.0 | g >= 此值时命中上限 |
+| `gripper_upper_value` | 5.0 | 上限输出 |
+| `gripper_lower_threshold` | 0.0 | 未命中上限且 g <= 此值时命中下限；null 禁用下限 |
+| `gripper_lower_value` | 0.0 | 下限输出 |
+
+```text
+policy pi05 config set params.gripper_upper_threshold 5
+policy pi05 config set params.gripper_upper_value 5
+policy pi05 config set params.gripper_lower_threshold 0
+policy pi05 config set params.gripper_lower_value 0
+policy pi05 config save
+```
+
+两个 value 支持数字赋值或有正负号的字符串增量：数字 `-0.5` 表示赋值为 -0.5，字符串 `"-0.5"` 表示在本帧模型夹爪值上减 0.5，例如 `policy pi05 config set params.gripper_upper_value "+0.5"`。命中上限优先，两条规则均比较处理前的原始 g，不级联。
+
+规则在每次后台推理提交时快照，在反归一化及单位还原后，对新预测副本处理一次，再裁剪、融合和缓存；缓存返回和旧前缀不重复累加。修改规则保留模型权重，旧代次计划清理后重新规划。增量没有额外的 0～5 限幅；0～5 来自默认赋值配置，改成增量后按所配置规则输出。原始模型输出和手臂列保持不变。
+
 ## chunk 裁剪与融合
 
 π0.5 和两个 Qwen 策略共用 SDK 的 `AsyncChunkPolicy`：
@@ -138,7 +176,7 @@ status
 policy pi05 switch-model model_alt.json
 ```
 
-该命令先做本地文件/格式预检，再完整卸载旧实例、创建新实例。成功后仍暂停。模型与参数全部冷改，不支持在推理中热替换路径、统计数据或任务指令。
+该命令先做本地文件/格式预检，再完整卸载旧实例、创建新实例。成功后仍暂停。模型路径和统计数据仍需冷重载；任务文本与夹爪规则可按上面的方式运行时更新。
 
 ## 验证边界
 

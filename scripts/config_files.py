@@ -12,7 +12,7 @@ import tempfile
 import uuid
 
 
-GRIPPER_SOURCES = ('qwen35_history', 'qwen35_history_lift2', 'pi05_lift2')
+GRIPPER_SOURCES = ('qwen35_history', 'qwen35_history_lift2', 'pi05', 'pi05_lift2')
 GRIPPER_PARAM_RENAMES = {
     'gripper_threshold': 'gripper_upper_threshold',
     'gripper_high_value': 'gripper_upper_value',
@@ -191,6 +191,17 @@ def configuration_updates(root):
                 paths = value.setdefault('hot_reloadable', [])
                 if 'execution.on_connector_switch' not in paths:
                     paths.append('execution.on_connector_switch')
+        if (target.name == 'policy.yaml' and target.parent.parent == root/'policy'
+                and target.parent.name in ('pi05', 'pi05_lift2') and isinstance(default, dict)):
+            # Old manifests retain their whitelist list during ordinary merges.
+            # Add only the new Pi05 task/gripper capabilities declared by source.
+            value = copy.deepcopy(value)
+            hot = value.setdefault('hot_reloadable', [])
+            if not isinstance(hot, list):
+                raise ValueError(f'{target}: hot_reloadable must be a list')
+            for key in ('params.task', *('params.'+name for name in GRIPPER_PARAM_RENAMES.values())):
+                if key in default.get('hot_reloadable', []) and key not in hot:
+                    hot.append(key)
         documents[target.relative_to(root).as_posix()] = value
         if not strict_equal(current, value):
             content = (render_yaml_config(target, value, template=template) if yaml else

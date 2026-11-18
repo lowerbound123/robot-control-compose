@@ -20,6 +20,10 @@ def policy(context, state, action_chunk, images, config, *, runtime):
     return context.step(state, action_chunk, images, runtime=runtime)
 
 
+def switch_task(context, task):
+    return context.switch_task(task)
+
+
 def switch_model(context, config_path):
     return context.switch_model(config_path)
 
@@ -54,7 +58,7 @@ def _configuration_value(raw):
 
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
-    allowed_params = {'model_config_path', *GRIPPER_DEFAULTS}
+    allowed_params = {'model_config_path', 'task', *GRIPPER_DEFAULTS}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)
