@@ -133,9 +133,11 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self.outputs = self.root / self.config["outputs_directory"]
         self.runtime = runtime_manager
         if self.runtime is None and process_factory is PolicyProcess:
-            from .runtime_manager import ComposeRuntimeManager
+            from functools import partial
+            from .runtime_manager import ComposeRuntimeManager, docker_command
             context_path = os.environ.get('RC_RUNTIME_CONTEXT', str(self.registry.directory.parent / '.setup/runtime.json'))
-            self.runtime = ComposeRuntimeManager.from_file(context_path, run_id=self.run_id)
+            self.runtime = ComposeRuntimeManager.from_file(context_path, run_id=self.run_id,
+                runner=partial(docker_command, compose_stderr=self._emit_compose_stderr))
         self._runtime_groups = {}
         self._bind_connector_runtime(self.robot.raw)
         self._recovery = (self.runtime.state_dir.parent if self.runtime else self.outputs) / 'recovery'
@@ -182,13 +184,17 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._emit_command(f'MCP {tool} {status}: ' + json.dumps(payload, ensure_ascii=False), level)
         return log
 
+    def _emit_compose_stderr(self, stderr):
+        self._emit(stderr, 'error', verbatim_compose_stderr=True)
+
     def _emit(self, message, level="info", *, record_history=True, source=LogSource.DIAGNOSTIC, help_document=None,
-              table_document=None, copy_json=None, log_context=None):
+              table_document=None, copy_json=None, log_context=None, verbatim_compose_stderr=False):
         if (source is not LogSource.COMMAND
                 and LEVELS.get(str(level).upper(), LEVELS['INFO']) < LEVELS[self.config['logging']['level']]):
             return
-        entry = {"time": format_log_time(time.time()), "level": level,
-                 "message": public_message(message) if table_document is None else ''}
+        entry = {"time": format_log_time(time.time()), "level": level, "message": ''}
+        if table_document is None:
+            entry['message'] = message if verbatim_compose_stderr else public_message(message)
         if log_context is not None:
             entry.update(public_value({key: log_context[key] for key in (
                 'event', 'instance_id', 'source_id', 'runtime_id', 'session_id', 'context_id', 'host_instance_id',
@@ -225,8 +231,11 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self.events.put_nowait(entry)
             except queue.Full:
                 pass
-        self._recorder.log({**entry, 'run_id':self.run_id, 'timestamp_ns':time.time_ns(),
-                            'monotonic_ns':time.monotonic_ns()})
+        record = {**entry, 'run_id':self.run_id, 'timestamp_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns()}
+        if verbatim_compose_stderr:
+            self._recorder.log(record, compose_stderr=True)
+        else:
+            self._recorder.log(record)
 
     def start(self):
         with self._lock:
@@ -1044,7 +1053,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self._worker, self._identity = worker, record.config['id']
                     self.registry.install(record)
                     job['committed'] = True
-        except Exception:
+        except Exception as start_error:
             cleanup_deadline = self._cleanup_deadline()
             cleanup_error = None
             if worker is not None:
@@ -1059,7 +1068,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     cleanup_error = exc
             if cleanup_error:
                 from .runtime_manager import BlockedCleanup
-                raise BlockedCleanup(str(cleanup_error)) from cleanup_error
+                detail = str(cleanup_error)
+                if str(start_error) not in detail:
+                    detail = f'{start_error}\nCleanup failed: {detail}'
+                raise BlockedCleanup(detail) from cleanup_error
             raise
         return {"worker": worker, "identity": record.config["id"], "config": record.config,
                 "record": record, "commit": job.get("commit", False)}

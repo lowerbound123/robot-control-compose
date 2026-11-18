@@ -258,8 +258,12 @@ def encoded_line(data, secrets=()):
     return text.encode('utf-8', errors='backslashreplace')
 
 
-def line(stream, data, secrets=()):
-    stream.write(encoded_line(data, secrets).decode('utf-8'))
+def line(stream, data, secrets=(), *, compose_stderr=False):
+    if compose_stderr:
+        # Only the RC Docker runner selects this log stream, outside the event payload.
+        stream.write(json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n')
+    else:
+        stream.write(encoded_line(data, secrets).decode('utf-8'))
 
 
 def sync_directory(path):
@@ -363,9 +367,10 @@ class SessionFiles:
             shutil.rmtree(self.root, ignore_errors=True)
             raise
 
-    def _write(self, stream, data):
+    def _write(self, stream, data, *, compose_stderr=False):
         line(self.files.get(stream, self.files['events']),
-             {**data, 'record_session_id': self.identity, 'rc_run_id': self.run_id}, self.credentials.secrets)
+             {**data, 'record_session_id': self.identity, 'rc_run_id': self.run_id}, self.credentials.secrets,
+             compose_stderr=compose_stderr)
 
     def _track(self, key, value):
         if key not in self.open_requests and len(self.open_requests) >= MAX_OPEN_REQUESTS:
@@ -645,14 +650,19 @@ def writer_main(receiver, responder, directory, run_id):
                         elif base is not None:
                             line(base, {**data, 'message':f"diagnostic records dropped: {packet['count']}"}, credentials.secrets)
                     elif kind == 'log':
+                        compose_stderr = packet.get('stream') == 'compose_stderr'
                         if base is not None:
                             try:
-                                line(base, {**packet['data'], 'rc_run_id':run_id}, credentials.secrets)
+                                line(base, {**packet['data'], 'rc_run_id':run_id}, credentials.secrets,
+                                     compose_stderr=compose_stderr)
                             except OSError as exc:
                                 base.close(); base = None
                                 responder.send({'kind':'log_error','error':str(exc)})
                         if session is not None and packet.get('session') == session.identity:
-                            session.event('events', packet['data'])
+                            if compose_stderr:
+                                session._write('events', packet['data'], compose_stderr=True)
+                            else:
+                                session.event('events', packet['data'])
                     elif session is not None and packet.get('session') == session.identity:
                         if kind == 'sample':
                             accepted = session.sample(packet['data'])

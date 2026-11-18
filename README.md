@@ -15,8 +15,9 @@ connector 只查询状态和 FIFO 发送设备消息；RC 管理频率、限速�
 ```bash
 # 首次为宿主 python3 安装锁定的 YAML 依赖
 python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock
-# 只准备所需策略镜像，不启动机器人或策略
-./setup.sh --policies hold
+# 首次 mock 部署：准备策略和 connector，再构建两个基础镜像
+./setup.sh --policies hold --connectors mock
+./scripts/compose.sh build ipc-anchor robot-control
 ./scripts/up.sh
 ./scripts/attach.sh
 ```

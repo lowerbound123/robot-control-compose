@@ -20,6 +20,7 @@ class ConnectorRuntime:
             deadline, cwd=directory, env=env, cancel=cancel))
         if set(model.get('services', {})) != {'connector'}:
             raise ValueError('connector compose must contain one service named connector')
+        self.check_external_networks(model, deadline, cancel)
         service = model['services']['connector']
         if service.get('depends_on') or service.get('privileged') or service.get('pid'):
             raise ValueError('connector cannot use sidecars, privileged mode or shared PID namespaces')

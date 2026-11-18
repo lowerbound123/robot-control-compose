@@ -7,8 +7,10 @@
 ```bash
 # 首次准备宿主 python3 的 YAML 依赖
 python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock
-./setup.sh --policies hold
-# 或准备任意合规范目录；省略 --policies 时准备全部有效策略
+# 首次仅部署 hold + mock
+./setup.sh --policies hold --connectors mock
+./scripts/compose.sh build ipc-anchor robot-control
+# 已有基础镜像时，更新指定策略
 ./setup.sh --policies my_policy,qwen35_twostage
 ./setup.sh --config-only
 # ACOne 或 ROS 模拟器部署时，显式构建 ROS connector。
@@ -25,7 +27,7 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 
 运行期间只使用准备好的本地 image ID。模型权重与外部 mount 目录应提前准备，setup 不下载权重、不访问供应商、不验证真实推理。
 
-connector 镜像独立构建，默认只构建 `mock`；`--connectors mock,acone` 同时准备两种来源。设备参数位于 `connector/<source>/devices/`，setup 只创建缺失模板，不覆盖已有设备配置。旧 `robot.backend` 必须按 [connector 迁移说明](connectors.md) 改为实例引用。RC 本身不再包含 ROS，切换 policy 不会重启 connector。
+显式传入 `--policies` 时，setup 只准备所选策略镜像；同时传入 `--connectors` 才额外构建指定 connector。RC 和 ipc-anchor 由部署复用，首次部署或基础镜像依赖变更时，可执行 `./scripts/compose.sh build ipc-anchor robot-control`。省略 `--policies` 时，setup 构建两个基础镜像和所有有效策略，connector 默认为 `mock`。设备参数位于 `connector/<source>/devices/`，setup 只创建缺失模板，不覆盖已有设备配置。旧 `robot.backend` 必须按 [connector 迁移说明](connectors.md) 改为实例引用。RC 本身不再包含 ROS，切换 policy 不会重启 connector。
 
 ## Git 文件约定
 
@@ -91,7 +93,7 @@ RC 从 `/workspace/src` 导入，SDK 从 `/workspace/packages/policy-sdk/src` �
 | connector 实现 | 通过命名 profile 执行 `connector switch <名称>`，或正常 down/up 重新创建连接 |
 | ROS 消息定义 | 重建 ACOne connector 镜像，重新编译消息包 |
 
-首次迁移需要一次完整构建：先用原部署的 `./scripts/compose.sh down` 正常收尾，再更新源码、执行 `./setup.sh --policies <需要的策略>`，最后使用原有 Compose 覆盖参数 `up -d --no-build`。两个 Qwen 仍按相同构建输入去重。以后普通源码修改无需 setup/build。迁移前的旧镜像仍含旧实现，不能作为“源码已外置”的验收镜像。
+首次迁移需要一次完整构建：先用原部署的 `./scripts/compose.sh down` 正常收尾，再更新源码、执行 `./setup.sh --policies <需要的策略>` 和 `./scripts/compose.sh build ipc-anchor robot-control`，最后使用原有 Compose 覆盖参数 `up -d --no-build`。两个 Qwen 仍按相同构建输入去重。以后普通源码修改无需 setup/build。迁移前的旧镜像仍含旧实现，不能作为“源码已外置”的验收镜像。
 
 不会监视文件或主动替换已导入模块；运行中编辑源码不保证立即生效。整组切换先证明完整旧组退出，实例冷重载按目标实例取得退出证明。
 
@@ -117,7 +119,9 @@ RC 读取 `/workspace/policy/<id>/compose.yaml`，但 bind source 必须是 daem
 
 `startup_policy=null` 时保持空策略。指定默认策略时，RC 先取得部署锁、核对残留容器和外部 reader，再创建默认策略并初始化。成功后暂停。整组切换销毁完整旧组后再启动新组。实例冷重载仅替换目标，清理按容器 ID 和所属代次的标签进行。
 
-`outputs/runtime` 保存创建意图、CID、代次、退出记录与图像池身份；`outputs/recovery` 保存外部模型 owner/instance/图像 reader。账本是恢复依据，清理完成前不要删除。恢复时先取得本地与全部外部读者退出证明，再在相同 anchor/IPC 代次中核验图像头并回收旧段；IPC 身份不符时保留记录，交给完整 namespace 收尾。Docker create 超时且始终查不到容器时，不能证明请求没有迟到，保留意图并停在 BLOCKED_CLEANUP。恢复 daemon 后重新执行 down；仍无法确认时需要人工核查 daemon 的实际结果，不能靠删除账本绕过。
+策略或 connector 引用外部 Docker 网络时，RC 在切换预检和登记创建意图前检查 Compose 解析出的实际网络名。预检报 `network … not found` 时，核对模型服务所在网络及策略的 `deployment.env`，修正后可直接重试。Compose 失败时，操作员事件和 RC 日志直接输出原始 stderr，录制期间也写入会话事件日志。
+
+`outputs/runtime` 保存创建意图、CID、代次、退出记录与图像池身份；`outputs/recovery` 保存外部模型 owner/instance/图像 reader。账本是恢复依据，清理完成前不要删除。恢复时先取得本地与全部外部读者退出证明，再在相同 anchor/IPC 代次中核验图像头并回收旧段；IPC 身份不符时保留记录，交给完整 namespace 收尾。Docker create 超时且始终查不到容器时，不能证明请求没有迟到，保留意图并停在 BLOCKED_CLEANUP。新记录会保存可取得的首次创建错误，再次核对时随实例和项目名一起显示。恢复 daemon 后重新执行 down；仍无法确认时需要人工核查 daemon 的实际结果，不能靠删除账本绕过。
 
 anchor 被替换或在同一 CID 中重启时，RC 不能原地迁移 IPC namespace；管理器同时核对 CID 与启动代次。它停止旧策略并进入 BLOCKED_INFRA；宿主完成 down 后一起重建 RC 与 anchor。外部读者未释放时 down 会报错并保留基础设施。
 

@@ -306,3 +306,17 @@ def test_writer_releases_sample_rgb_after_ack_without_waiting_for_next_packet(tm
     monkeypatch.setattr(module.os, 'nice', lambda value: None)
     module.writer_main(receiver, responder, str(tmp_path), 'rc-run-fixture')
     assert not any(value['kind'] == 'fatal' for value in responder.messages), responder.messages
+
+
+def test_only_compose_stderr_is_verbatim_in_base_and_session_logs(tmp_path, monkeypatch):
+    raw = 'Compose error\n{"api_key":"fixture-value"}\n'
+    packets = [
+        {'kind': 'start', 'token': 1, 'request': 'on', 'session': 's', 'path': str(tmp_path / 's'), 'data': {}},
+        {'kind': 'log', 'token': 2, 'session': 's', 'stream': 'compose_stderr', 'data': {'message': raw}},
+        {'kind': 'log', 'token': 3, 'session': 's', 'data': {'message': raw, 'stream': 'compose_stderr'}},
+    ]
+    writer(tmp_path, monkeypatch, packets)
+    for path in (tmp_path / 'rc_rc-run-fixture.jsonl', tmp_path / 's/events.jsonl'):
+        messages = [row['message'] for row in rows(path) if row.get('message', '').startswith('Compose error')]
+        assert messages[0] == raw
+        assert 'fixture-value' not in messages[1]

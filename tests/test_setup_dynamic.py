@@ -18,6 +18,53 @@ def test_setup_selection_is_catalog_not_installed_list(tmp_path):
     assert select_policies(tmp_path,[])==[]
 
 
+@pytest.mark.parametrize(('args', 'expected'), [
+    (['--policies', 'openwam_maas_lift2'], [('policy/openwam_maas_lift2', 'policy')]),
+    (['--policies', 'openwam_maas_lift2', '--connectors', 'lift2'],
+     [('connector/lift2', 'connector'), ('policy/openwam_maas_lift2', 'policy')]),
+    ([], [('.', 'ipc-anchor', 'robot-control'), ('connector/mock', 'connector'),
+          ('policy/hold', 'policy'), ('policy/openwam_maas_lift2', 'policy')]),
+    (['--config-only', '--policies', 'openwam_maas_lift2'], []),
+])
+def test_setup_cli_limits_docker_builds_to_requested_sources(tmp_path, monkeypatch, args, expected):
+    import os
+    from subprocess import CompletedProcess
+    import setup_project
+    from test_policy_catalog_v3 import plugin
+
+    (tmp_path / '.env.example').touch()
+    for name in ('hold', 'openwam_maas_lift2'):
+        folder = plugin(tmp_path / 'policy', name)
+        (folder / 'Dockerfile').touch()
+    for name in ('mock', 'lift2'):
+        folder = tmp_path / 'connector' / name
+        folder.mkdir(parents=True)
+        (folder / 'compose.yaml').touch()
+
+    builds = []
+    def run(command, root, **kwargs):
+        output = ''
+        if command[:2] == ['docker', 'info']:
+            output = 'fixture-daemon'
+        else:
+            directory = Path(command[command.index('-f') + 1]).parent
+            if 'build' in command:
+                builds.append((directory.relative_to(root).as_posix(), *command[command.index('build') + 1:]))
+            else:
+                assert command[-3:] == ['config', '--format', 'json']
+                output = json.dumps({'services': {'policy': {'image': directory.name + ':local',
+                                                             'build': {'context': str(directory)}}}})
+        return CompletedProcess(command, 0, stdout=output)
+
+    monkeypatch.setattr(os, 'getuid', lambda: 1000)
+    monkeypatch.setattr(setup_project, 'ROOT', tmp_path)
+    monkeypatch.setattr(setup_project, 'docker_endpoint', lambda root: ('/tmp/fixture.sock', 1000))
+    monkeypatch.setattr(setup_project, 'run_command', run)
+    monkeypatch.setattr(sys, 'argv', ['setup.sh', *args])
+    setup_project.main()
+    assert builds == expected
+
+
 def test_build_identity_uses_dockerfile_contents_and_effective_args(tmp_path):
     from setup_project import build_fingerprint
     (tmp_path/'one').mkdir(); (tmp_path/'two').mkdir()

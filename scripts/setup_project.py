@@ -113,9 +113,12 @@ def policy_compose(root, identity):
     return command
 
 
-def prepare_images(root, policies, context, connectors=('mock',)):
+def prepare_images(root, policies, context, connectors=None, *, build_base=True):
     from compose_project import compose_command
-    run_command(compose_command(root,['build','ipc-anchor','robot-control']),root)
+    if build_base:
+        run_command(compose_command(root,['build','ipc-anchor','robot-control']),root)
+    if connectors is None:
+        connectors = ('mock',) if build_base else ()
     for source in connectors:
         if source not in ('mock', 'acone', 'lift2'):
             raise ValueError(f'unknown connector source: {source}')
@@ -198,17 +201,18 @@ def setup(root, policies=None, *, config_only=False, connectors=None):
     requested = policies if policies is not None else [r['id'] for r in catalog.discover(root/'policy') if r['valid']]
     selected=select_policies(root,requested)
     if not config_only:
-        if connectors is None: prepare_images(root,selected,context)
-        else: prepare_images(root,selected,context,connectors=connectors)
+        prepare_images(root, selected, context, connectors=connectors, build_base=policies is None)
     print('配置已准备；基础启动仅 RC 和 ipc-anchor。' if config_only else '镜像与配置已准备；尚未启动容器。')
     return selected
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--policies',help='comma-separated discovered policy IDs; default: all configured policies')
+    parser.add_argument('--policies', help='prepare only the named policies (comma-separated), reusing the base images; '
+                        'omit to build the base images and all configured policies')
     parser.add_argument('--config-only',action='store_true')
-    parser.add_argument('--connectors', help='comma-separated connector images to build; default: mock')
+    parser.add_argument('--connectors', help='comma-separated connector images to build; '
+                        'defaults to mock when --policies is omitted, otherwise none')
     args=parser.parse_args()
     try:
         setup(ROOT, None if args.policies is None else [p for p in args.policies.split(',') if p],config_only=args.config_only,

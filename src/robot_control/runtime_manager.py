@@ -50,7 +50,7 @@ def validate_source_mounts(roots, mounts):
             raise ValueError(f'source has a writable mount override inside {root}')
 
 
-def docker_command(args, *, timeout, env=None, cwd=None, cancel=None):
+def docker_command(args, *, timeout, env=None, cwd=None, cancel=None, compose_stderr=None):
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(['docker', *args], cwd=cwd, env=env, text=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -62,25 +62,36 @@ def docker_command(args, *, timeout, env=None, cwd=None, cancel=None):
             if left <= 0:
                 raise TimeoutError('Docker command deadline exceeded')
             try:
-                stdout, _ = process.communicate(timeout=min(.05, left))
+                stdout, stderr = process.communicate(timeout=min(.05, left))
                 break
             except subprocess.TimeoutExpired:
                 continue
-    except BaseException:
+    except BaseException as exc:
         # Stop the CLI/plugin group, not daemon-managed containers. The durable
         # creation intent survives and must be reconciled even after cancellation.
-        if process.poll() is None:
-            try:
+        try:
+            if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
-                process.communicate(timeout=.2)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                try: os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError: pass
-                process.communicate(timeout=.5)
-        raise
-    if process.returncode:
-        raise RuntimeError(f'Docker {args[0]} failed (exit {process.returncode}); inspect daemon/service diagnostics')
-    return stdout
+        except ProcessLookupError:
+            pass
+        try:
+            _, stderr = process.communicate(timeout=.2)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            _, stderr = process.communicate(timeout=.5)
+        if not isinstance(exc, (TimeoutError, RuntimeError)):
+            raise
+        failure = exc
+    else:
+        if not process.returncode:
+            return stdout
+        failure = RuntimeError(f'Docker {args[0]} failed (exit {process.returncode})')
+    if stderr:
+        if args[0] == 'compose' and compose_stderr is not None:
+            compose_stderr(stderr)
+        failure.args = (f'{failure}\n{stderr}',)
+    raise failure
 
 
 class ComposeRuntimeManager(ConnectorRuntime):
@@ -156,6 +167,12 @@ class ComposeRuntimeManager(ConnectorRuntime):
         if actual != self.daemon_id:
             raise BlockedInfrastructure('Docker daemon identity changed; old resources cannot be proved absent')
 
+    def check_external_networks(self, model, deadline, cancel):
+        names = [network.get('name', key) for key, network in model.get('networks', {}).items()
+                 if network.get('external')]
+        if names:
+            self._run(['network', 'inspect', '--format', '{{.Name}}', '--', *names], deadline, cancel=cancel)
+
     def check_infrastructure(self, deadline, *, cancel=None):
         actual = self._run(['info', '--format', '{{.ID}}'], deadline, cancel=cancel).strip()
         if actual != self.daemon_id:
@@ -208,6 +225,7 @@ class ComposeRuntimeManager(ConnectorRuntime):
         services = model.get('services', {})
         if set(services) != {'policy'}:
             raise ValueError('policy compose.yaml must contain exactly one service named policy')
+        self.check_external_networks(model, deadline, cancel)
         service = services['policy']
         if service.get('depends_on') or service.get('pid') == 'host' or service.get('privileged'):
             raise ValueError('sidecars, host PID and privileged policies are not supported')
@@ -280,12 +298,13 @@ class ComposeRuntimeManager(ConnectorRuntime):
             raise BlockedInfrastructure('anchor changed after preflight')
         if (self.anchor_epoch or '') != spec.anchor_epoch:
             raise BlockedInfrastructure('anchor IPC generation changed after preflight')
+        model = json.loads(spec.model_json)
+        self.check_external_networks(model, deadline, cancel)
         handle = DeploymentHandle(self.context['deployment_id'], self.daemon_id, spec.policy_id,
             self.run_id, generation, project_name(self.context['deployment_id'],
                 ('connector:' if spec.kind == 'connector' else '') + spec.policy_id, self.run_id, generation),
             spec.anchor_id, spec.socket, anchor_epoch=spec.anchor_epoch, kind=spec.kind, connector_journal=spec.connector_journal)
         self._save(handle)  # Persist intent before the first mutating daemon request.
-        model = json.loads(spec.model_json)
         model['name'] = handle.project
         # `compose config` has already expanded even implicit network names
         # using the source directory. Each occurrence owns its own networks;
@@ -319,7 +338,9 @@ class ComposeRuntimeManager(ConnectorRuntime):
             handle.phase = 'running'
             self._save(handle)
             return handle
-        except BaseException:
+        except BaseException as exc:
+            if handle.uncertain:
+                handle.create_error = str(exc)
             self._save(handle)
             raise
 
@@ -394,7 +415,10 @@ class ComposeRuntimeManager(ConnectorRuntime):
             handle.uncertain = False
             self._save(handle)
         if handle.uncertain:
-            raise BlockedCleanup('create outcome unknown; retain intent and retry reconciliation before any new start')
+            message = f'{handle.kind} {handle.policy_id} ({handle.project}): create outcome unknown; retain intent and retry reconciliation before any new start'
+            if handle.create_error:
+                message += '\n' + handle.create_error
+            raise BlockedCleanup(message)
         for cid in dict.fromkeys([*owned, *([handle.container_id] if handle.container_id in all_ids else [])]):
             item = self._inspect([cid], deadline)[0]
             self._verify(item, handle)

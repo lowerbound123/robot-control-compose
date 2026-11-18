@@ -16,6 +16,7 @@ class Engine:
         self.unavailable = False
         self.late = False
         self.models = {}
+        self.networks = set()
     def __call__(self, args, *, timeout, env=None, cwd=None, cancel=None):
         if self.unavailable:
             raise RuntimeError('daemon unavailable')
@@ -52,6 +53,12 @@ class Engine:
             return cid
         if args[:2] == ['network','ls']:
             return ''
+        if args[:2] == ['network', 'inspect']:
+            names = args[args.index('--') + 1:]
+            for name in names:
+                if name not in self.networks:
+                    raise RuntimeError(f'Error: network {name} not found')
+            return '\n'.join(names)
         raise AssertionError(args)
 
 
@@ -249,6 +256,7 @@ def test_occurrence_network_names_are_project_scoped_and_external_networks_uncha
     networks = {'default': {'name': 'a_default', 'driver': 'bridge'},
                 'private': {'name': 'user-private', 'internal': True, 'labels': {'purpose': 'policy'}},
                 'external': {'name': 'shared-model-network', 'external': True}}
+    engine.networks.add('shared-model-network')
     (folder / 'compose.yaml').write_text(json.dumps({'services': {'policy': {
         'image': 'fixture:local', 'networks': {'default': {}, 'private': {}, 'external': {}}}},
         'networks': networks}))
@@ -267,3 +275,96 @@ def test_occurrence_network_names_are_project_scoped_and_external_networks_uncha
         assert snapshot['networks']['external'] == {'name': 'shared-model-network', 'external': True}
         assert json.loads(prepared.model_json)['networks'] == networks
     assert handles[0].project != handles[1].project
+
+
+def test_external_network_disappears_before_create_leaves_no_intent(tmp_path):
+    from dataclasses import replace
+
+    runtime, engine = manager(tmp_path)
+    candidate = spec(runtime, tmp_path, 'network-policy')
+    model = json.loads(candidate.model_json)
+    model['networks'] = {'model': {'external': True, 'name': 'absent-model-network'}}
+    model['services']['policy']['networks'] = {'model': {}}
+    candidate = replace(candidate, model_json=json.dumps(model))
+    with pytest.raises(RuntimeError, match='absent-model-network'):
+        runtime.start(candidate, 6, threading.Event(), time.monotonic() + 5)
+    assert not runtime.handles and not list(runtime.state_dir.glob('rcp-*.json'))
+    assert not engine.events
+
+
+def test_create_stderr_survives_reconciliation_and_restart(tmp_path, monkeypatch):
+    import os
+    from robot_control.runtime_manager import BlockedCleanup, docker_command
+
+    raw = 'first line\n{"api_key":"literal-fixture"}\nlast line\n'
+    binary = tmp_path / 'docker'
+    binary.write_text('#!/bin/sh\ncat >&2 <<\'END\'\n' + raw + 'END\nexit 17\n')
+    binary.chmod(0o755)
+    monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
+    runtime, engine = manager(tmp_path)
+    candidate = spec(runtime, tmp_path, 'fixture')
+
+    def fail_create(args, **kwargs):
+        if 'create' in args:
+            return docker_command(args, **kwargs)
+        return engine(args, **kwargs)
+
+    runtime.runner = fail_create
+    with pytest.raises(RuntimeError) as first:
+        runtime.start(candidate, 6, threading.Event(), time.monotonic() + 5)
+    assert raw in str(first.value)
+    reopened, _ = manager(tmp_path)
+    with pytest.raises(BlockedCleanup) as later:
+        reopened.cleanup_owned(time.monotonic() + 5)
+    assert 'create outcome unknown' in str(later.value) and raw in str(later.value)
+
+
+def test_connector_preflight_checks_network_before_preparing_reader(tmp_path):
+    runtime, _ = manager(tmp_path)
+    runtime.context['connector_rpc_volume'] = 'connector-rpc'
+    directory = tmp_path / 'connector/mock'
+    directory.mkdir(parents=True)
+    (directory / 'compose.yaml').write_text(json.dumps({
+        'services': {'connector': {'image': 'mock:local', 'networks': {'robot': {}}}},
+        'networks': {'robot': {'external': True, 'name': 'missing-robot-network'}},
+    }))
+    with pytest.raises(RuntimeError, match='missing-robot-network'):
+        runtime.prepare_connector_spec('body', directory, {}, threading.Event(), time.monotonic() + 5)
+    assert not list(runtime.state_dir.glob('connector-*')) and not runtime.handles
+
+
+def test_compose_timeout_keeps_partial_stderr_and_timeout_type(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from robot_control import runtime_manager
+
+    binary = tmp_path / 'docker'
+    marker = tmp_path / 'sent'
+    binary.write_text('#!/bin/sh\nprintf "waiting for daemon\\n" >&2\ntouch sent\nexec sleep 10\n')
+    binary.chmod(0o755)
+    monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
+    # Expire the command only after the child actually wrote its diagnostic.
+    monkeypatch.setattr(runtime_manager, 'time', SimpleNamespace(
+        monotonic=lambda: time.monotonic() + (10 if marker.exists() else 0)))
+    output = []
+    with pytest.raises(TimeoutError, match='deadline exceeded') as error:
+        runtime_manager.docker_command(['compose', 'create'], timeout=5, cwd=tmp_path, compose_stderr=output.append)
+    assert output == ['waiting for daemon\n']
+    assert str(error.value).endswith(output[0])
+
+
+def test_legacy_uncertain_journal_remains_blocked_without_create_error(tmp_path):
+    from robot_control.runtime_manager import BlockedCleanup
+
+    runtime, engine = manager(tmp_path)
+    handle = runtime.start(spec(runtime, tmp_path, 'old'), 4, threading.Event(), time.monotonic() + 5)
+    path = runtime.state_dir / (handle.project + '.json')
+    saved = json.loads(path.read_text())
+    saved.pop('create_error')
+    saved.update(phase='creating', uncertain=True, container_id='', resources=[])
+    path.write_text(json.dumps(saved))
+    engine.containers.clear()
+    reopened, _ = manager(tmp_path)
+    with pytest.raises(BlockedCleanup, match='create outcome unknown'):
+        reopened.cleanup_owned(time.monotonic() + 5)
+    assert reopened.handles[handle.project].uncertain and path.is_file()

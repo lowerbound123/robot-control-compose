@@ -190,9 +190,10 @@ class RecordingIngress:
         if timings is not None: timings['work_ns'] = time.monotonic_ns()-acquired
         return True
 
-    def log(self, entry):
+    def log(self, entry, *, compose_stderr=False):
         try:
-            return self._enqueue('log', entry, priority='llm_failure.' in str(entry.get('message','')))
+            return self._enqueue('log', entry, stream='compose_stderr' if compose_stderr else None,
+                                 priority='llm_failure.' in str(entry.get('message','')))
         except Exception:
             with self._admission:
                 session = self._session if self._state == 'recording' else None

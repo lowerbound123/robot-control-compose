@@ -49,6 +49,7 @@ class DeploymentHandle:
     resources: list = field(default_factory=list)
     kind: str = 'policy'
     connector_journal: str = ''
+    create_error: str = ''
 
     def labels(self):
         labels = {LABEL + key: str(value) for key, value in dict(deployment=self.deployment_id,

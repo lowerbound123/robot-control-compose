@@ -141,3 +141,42 @@ def test_failed_startup_recovery_blocks_manual_switch(runtime_controller):
     assert controller.status()['runtime']['phase']=='BLOCKED_CLEANUP'
     operation(controller,'policy switch second','failed')
     assert not engine.containers
+
+
+def test_missing_external_network_preserves_old_policy_and_allows_retry(runtime_controller):
+    controller, engine, root = ready(runtime_controller)
+    path = root / 'policy/second/compose.yaml'
+    model = json.loads(path.read_text())
+    model['networks'] = {'model': {'external': True, 'name': 'openwam-main_default'}}
+    model['services']['policy']['networks'] = {'model': {}}
+    path.write_text(json.dumps(model))
+    before = list(engine.events)
+    failure = operation(controller, 'policy switch second', 'failed')
+    assert 'openwam-main_default' in failure['error']
+    assert controller.status()['policy'] == 'first' and engine.events == before
+    engine.networks.add('openwam-main_default')
+    operation(controller, 'policy switch second')
+    assert controller.status()['policy'] == 'second'
+
+
+def test_compose_failure_outputs_verbatim_stderr_before_blocked_cleanup(runtime_controller, monkeypatch):
+    import os
+    from robot_control.runtime_manager import docker_command
+
+    controller, engine, root = ready(runtime_controller)
+    raw = 'compose create failed\n{"api_key":"fixture-value"}\n'
+    binary = root / 'docker'
+    binary.write_text('#!/bin/sh\ncat >&2 <<\'END\'\n' + raw + 'END\nexit 1\n')
+    binary.chmod(0o755)
+    monkeypatch.setenv('PATH', str(root) + os.pathsep + os.environ['PATH'])
+
+    def run(args, **options):
+        if 'create' in args:
+            return docker_command(args, compose_stderr=controller._emit_compose_stderr, **options)
+        return engine(args, **options)
+
+    controller.runtime.runner = run
+    result = operation(controller, 'policy switch second', 'failed')
+    assert 'create outcome unknown' in result['error']
+    assert controller.status()['runtime']['phase'] == 'BLOCKED_CLEANUP'
+    assert any(entry['message'] == raw for entry in controller.read_events()['events'])

@@ -24,8 +24,9 @@ robot:
 `body` 是实例身份，`mock` 是来源目录。第一版只允许一个实例；内部连接、缓存、容器和清理记录按实例寻址，来源相同不代表实例相同。相对 `connector_directory` 从 RC 配置目录解析，设备配置路径从来源目录解析；也可显式引用 RC 容器中可读的绝对配置路径。
 
 ```bash
-# 默认仅构建无 ROS 的 mock connector 和所选策略。
-./setup.sh --policies example
+# 首次部署 example 和无 ROS 的 mock connector
+./setup.sh --policies example --connectors mock
+./scripts/compose.sh build ipc-anchor robot-control
 ./scripts/compose.sh up -d --no-build
 
 # 使用 ACOne 时显式构建其镜像，修改设备配置后启动。
