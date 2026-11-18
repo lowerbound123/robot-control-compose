@@ -36,6 +36,7 @@ def suite(policies, interface):
         add("test_pi05_*.py")
     if policies & {"pi05", "pi05_lift2"}:
         add("test_pi05_task*.py")
+        add("test_pi05_alignment.py")
         add("test_pi05_monitor.py")
     if "pi05_lift2" in policies:
         add("test_pi05_lift2*.py")
@@ -63,7 +64,7 @@ def suite(policies, interface):
             excluded.update(family - policies)
     options = ["-k", " and ".join("not " + name for name in sorted(excluded))] if excluded else []
     if "pi05" in policies and "qwen35_single" not in policies:
-        options += ["--deselect=tests/test_pi05_runtime.py::test_pi05_and_qwen_share_alignment_and_blending_but_not_gripper_offset"]
+        options += ["--deselect=tests/test_pi05_runtime.py::test_pi05_closest_pair_and_qwen_time_alignment_keep_their_gripper_rules"]
     return sorted(paths) + options
 
 

@@ -174,11 +174,12 @@ def test_test_scope_registers_only_selected_pi05_sources():
     assert 'pi05_lift2' in POLICIES
     chosen = suite({'pi05_lift2'}, False)
     assert 'tests/test_pi05_lift2.py' in chosen
+    assert 'tests/test_pi05_alignment.py' in chosen
     assert 'tests/test_pi05_worker.py' not in chosen
     assert 'tests/test_pi05_lift2.py' not in suite({'pi05'}, False)
 
 
-def test_delta_keeps_old_overlap_while_new_future_is_pending_and_after_collection(running_policy):
+def test_delta_is_applied_once_before_smoothing_from_first_tied_pair(running_policy):
     _, manifest, policy, model = running_policy
     manifest['params'].update(gripper_upper_threshold=2., gripper_lower_threshold=2.,
                               gripper_upper_value='+0.5', gripper_lower_value='-0.5')
@@ -194,8 +195,11 @@ def test_delta_keeps_old_overlap_while_new_future_is_pending_and_after_collectio
     model.gate.set()
     policy.pending.result(3)
     output = step(policy, chunk[1:], 23)
-    np.testing.assert_allclose(output[:27,[6,13]],np.tile([3.5,.5],(27,1)))
-    np.testing.assert_allclose(output[27:,[6,13]],np.tile([8.5,4.5],(len(output)-27,1)))
+    assert len(output) == 48
+    grippers = output[:, [6, 13]]
+    np.testing.assert_array_equal(grippers[0], [3.5, .5])
+    assert np.all(np.diff(grippers[:27], axis=0) > 0)
+    np.testing.assert_array_equal(grippers[26:], np.tile([8.5, 4.5], (22, 1)))
     np.testing.assert_array_equal(policy.canonical,output)
     np.testing.assert_array_equal(model.output[:,6],8.)
 

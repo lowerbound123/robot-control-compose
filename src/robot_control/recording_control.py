@@ -54,6 +54,7 @@ class RecordingControl(RecordingAuto):
             data = {'run_id':self.run_id, 'timestamp_ns':time.time_ns(),
                     'connector': self.connector_status(),
                     'safety': copy.deepcopy(self._effective_safety),
+                    'reset_qpos': self._reset_qpos.copy() if self._connected else None,
                     'rc':self.config, 'policy':self._identity,
                     'generation':self.buffer.generation, 'control_epoch':self._control_epoch,
                     'control_owner':self.control_owner,

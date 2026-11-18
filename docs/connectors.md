@@ -37,7 +37,20 @@ setup 只初始化缺失的 `connector/*/devices/*.yaml`，不覆盖已有设备
 
 旧部署通过 RC 环境变量设置的 ROS 域，需要写入设备配置的 `ros_domain_id`。ROS 模拟器的 `ROS_DOMAIN_ID` 仍需与 `ros-test.yaml` 一致，默认均为 83。RMW 和 ROS 网络设置由 `connector/acone/compose.yaml` 管理，不再通过 RC 容器环境传递。
 
-旧 `robot.backend` 配置会明确报迁移错误。迁移时将旧 `robot` 中除 `backend` 外的设备字段移入对应来源的设备 YAML，再用上面的 `connectors` 与 `robot.connector` 引用替换。也可用 `robot: {profile: acone}` 选择命名连接，具体结构与手动重试规则见 [connector 热切换](connector-switching.md)。设备限速写入设备 YAML 的 `safety`；RC YAML 保留默认限速、控制频率、reset 和策略配置。不要把私有 YAML 或运行产物提交到版本库。
+旧 `robot.backend` 配置会明确报迁移错误。迁移时将旧 `robot` 中除 `backend` 外的设备字段移入对应来源的设备 YAML，再用上面的 `connectors` 与 `robot.connector` 引用替换。也可用 `robot: {profile: acone}` 选择命名连接，具体结构与手动重试规则见 [connector 热切换](connector-switching.md)。设备 YAML 保存限速和复位基准。RC YAML 保存默认限速、控制频率和策略配置。不要把私有 YAML 或运行产物提交到版本库。
+
+### 设备复位基准
+
+在当前 connector 引用的设备 YAML 中设置可选的 `reset_qpos`。它包含 14 个绝对目标，顺序为左臂 6 个关节、左夹爪、右臂 6 个关节、右夹爪。关节用弧度，夹爪用各设备的原生单位。省略整个字段时，14 个目标均为零。
+
+```yaml
+# connector/lift2/devices/robot-main.yaml
+reset_qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+```
+
+普通 `reset` 和 `policy switch <策略> --reset` 都使用当前连接的基准，并遵循生效的限速。编辑后重新连接设备即可生效。MCP `props.reset_qpos` 和录制配置的顶层 `reset_qpos` 给出已连接设备的有效基准。
+
+从旧版本升级时，若要沿用 RC 主配置中的非零 `reset_qpos`，请把该值移入对应设备 YAML。设备文件缺省时按全零复位，即使旧 RC 主配置中仍有非零值。
 
 ### 限速配置归属
 

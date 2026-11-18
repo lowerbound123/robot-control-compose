@@ -19,24 +19,11 @@ def positive(value, field):
         raise ValueError(f'{field} must be positive and finite')
 
 
-def vector(value, field):
-    try:
-        if not isinstance(value, list) or len(value) != 14:
-            raise ValueError()
-        numbers = [float(item) for item in value]
-        if not all(math.isfinite(item) and abs(item) <= 3.4028234e38 for item in numbers):
-            raise ValueError()
-    except (TypeError, ValueError, OverflowError):
-        raise ValueError(f'{field} must contain 14 finite numbers') from None
-    return numbers
-
-
 def validate_rc(config):
     if config.get('schema_version') != 3:
         raise ValueError('RC schema_version does not match this repository')
     load('src/robot_control/connector_config.py').validate_connectors(config)
     positive(config.get('frequency_hz', 30), 'frequency_hz')
-    vector(config.get('reset_qpos'), 'reset_qpos')
     load('src/robot_control/safety_config.py').safety_settings(config.get('safety', {}))
     timeouts = config.get('timeouts', {})
     if not isinstance(timeouts, dict):
@@ -71,6 +58,8 @@ def validate_documents(documents):
                 load('src/robot_control/connector_config.py').validate_connector_profile(value)
             elif (location.parts[0] == 'connector' and 'devices' in location.parts and
                     location.suffix in ('.yaml', '.yml')):
-                load('src/robot_control/safety_config.py').safety_settings(value.get('safety', {}))
+                settings = load('src/robot_control/safety_config.py')
+                settings.device_reset_qpos(value)
+                settings.safety_settings(value.get('safety', {}))
         except (ValueError, TypeError, KeyError):
             raise ValueError(f'{path}: invalid main configuration schema') from None

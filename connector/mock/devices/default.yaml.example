@@ -1,3 +1,5 @@
+# Optional reset pose: left 6 joints + gripper, then right 6 joints + gripper. Defaults to all zeros.
+# reset_qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 image_size:
 - 64
 - 96

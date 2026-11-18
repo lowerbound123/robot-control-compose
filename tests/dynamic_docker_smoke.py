@@ -50,9 +50,9 @@ def main():
     (directory/'.setup/runtime.json').write_text(json.dumps(context))
     config=read_config(ROOT/'configs/rc.mock.yaml.example')
     configure_connector(config, directory)
-    config.update(startup_policy=None,reset_qpos=[.25]*14,frequency_hz=50)
+    config.update(startup_policy=None,frequency_hz=50)
     config['safety']['enabled']=False
-    configure_connector(config, directory, initial_qpos=[0]*14)
+    configure_connector(config, directory, initial_qpos=[0]*14, reset_qpos=[.25]*14)
     config['timeouts']=dict(initialize_s=20,inference_s=4,release_s=.2,shutdown_s=22)
     (directory/'configs/rc.mock.yaml').write_text(json.dumps(config))
     for name,params in [('a',{}),('b',{}),('c',{}),('failed',{'fail':True}),('slow',{'release_delay':40})]:

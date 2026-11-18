@@ -6,7 +6,7 @@ RC/SDK 0.17 支持在原 RC 进程中更换机器人连接。TUI、MCP、基础�
 
 运行 `./setup.sh --config-only` 创建缺失的 `configs/robots/*.yaml` 并增补各 policy 的公共配置。已有连接文件原样保留；本机配置不提交，模板使用 `.yaml.example`。RC 和 SDK 需同步升级，并重新创建一次原运行组以协商 `connector_switch_v1`；旧能力在破坏原状态前被拒绝。
 
-每个命名 YAML 引用一个独立 connector 实例及设备配置。提供 mock、acone、ros-test 三份模板，也可复制 acone 模板建立多台同型机器人的连接。profile 不包含控制频率、限幅或复位目标；话题、消息类型、超时、`ros_domain_id` 和设备 `safety` 属于设备 YAML。设备 `safety` 覆盖 RC 默认限速，缺省字段使用 RC 回退值，具体规则见 [限速配置归属](connectors.md#限速配置归属)。
+每个命名 YAML 引用一个独立 connector 实例及设备配置，也可复制模板建立多台同型机器人的连接。话题、消息类型、超时、`ros_domain_id`、设备限速 `safety` 和复位基准 `reset_qpos` 写在设备 YAML 中。切换成功后使用新设备的基准，设备缺省时回到全零。设备 `safety` 覆盖 RC 默认限速，具体规则见 [设备复位基准和限速](connectors.md#设备复位基准)。
 
 ```yaml
 # configs/robots/acone.yaml

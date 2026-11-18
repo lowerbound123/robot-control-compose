@@ -45,8 +45,9 @@ def ros_rc(tmp_path, monkeypatch, request):
     manifest_path.write_text(json.dumps(manifest))
     config = read_config(ROOT / "configs/rc.ros-test.yaml.example")
     config.update(policy_directory="policy", startup_policy="example", outputs_directory="outputs",
-                  reset_qpos=[.3] * 14, timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
+                  timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
     device = read_config(ROOT / "connector/acone/devices/ros-test.yaml.example")
+    device["reset_qpos"] = [.3] * 14
     monkeypatch.setenv("ROS_DOMAIN_ID", str(device["ros_domain_id"]))
     old = device["namespace"] + "/"
     device["namespace"] = namespace
@@ -121,7 +122,7 @@ def test_actual_ros_pose_save_reset_and_restore(ros_rc):
     saved = read_config(saved_path)["qpos"]
     consumed = rc.status()["consumed"]
     assert rc.wait_operation(rc.submit("reset"), 10)["status"] == "succeeded"
-    until(lambda: np.allclose(rc.robot.read_state()["qpos"], rc.config["reset_qpos"], atol=.005), rc)
+    until(lambda: np.allclose(rc.robot.read_state()["qpos"], [.3] * 14, atol=.005), rc)
     assert rc.wait_operation(rc.submit("pose restore home"), 10)["status"] == "succeeded"
     until(lambda: np.allclose(rc.robot.read_state()["qpos"], saved, atol=.005), rc)
     assert rc.status()["consumed"] == consumed

@@ -22,7 +22,8 @@ class AsyncPi05Policy(MonitoredAsyncChunkPolicy):
         super().__init__(backend, instruction=self._task_instruction(),
                          chunk_size=execution['chunk_size'],
                          request_when_remaining=execution['request_when_remaining'],
-                         inference_timeout_s=execution['inference_timeout_s'])
+                         inference_timeout_s=execution['inference_timeout_s'],
+                         closest_point_alignment=True)
         model = self.config.get('model', {})
         loaded = getattr(backend, 'policy_config', None)
         metadata = dict(checkpoint=model.get('checkpoint'), device=model.get('device'),

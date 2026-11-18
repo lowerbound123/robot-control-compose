@@ -19,7 +19,7 @@ from rc_connector_sdk.client import ConnectorClient
 from rc_connector_sdk.images import map_images
 from rc_policy_sdk.performance import trace
 from .yaml_config import load_yaml_config
-from .safety_config import safety_settings
+from .safety_config import device_reset_qpos, safety_settings
 
 
 class ImagesPending(RuntimeError):
@@ -84,6 +84,7 @@ class ConnectorRobot:
         config = load_yaml_config(self.config_path)
         if not isinstance(config, dict):
             raise ValueError('connector device config must be an object')
+        device_reset_qpos(config)
         safety = safety_settings(config.get('safety', {}), fallback=self.rc_config.get('safety', {}))
         for key in ('connect_timeout_s', 'close_timeout_s', 'feedback_timeout_s', 'camera_timeout_s'):
             value = config.get(key, 10 if key == 'connect_timeout_s' else 2)

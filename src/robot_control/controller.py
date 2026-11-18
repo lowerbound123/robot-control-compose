@@ -79,6 +79,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._last_action_request = None
         self.limiter = ModeLimiter(self.config["safety"], self.config["frequency_hz"])
         self._effective_safety = copy.deepcopy(self.config['safety'])
+        self._reset_qpos = None
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -1159,7 +1160,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if result["type"] == "switch_reset":
                 if self._stop.is_set() or job["cancel"].is_set():
                     continue
-                self._motion = {"target": finite_qpos(self.config["reset_qpos"]), "complete": result["complete"], "source": "reset"}
+                self._motion = {"target": finite_qpos(self._reset_qpos), "complete": result["complete"], "source": "reset"}
                 self._state = "moving"
                 continue
             # The manager retains its last job while waiting for more work.
@@ -1180,8 +1181,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self.operations.update(job.get('public_id'), 'succeeded', result=result.get('editor', result.get('saved_path')))
                 continue
             if result.get("connected"):
-                limiter, safety = self._connection_limiter(self.robot.raw, self.robot.read_state())
-                self.limiter, self._effective_safety = limiter, safety
+                self.limiter, self._effective_safety, self._reset_qpos = self._connection_motion_settings(
+                    self.robot.raw, self.robot.read_state())
                 self._connected = True
                 self._hold = self.limiter.previous.copy()
             if job["kind"] == "shutdown":
@@ -1904,10 +1905,12 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             self._pause("resuming")
             self._operation_start("reset_context", wait_inflight=True, worker=self._worker)
         elif command in {"reset", "r"} and not args:
+            if not self._connected:
+                raise RuntimeError('reset 需要已连接的 connector')
             self._cancel_direct("cancelled by reset")
             self._pause()
             self._publish_fault = False
-            self._motion = {"target": finite_qpos(self.config["reset_qpos"]), "source": "reset",
+            self._motion = {"target": finite_qpos(self._reset_qpos), "source": "reset",
                             'reset_policy_context': True}
             self._state = "moving"
         elif command == "save" and len(args) == 1:

@@ -29,7 +29,7 @@ def step(policy, chunk, count):
     return policy.step({'qpos': np.arange(14)}, chunk, images(), runtime=metadata(count))
 
 
-def test_pi05_and_qwen_share_alignment_and_blending_but_not_gripper_offset(tmp_path):
+def test_pi05_closest_pair_and_qwen_time_alignment_keep_their_gripper_rules(tmp_path):
     cls = implementation()
     from rc_qwen35_policy.runtime import AsyncQwenPolicy
     _, cfg = settings(tmp_path)
@@ -48,10 +48,14 @@ def test_pi05_and_qwen_share_alignment_and_blending_but_not_gripper_offset(tmp_p
         pi_chunk = step(pi, pi_chunk[7:], 28)
         qw_chunk = step(qw, qw_chunk[7:], 28)
         joints = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
-        np.testing.assert_array_equal(pi_chunk[:, joints], qw_chunk[:, joints])
+        # All pairs tie. Aligning both heads gives 22 common steps to crossfade.
+        np.testing.assert_allclose(pi_chunk[:, joints], qw_chunk[:, joints], atol=1e-6)
         assert pi_chunk.shape == (43, 14)
-        np.testing.assert_equal(pi_chunk[:22, [6, 13]], 0)
-        np.testing.assert_equal(pi_chunk[22:, [6, 13]], 5)
+        np.testing.assert_equal(pi_chunk[0, [6, 13]], 0)
+        assert np.all(np.diff(pi_chunk[:22, [6, 13]], axis=0) > 0)
+        np.testing.assert_equal(pi_chunk[21:, [6, 13]], 5)
+        np.testing.assert_equal(qw_chunk[0, joints], 0.)
+        np.testing.assert_equal(qw_chunk[21:, joints], 10.)
         np.testing.assert_allclose(qw_chunk[:22, [6, 13]], -.85)
         np.testing.assert_allclose(qw_chunk[22:, [6, 13]], 10.15)
     finally:

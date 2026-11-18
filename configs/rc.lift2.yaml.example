@@ -22,9 +22,6 @@ safety:
     translation_m_s: 0.15
     rotation_rad_s: 0.75
     gripper_units_s: 2.5
-# Only an explicit reset uses this pose. Set the site's intended reset pose.
-# LIFT2 grippers use native values near 0..5, not ACOne's negative values.
-reset_qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 timeouts:
   initialize_s: 600
   inference_s: 60

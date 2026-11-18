@@ -10,7 +10,7 @@ from .connector_access import ConnectorAccess
 from .connector_profiles import ConnectorProfiles, profile_name
 from .robots import make_robot
 from .safety import ModeLimiter
-from .safety_config import safety_settings
+from .safety_config import device_reset_qpos, safety_settings
 
 
 class ConnectorLifecycle:
@@ -59,17 +59,18 @@ class ConnectorLifecycle:
         with self._lock:
             config = getattr(self.robot.raw, 'config', None) or self.config['robot']
             return {'robot': copy.deepcopy(config), 'connector': self.connector_status(),
+                    'reset_qpos': self._reset_qpos.copy() if self._connected else None,
                     'safety': copy.deepcopy(self._effective_safety)}
 
-    def _connection_limiter(self, robot, state):
-        """Build a fresh limiter before the control thread commits a connection."""
+    def _connection_motion_settings(self, robot, state):
+        """Resolve motion settings before the control thread commits a connection."""
+        config = getattr(robot, 'config', None) or {}
         safety = getattr(robot, 'safety', None)
         if safety is None:
-            config = getattr(robot, 'config', None) or {}
             safety = safety_settings(config.get('safety', {}), fallback=self.config['safety'])
         limiter = ModeLimiter(safety, self.config['frequency_hz'])
         limiter.reset(state['qpos'])
-        return limiter, copy.deepcopy(safety)
+        return limiter, copy.deepcopy(safety), device_reset_qpos(config)
 
     def _connector_record(self):
         return self.registry.get(self._identity) if self._identity is not None else None
@@ -155,11 +156,11 @@ class ConnectorLifecycle:
                 self._connector_phase = 'connecting'
             elif action == 'connect':
                 # This is the only publication point for the new sensor epoch.
-                limiter, safety = self._connection_limiter(result['robot'], result['state'])
+                settings = self._connection_motion_settings(result['robot'], result['state'])
                 self._pool.clear_latest()
                 self._record_frames.clear()
                 self.robot.bind(result['robot'])
-                self.limiter, self._effective_safety = limiter, safety
+                self.limiter, self._effective_safety, self._reset_qpos = settings
                 self._connected = True
                 self._connector_profile = job['profile']
                 if job['profile'] is not None:

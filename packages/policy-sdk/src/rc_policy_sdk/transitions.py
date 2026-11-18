@@ -4,6 +4,13 @@ See docs/model-server-policy.md for provenance and license.
 """
 import numpy as np
 
+
+def _closest_pair(old, new):
+    distances = np.linalg.norm(old[:, None, :] - new[None, :, :], axis=2)
+    # Row-major argmin breaks ties by earliest old index, then earliest new index.
+    return np.unravel_index(distances.argmin(), distances.shape)
+
+
 class TemporalTransition:
     """Blend aligned arm futures while preserving the old gripper plan.
 
@@ -72,6 +79,33 @@ class TemporalTransition:
         if denominator <= 0:
             return progress
         return (weights / denominator).astype(np.float32)
+
+
+class ClosestPointOverlapTransition(TemporalTransition):
+    """Align the nearest pair and crossfade all 14 axes over the shared interval."""
+
+    def __init__(self):
+        super().__init__("exponential", None, 5.0, 0.25)
+
+    def apply(self, old_actions: np.ndarray, new_actions: np.ndarray) -> np.ndarray:
+        # Distances and interpolation must also work for large finite float32 actions.
+        old = np.asarray(old_actions, dtype=np.float64)
+        new = np.asarray(new_actions, dtype=np.float64)
+        if old.shape[1:] != (14,) or new.shape[1:] != (14,):
+            raise ValueError("closest-point alignment requires two (steps, 14) arrays")
+        if not len(old) or not len(new):
+            return new.astype(np.float32)
+
+        old_match, new_match = _closest_pair(old, new)
+        before = min(old_match, new_match)
+        old_start, new_start = old_match - before, new_match - before
+        overlap = min(len(old) - old_start, len(new) - new_start)
+        old_window = old[old_start:old_start + overlap]
+        new_window = new[new_start:new_start + overlap]
+        alpha = self._weights(overlap).astype(np.float64)[:, None]
+        alpha[-1] = 1.0  # Land exactly on the new target, including a one-step overlap.
+        blended = (1.0 - alpha) * old_window + alpha * new_window
+        return np.concatenate((old[:old_start], blended, new[new_start + overlap:])).astype(np.float32)
 
 
 class TrajectoryAddTransition(TemporalTransition):
@@ -143,16 +177,7 @@ class TrajectoryAddTransition(TemporalTransition):
             distances = np.linalg.norm(new - old[old_keypoint], axis=1)
             keypoint = int(np.argmin(distances))
         elif applied_trunk_mode == "close":
-            # Flattened argmin is deterministic: ties choose the earliest old
-            # index, then the earliest new index.
-            pairwise_distances = np.linalg.norm(
-                old[:, np.newaxis, :] - new[np.newaxis, :, :], axis=2
-            )
-            old_keypoint_raw, keypoint_raw = np.unravel_index(
-                int(np.argmin(pairwise_distances)), pairwise_distances.shape
-            )
-            old_keypoint = int(old_keypoint_raw)
-            keypoint = int(keypoint_raw)
+            old_keypoint, keypoint = _closest_pair(old, new)
         else:
             old_keypoint = len(old) - 1
             distances = np.linalg.norm(new - old[old_keypoint], axis=1)

@@ -1,3 +1,5 @@
+# Optional reset pose: left 6 joints + gripper, then right 6 joints + gripper. Defaults to all zeros.
+# reset_qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 ros_domain_id: 0
 feedback_left_topic: /arm_l_status
 feedback_right_topic: /arm_r_status

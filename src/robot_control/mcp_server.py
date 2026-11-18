@@ -274,7 +274,7 @@ def create_server(controller):
                        "units": {"epos": "absolute xyz (meters), XYZ RPY (radians), raw gripper", "qpos": "six radians plus raw gripper per arm"},
                        "motions": MOTIONS, "grammar": "left|right|both:motion[&motion][:value][@slow|medium|fast]",
                        "directions": "translation in base frame: forward +x, left +y, up +z; rotation in local tool frame",
-                       "home": {"joint_pos": [0] * 6, "gripper": 0}, "reset": "uses RC reset_qpos"})
+                       "home": {"joint_pos": [0] * 6, "gripper": 0}, "reset": "uses active connector reset_qpos (14 zeros if omitted)"})
 
     @server.tool(annotations=read)
     async def state(include_images: bool = False, cameras: list[str] | None = None,

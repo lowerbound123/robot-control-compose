@@ -177,6 +177,8 @@ class HumanCommandSupport:
         if parsed is None:
             return False
         if parsed.kind == 'rc_config_set':
+            if parsed.target == 'reset_qpos':
+                raise ValueError('请在 connector 设备 YAML 中设置 reset_qpos，重新连接后生效')
             draft = copy.deepcopy(getattr(self, '_rc_config_draft', self.config))
             def invalid(value):
                 raise ValueError(f'JSON 不支持 {value}')

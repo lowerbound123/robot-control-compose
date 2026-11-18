@@ -9,12 +9,12 @@ import time
 
 import numpy as np
 
-from .transitions import TemporalTransition
+from .transitions import ClosestPointOverlapTransition, TemporalTransition
 
 
 class AsyncChunkPolicy:
     def __init__(self, backend, *, instruction, chunk_size, request_when_remaining,
-                 inference_timeout_s):
+                 inference_timeout_s, closest_point_alignment=False):
         if type(chunk_size) is not int or chunk_size <= 0:
             raise ValueError('chunk_size must be a positive integer')
         if (type(request_when_remaining) is not int
@@ -38,7 +38,11 @@ class AsyncChunkPolicy:
         self._consumed = None
         self.last_trim = 0
         self.canonical = np.empty((0, 14), np.float32)
-        self.transition = TemporalTransition('exponential', None, 5.0, 0.25)
+        self.closest_point_alignment = closest_point_alignment
+        if closest_point_alignment:
+            self.transition = ClosestPointOverlapTransition()
+        else:
+            self.transition = TemporalTransition('exponential', None, 5.0, 0.25)
         self.backend = backend
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='policy-inference')
         try:
@@ -120,13 +124,18 @@ class AsyncChunkPolicy:
         delta = runtime.consumed_actions - self._consumed
         if delta < 0:
             raise RuntimeError('consumed action counter moved backwards')
-        self.canonical = self.canonical[delta:]
         self._consumed = runtime.consumed_actions
         old = np.asarray(action_chunk, dtype=np.float32).reshape((-1, 14))
-        if len(old) != len(self.canonical):
-            raise RuntimeError('canonical mirror differs from RC remaining actions')
         if not np.isfinite(old).all():
             raise ValueError('nonfinite remaining actions')
+        if self.closest_point_alignment:
+            # Pi05 returns canonical actions directly. RC may retain a pinned
+            # prefix or reject a short splice that expired before installation.
+            self.canonical = old.copy()
+        else:
+            self.canonical = self.canonical[delta:]
+            if len(old) != len(self.canonical):
+                raise RuntimeError('canonical mirror differs from RC remaining actions')
         if self.pending is not None:
             if self.pending.done() or not len(old) or time.monotonic() >= self._deadline:
                 old = self._collect(runtime)

@@ -26,7 +26,7 @@ def example_rc(tmp_path, monkeypatch, request):
     (folder / "policy.yaml").write_text(json.dumps(manifest))
     config = read_config(ROOT / "configs/rc.mock.yaml.example")
     config.update(policy_directory="policy", startup_policy="example", outputs_directory="outputs",
-                  reset_qpos=[0.] * 14, timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
+                  timeouts=dict(initialize_s=10, inference_s=5, release_s=3))
     device = tmp_path / 'mock-device.yaml'
     device.write_text(json.dumps(dict(initial_qpos=[.01] * 14, initial_epos=[.02] * 14, image_size=[12, 16])))
     connector_config(config, device=device)

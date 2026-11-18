@@ -1,4 +1,4 @@
-"""Connection-owned limit settings; stdlib-only so setup can validate them."""
+"""Device motion settings shared by RC and stdlib-only setup."""
 import copy
 import math
 
@@ -11,6 +11,15 @@ DEFAULT_SAFETY = {
              'gripper_units_s': 1000000.},
 }
 _FLOAT32_MAX = 3.4028234663852886e38
+
+
+def device_reset_qpos(config):
+    """Return the device's absolute reset pose in left-arm, right-arm order."""
+    values = config.get('reset_qpos', [0.] * 14)
+    if (not isinstance(values, list) or len(values) != 14 or
+            any(type(v) not in (int, float) or not -_FLOAT32_MAX <= v <= _FLOAT32_MAX for v in values)):
+        raise ValueError('connector reset_qpos requires 14 finite float32 numbers')
+    return list(values)
 
 
 def safety_settings(config, *, fallback=None):

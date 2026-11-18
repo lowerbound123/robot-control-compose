@@ -34,21 +34,6 @@ safety:
     translation_m_s: 1000000.0
     rotation_rad_s: 1000000.0
     gripper_units_s: 1000000.0
-reset_qpos:
-  - 0
-  - 0
-  - 0
-  - 0
-  - 0
-  - 0
-  - -5
-  - 0
-  - 0
-  - 0
-  - 0
-  - 0
-  - 0
-  - -5
 timeouts:
   initialize_s: 600
   inference_s: 60

@@ -162,7 +162,7 @@ SEND_SECTIONS = [
     {'title': '命令语法', 'body': 'left|right|both:motion[&motion][:value][@slow|medium|fast]\nleft/right 指单臂，both 同时作用于双臂。& 在同一子句组合动作，每种动作只能出现一次；数值必须有限，位移和角度必须为正，方向由动作名称决定。'},
     {'title': '动作与单位', 'body': 'forward/backward：基坐标系 +x/-x；left/right：+y/-y；up/down：+z/-z，单位米。\ntwist-clockwise/twist-counterclockwise、tilt-down-toward-table/tilt-up-away-from-table、turn-left-across-table/turn-right-across-table：工具局部坐标系旋转，单位弧度。省略步长、角度或速度时使用当前 direct_control 配置，先查询 props。'},
     {'title': '串行与并行', 'body': 'commands 字符串表示一个步骤，子句用 | 并行。外层列表是依次执行的串行步骤；其中的内层字符串列表表示同一步的并行子句。每个并行步骤中，同一机械臂最多出现一次；both 已占用两臂。'},
-    {'title': '夹爪、保持与 home', 'body': 'open/close 可带原始绝对夹爪值；省略时使用 props 中的配置值，不可在同一子句同时 open 和 close。与位移组合时同一个 :value 同时作为距离/角度与夹爪绝对值，需按设备语义选择。\nhold 保持该臂，不能带数值或与其他动作组合；整个步骤不能全是 hold。home 将六个关节与夹爪置零，不使用 RC 的 reset_qpos；home 独立使用且不接受数值，可加 @speed。只有姿态运动或 home 支持 @speed。'},
+    {'title': '夹爪、保持与 home', 'body': 'open/close 可带原始绝对夹爪值；省略时使用 props 中的配置值，不可在同一子句同时 open 和 close。与位移组合时同一个 :value 同时作为距离/角度与夹爪绝对值，需按设备语义选择。\nhold 保持该臂，不能带数值或与其他动作组合；整个步骤不能全是 hold。home 将六个关节与夹爪置零，设备的 reset_qpos 用于 reset；home 独立使用且不接受数值，可加 @speed。只有姿态运动或 home 支持 @speed。'},
     {'title': '控制权、等待与队列', 'body': '先 take 并确认 succeeded，再提交运动。clear_queue 只移除尚未开始的步骤；wait 等待回执，本次等待超时或断连不取消运动。queued/running 仅表示已接受或正在执行，用 get_operation 查询直到 succeeded/failed/cancelled。take、pause、switch 不取消已提交设备动作。'},
 ]
 

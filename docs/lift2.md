@@ -40,8 +40,7 @@ connector 使用 host network；其进程会清除继承的 `ROS_HOSTNAME`，避
 connector 由 RC 按 `configs/rc.lift2.yaml` 中的 `robot: {profile: lift2}` 动态创建。
 命名 profile 继续读取已有的 `configs/robots/lift2.yaml` 和设备网络配置。
 默认 30 Hz、`startup_policy: null`，连接后不自动加载策略；随后手动选择策略。
-该 RC 模板采用 LIFT2 的夹爪开/合值 4.9/0，`reset_qpos` 为全零模板，
-只有显式 reset 使用，现场应填写所需复位姿态。不要直接沿用 ACOne 的负夹爪值。
+该 RC 模板采用 LIFT2 的夹爪开/合值 4.9/0。在 `connector/lift2/devices/robot-main.yaml` 中设置 `reset_qpos` 可指定这台设备的复位基准，省略时双臂与夹爪均回到零位。
 宿主 MCP 端口继续由 `.env` 的 `RC_MCP_PORT` 决定。可在同一命令后追加 `compose.webui.yaml`。
 
 如果已经使用其他 RC 主配置启动，也可以在 RC 输入：

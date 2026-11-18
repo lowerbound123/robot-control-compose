@@ -1,3 +1,5 @@
+# Optional reset pose: left 6 joints + gripper, then right 6 joints + gripper. Defaults to all zeros.
+# reset_qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 # Required: enter the actual robot master URI and the connector host's reachable IP.
 # setup copies this template without replacing existing private configuration.
 ros_master_uri: null

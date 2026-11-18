@@ -89,11 +89,14 @@ def test_prepared_safety_is_frozen_until_new_connection(tmp_path):
     assert next_robot.safety['max_delta_per_step'] == [.03] * 14
 
 
-def test_setup_validates_device_safety_with_the_same_rules():
+def test_setup_validates_device_motion_settings_with_the_same_rules():
     spec = importlib.util.spec_from_file_location('safety_setup_validation', ROOT / 'scripts/config_validation.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     path = 'connector/custom/devices/robot.yaml'
+    with pytest.raises(ValueError, match=path):
+        module.validate_documents({path: {'reset_qpos': [1] * 13}})
+    module.validate_documents({path: {'reset_qpos': [0.5] * 14}})
     with pytest.raises(ValueError, match=path):
         module.validate_documents({path: {'safety': {'epos': {'rotation_rad_s': 0}}}})
     module.validate_documents({path: {'safety': {'max_delta_per_step': [-1] * 14}}})
