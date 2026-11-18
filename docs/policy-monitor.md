@@ -52,6 +52,7 @@ class Context:
 | 想检查什么 | 看哪些字段 |
 | --- | --- |
 | 当前任务与模型 | `task`、`checkpoint`、`device`、`action_mode`、模型预测长度 `model_horizon` 和可执行长度 `chunk_size`。已加载配置提供时也显示 `model_dtype` 和 `num_inference_steps`。 |
+| 模型请求的左右夹爪值 | `left_gripper_raw`、`right_gripper_raw` 按步显示最近一次成功预测返回的完整夹爪序列。取已换算为机器人单位的第 6、13 列（从 0 开始），保留阈值、增量、裁剪和融合前的值。等待下次预测、使用缓存或预测失败时保留上一组，初始化和 reset 后显示 `[]`。 |
 | 下一批何时预测 | 剩余动作数 `cached_actions` 低于 `request_when_remaining` 时可以提交预测。`consumed_actions` 和 `control_epoch` 来自最近的策略回调，`last_trim` 表示最近一次收取结果时裁掉的过期步数。 |
 | 后台预测卡在哪里 | `model_stage`、`model_stage_age_ms`、`inference_busy`。已提交且仍由调度器持有的请求显示 `pending=1`、`pending_age_ms`、`pending_remaining_ms`。预测成功后、回调收取结果前，可以看到 `inference_busy=0` 且 `pending=1`。 |
 | 一次预测用了多久 | `load_ms`、`warmup_ms` 单独计时。首次成功预测后显示 `predict_ms`、`predict_avg_ms`、`predict_max_ms`。生产后端另报最近一次成功预测的预处理 `processor_ms`、模型前向 `model_forward_ms`、动作还原及夹爪后处理 `post_ms`。这些是宿主线程观察到的墙钟时间，GPU 操作可异步执行。 |

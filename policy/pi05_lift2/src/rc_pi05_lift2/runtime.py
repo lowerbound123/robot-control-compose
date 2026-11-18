@@ -30,7 +30,8 @@ class AsyncPi05Policy(MonitoredAsyncChunkPolicy):
                         action_mode=self.config.get('actions', {}).get('representation'),
                         num_inference_steps=getattr(loaded, 'num_inference_steps', None),
                         model_dtype=getattr(loaded, 'dtype', None))
-        self._record(**{key: value if type(value) is int else str(value)[:512]
+        self._record(left_gripper_raw='[]', right_gripper_raw='[]',
+                     **{key: value if type(value) is int else str(value)[:512]
                         for key, value in metadata.items() if value is not None})
 
     def _task_instruction(self):
@@ -49,6 +50,8 @@ class AsyncPi05Policy(MonitoredAsyncChunkPolicy):
         rules = self._prediction_rules
         actions, _ = super()._predict(qpos, images, instruction)
         processed = process_grippers(actions, **rules)
+        self._record(left_gripper_raw=str(actions[:, 6].tolist()),
+                     right_gripper_raw=str(actions[:, 13].tolist()))
         # Include postprocessing in the existing inference completion deadline.
         return processed, time.monotonic()
 
@@ -80,7 +83,7 @@ class AsyncPi05Policy(MonitoredAsyncChunkPolicy):
         super().reset()
         self._config_version = None
         self.instruction = self._task_instruction()
-        self._record(task=self.instruction[:512])
+        self._record(task=self.instruction[:512], left_gripper_raw='[]', right_gripper_raw='[]')
 
     def switch_task(self, task):
         if not isinstance(task, str) or not task.strip():
