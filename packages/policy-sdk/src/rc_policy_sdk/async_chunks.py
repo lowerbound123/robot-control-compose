@@ -87,18 +87,21 @@ class AsyncChunkPolicy:
     def _process(actions):
         return actions.copy()
 
-    def _collect(self, runtime):
-        future = self.pending
+    def _await_prediction(self):
         try:
-            new, completed = future.result(timeout=max(0.0, self._deadline - time.monotonic()))
+            new, completed = self.pending.result(timeout=max(0.0, self._deadline - time.monotonic()))
             if completed > self._deadline:
                 raise TimeoutError('model inference exceeded its submission deadline')
+            return new
         except FutureTimeoutError as exc:
             self._failure = TimeoutError('model inference exceeded its submission deadline')
             raise self._failure from exc
         except Exception as exc:
             self._failure = exc
             raise
+
+    def _collect(self, runtime):
+        new = self._await_prediction()
         count, epoch = self._request
         self.pending = None
         self._request = None

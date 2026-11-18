@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--config-json', default='{}')
     parser.add_argument('--config-file')
     parser.add_argument('--journal')
+    parser.add_argument('--debug-timing', action='store_true')
     args = parser.parse_args()
     config = json.loads(Path(args.config_file).read_text() if args.config_file else args.config_json)
     source = Path(args.source).resolve()
@@ -26,7 +27,8 @@ def main():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     driver = module.create_connector(config)
-    server = ConnectorServer(driver, args.socket, instance_id=args.instance_id, journal=args.journal)
+    server = ConnectorServer(driver, args.socket, instance_id=args.instance_id, journal=args.journal,
+                             debug_timing=args.debug_timing)
     for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, lambda *_: server.stop.set())
     return server.serve()
 

@@ -6,6 +6,28 @@ import pytest
 from test_runtime_manager import manager, spec
 
 
+@pytest.mark.parametrize('source,level,expected', [('acone', 'DEBUG', True), ('lift2', 'TRACE', True),
+                                                 ('lift2', 'INFO', False), ('mock', 'DEBUG', False)])
+def test_prepared_connector_command_follows_rc_log_level(tmp_path, source, level, expected):
+    from robot_control.connector import ConnectorRobot
+    from robot_control.performance import PerformanceLogger
+
+    runtime, _ = manager(tmp_path)
+    runtime.context['connector_rpc_volume'] = 'connector-rpc'
+    directory = tmp_path / 'connector' / source
+    directory.mkdir(parents=True)
+    (directory / 'main.py').touch()
+    (directory / 'device.yaml').write_text('{}')
+    (directory / 'compose.yaml').write_text(json.dumps({'services': {'connector': {'image': 'mock:local'}}}))
+    proxy = ConnectorRobot({'connector_directory': 'connector', 'robot': {'connector': 'body'},
+                            'connectors': {'body': {'source': source, 'config': 'device.yaml'}}}, tmp_path)
+    proxy.runtime = runtime
+    proxy.performance = PerformanceLogger(level, 'run', ingress=object())
+    proxy.prepare()
+    command = json.loads(proxy._prepared_spec.model_json)['services']['connector']['command']
+    assert ('--debug-timing' in command) is expected
+
+
 def test_connector_has_own_container_and_survives_policy_cleanup(tmp_path):
     runtime, engine = manager(tmp_path)
     runtime.context['connector_rpc_volume'] = 'connector-rpc'

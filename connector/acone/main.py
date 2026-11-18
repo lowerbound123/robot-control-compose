@@ -114,6 +114,7 @@ class ACOneRobot:
         self._feedback_errors = {}
         self._recording_state = None
         self._command_observer = None
+        self._feedback_observer = None
         self._images = {}
         self._image_sequences = {}
         self._image_errors = {}
@@ -213,6 +214,9 @@ class ACOneRobot:
     def _on_feedback(self, side, message):
         if self._stop.is_set():
             return
+        if self._feedback_observer is not None:
+            try: self._feedback_observer(side, 'status')
+            except Exception: pass  # Keep processing feedback even if diagnostics fail.
         try:
             raw = _raw_json(message)
             for field, length in (("joint_pos", 7), ("joint_vel", 7), ("joint_cur", 7), ("end_pos", 6)):
@@ -393,6 +397,9 @@ class ACOneRobot:
 
     def set_command_observer(self, callback):
         self._command_observer = callback
+
+    def set_feedback_observer(self, callback):
+        self._feedback_observer = callback
 
     def _observe_command(self, arm, target):
         if self._command_observer is not None:

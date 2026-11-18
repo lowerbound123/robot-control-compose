@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rc-openwam-maas-acone"
+version = "0.1.0"
+description = "OpenWAM ACOne complete-chunk inference client"
+requires-python = ">=3.11"
+dependencies = ["rc-policy-sdk>=0.18.0", "numpy==1.26.4", "websockets==15.0.1", "Pillow==12.3.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

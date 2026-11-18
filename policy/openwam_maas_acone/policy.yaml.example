@@ -1,0 +1,35 @@
+schema_version: 3
+id: openwam_maas_acone
+help: 通过 OpenWAM 服务请求 ACOne 的 32 步绝对关节目标
+execution:
+  mode: sync
+  call_every_actions: 1
+  control_mode: qpos
+  on_connector_switch: reinitialize_policy
+params:
+  service_url: ws://openwam:8848
+  task: pick up the green bitter gourd
+  request_when_remaining: 0
+  open_timeout_s: 10
+  inference_timeout_s: 50
+hot_reloadable:
+  - params.task
+tui_commands:
+  switch-task:
+    handler: switch_task
+    args: [{name: task, type: str, help: 新的任务指令}]
+    help: 清除旧任务的计划，下一次请求使用新任务和新观测
+    effect: update_config
+    timeout_s: 5
+config_hints:
+  settings:
+    params.service_url: {type: str, help: 策略容器可达的 OpenWAM WebSocket 地址}
+    params.task: {type: str, help: 随每次观测发送的任务原文}
+    params.request_when_remaining: {type: int, help: 剩余动作小于等于此值时补块，0 表示耗尽才请求}
+    params.open_timeout_s: {type: float, help: 建连及握手等待秒数}
+    params.inference_timeout_s: {type: float, help: 每次完整推理的期限（秒）}
+    execution.mode: {type: enum, choices: [sync, async], help: RC 回调调度方式}
+    execution.call_every_actions: {type: int, help: RC 每消费多少个目标调用一次策略}
+    execution.control_mode: {type: enum, choices: [qpos], help: 绝对关节位置}
+    execution.tui_command_workers: {type: int, help: TUI 命令线程数}
+    execution.on_connector_switch: {type: enum, choices: [reset, reinitialize_policy], help: 设备切换后的上下文操作}

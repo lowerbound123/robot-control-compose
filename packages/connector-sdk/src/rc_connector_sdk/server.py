@@ -11,11 +11,11 @@ import uuid
 from .actions import validate_arm_targets
 from .images import ImagePool
 from .wire import receive_message, send_message
-from .performance import mark
+from .performance import FeedbackTimings, mark
 
 
 class ConnectorServer:
-    def __init__(self, driver, endpoint, *, instance_id='body', journal=None, max_pending=32):
+    def __init__(self, driver, endpoint, *, instance_id='body', journal=None, max_pending=32, debug_timing=False):
         self.driver, self.endpoint, self.instance_id = driver, str(endpoint), instance_id
         self.runtime_id = uuid.uuid4().hex
         self.stop = threading.Event()
@@ -32,6 +32,10 @@ class ConnectorServer:
         self._driver_closed = False
         self._bound_paths = []
         self._shutdown_deadline = None
+        self._feedback_timing = None
+        if debug_timing and hasattr(driver, 'set_feedback_observer'):
+            self._feedback_timing = FeedbackTimings()
+            driver.set_feedback_observer(self._feedback_timing.received)
 
     def _record_pool(self):
         if self.journal is not None:
@@ -152,7 +156,11 @@ class ConnectorServer:
         if method == 'describe':
             return {'protocol_version': 1, 'instance_id': self.instance_id, 'runtime_id': self.runtime_id,
                     'pool_id': self.pool.pool_id, 'image_bytes': self.pool._bytes, 'leases': len(self.leases)}
-        if method == 'get_state': return self._state(params.get('since'))
+        if method == 'get_state':
+            result = self._state(params.get('since'))
+            if self._feedback_timing is not None:
+                self._feedback_timing.drain_into(result)
+            return result
         if method == 'get_images': return self._images(params.get('cameras'))
         if method == 'release_images':
             with self._images_lock:
@@ -164,7 +172,10 @@ class ConnectorServer:
         if method == 'close':
             # The client drains command receipts before requesting close.
             self._shutdown_deadline = float(params.get('deadline', time.monotonic() + 5))
-            return {'clean': not self.leases}
+            result = {'clean': not self.leases}
+            if self._feedback_timing is not None:
+                self._feedback_timing.drain_into(result, closing=True)
+            return result
         raise ValueError(f'unknown connector method: {method}')
 
     def _query_connection(self, connection):

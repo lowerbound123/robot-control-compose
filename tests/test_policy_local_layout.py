@@ -19,6 +19,8 @@ MODULES = {
     'qwen35_history': 'rc_qwen35_history',
     'qwen35_history_lift2': 'rc_qwen35_history_lift2',
     'pi05': 'rc_pi05_policy',
+    'openwam_maas_acone': 'rc_openwam_maas_acone',
+    'openwam_maas_lift2': 'rc_openwam_maas_lift2',
     'internvla_maas': 'rc_internvla_maas',
     'llm_direction': 'rc_llm_direction',
     'llm_failure': 'rc_llm_failure',
@@ -119,7 +121,8 @@ def test_owned_vendor_provenance_references_local_files(identity):
         assert path.is_file() and path.is_relative_to(vendor.parent)
 
 
-@pytest.mark.parametrize('identities', [('qwen35_single', 'qwen35_twostage'),
+@pytest.mark.parametrize('identities', [pytest.param(('openwam_maas_acone', 'openwam_maas_lift2'), id='openwam-maas'),
+                                     ('qwen35_single', 'qwen35_twostage'),
                                       ('qwen35_history', 'qwen35_history_lift2')])
 def test_independent_build_inputs_can_still_share_the_dependency_image(monkeypatch, identities):
     monkeypatch.syspath_prepend(str(ROOT / 'scripts'))

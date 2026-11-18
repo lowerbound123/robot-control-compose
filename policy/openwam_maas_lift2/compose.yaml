@@ -1,0 +1,17 @@
+services:
+  policy:
+    image: robot-control-compose-openwam-maas:local
+    build:
+      context: ../..
+      dockerfile: policy/openwam_maas_lift2/Dockerfile
+      additional_contexts:
+        policy-deps: ./dependencies
+    restart: "no"
+    networks: [openwam]
+    environment:
+      PYTHONPATH: /workspace/policy/openwam_maas_lift2/src
+      RC_SOURCE_MODULES: '{"rc_openwam_maas_lift2":"/workspace/policy/openwam_maas_lift2/src"}'
+networks:
+  openwam:
+    external: true
+    name: ${OPENWAM_NETWORK:-openwam-main_default}

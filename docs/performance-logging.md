@@ -73,6 +73,19 @@ exit
 
 `logged_monotonic_ns` 是录制后台完成诊断格式化的时刻，不是业务动作时间或磁盘持久化完成时间。分析时使用业务点的 `monotonic_ns`；后台落盘顺序不代表跨线程因果顺序。
 
+### ACOne 和 LIFT2 的 ROS 收发时间
+
+在运行 JSONL 或录制的 `events.jsonl` 中按下表的 `stage` 筛选。两类记录都带 `source_id`、`instance_id` 和 `arm`。墙钟字段使用 Unix 纳秒；比较同一主机上的事件间隔时使用对应的单调时钟字段。
+
+| `stage` | 打点位置 | 字段 |
+| --- | --- | --- |
+| `connector.command_sent` | ROS `publish()` 成功返回后，每条实际发布的单臂命令一行。双臂请求可用同一个 `connector_request_id` 和 `attempt_id` 关联。 | `command_sent_timestamp_ns`、`command_sent_monotonic_ns`、`mode` |
+| `connector.feedback_received` | 每条机械臂反馈进入 connector 的 ROS 回调时。ACOne 的 `feedback_kind` 为 `status`，LIFT2 的关节和末端反馈分别为 `joint`、`eef`。 | `feedback_received_timestamp_ns`、`feedback_received_monotonic_ns`、`feedback_kind` |
+
+反馈按到达时间独立记录，同一只臂在两条命令之间可能有多条反馈。ROS 消息头的时间由设备提供，RC 日志顶层的 `timestamp_ns` 表示 RC 接收诊断的时刻。connector 暂存反馈时间，随状态轮询和正常关闭排空；缓冲满时，`connector.feedback_timing_gap` 的 `dropped_feedback_events` 给出缺失的条数。
+
+### 全链路阶段
+
 | 顶层 stage | 用途 |
 | --- | --- |
 | `rc.loop` | 控制线程醒来、取得控制锁、处理发布回执/策略结果、执行 tick、下一截止时间 |

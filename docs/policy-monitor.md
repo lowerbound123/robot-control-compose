@@ -60,6 +60,20 @@ class Context:
 
 预热单独统计。普通 reset 清除当前计划、待取结果和错误，保留累计计数和最近成功预测的耗时。监控仅读取标量快照，打开面板不会触发推理或额外的 CUDA 同步。
 
+## OpenWAM MaaS 策略
+
+在 TUI 输入 `monitor openwam_maas_acone` 或 `monitor openwam_maas_lift2` 打开该实例的面板。链中重复的实例使用完整名称，例如 `monitor openwam_maas_lift2-0`。再次输入同一命令即可关闭。
+
+| 想检查什么 | 看哪些字段 |
+| --- | --- |
+| 连到哪个服务 | `service_origin` 显示所配置服务的协议、主机和端口，`protocol_version` 显示初始化握手已核对的版本。服务端的归一化组须在部署侧核对。 |
+| 请求为什么还没回来 | `model_stage` 依次显示 `encode`（三路 PNG、Base64 和 JSON）、`send`、`wait_response`、`decode`（解码及校验）和 `post`（夹爪处理）。在途时结合 `model_stage_age_ms`、`pending_remaining_ms` 查看已等待时间和剩余期限。失败时查看 `last_error_stage` 和 `last_error`。 |
+| 慢在客户端还是服务端 | 最近成功预测的分阶段耗时为 `encode_ms`、`send_ms`、`wait_response_ms`、`decode_ms`、`post_ms`。客户端总耗时看 `predict_ms`，平均和最大耗时看 `predict_avg_ms`、`predict_max_ms`。`server_latency_ms` 取自服务响应，缺少有效值时显示 `—`；客户端端到端耗时已包含服务处理时间。`last_request_bytes` 为该请求的 JSON 负载字节数。 |
+| 何时发下一批 | `task`、三路 `*_image_shape`、`cached_actions`、`request_when_remaining`、`pending`、`inference_count` 和 `last_trim`。默认阈值 0，最后一步消费后才请求；正阈值包含等号。 |
+| 夹爪规则改了哪些步 | `left_gripper_raw`、`right_gripper_raw` 是服务返回的 32 步绝对夹爪值。`left_gripper_processed`、`right_gripper_processed` 是同一批应用机型规则后的值，取自裁剪和轨迹融合之前。 |
+
+等待下一次结果或请求失败时，面板保留上一批成功预测的夹爪和请求信息。reset 后夹爪显示 `[]`、请求字节数归零、服务耗时显示 `—`，实例累计计数保留。读取面板只访问当前实例的内存快照。
+
 ## 使用面板
 
 监控命令使用当前运行实例的 ID。单例与来源目录同名；链中重复实例使用自动编号，例如 `a-0`、`a-1`：

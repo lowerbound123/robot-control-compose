@@ -76,6 +76,11 @@ class ConnectorRobot:
     def command_modes(self):
         with self._result_lock: return tuple(dict(modes) for modes in self._command_modes)
 
+    @property
+    def _debug_ros_timing(self):
+        return (self.performance is not None and self.performance.enabled
+                and self.spec['source'] in ('acone', 'lift2'))
+
     def prepare(self, cancel_event=None, *, deadline=None):
         """Freeze connection inputs without starting a device or loading ROS."""
         cancel_event = cancel_event or threading.Event()
@@ -107,7 +112,7 @@ class ConnectorRobot:
             raise TimeoutError('connector preparation cancelled or timed out')
         if self.runtime is not None:
             self._prepared_spec = self.runtime.prepare_connector_spec(
-                self.instance_id, self.directory, config, cancel_event, deadline)
+                self.instance_id, self.directory, config, cancel_event, deadline, debug_timing=self._debug_ros_timing)
         self.config = copy.deepcopy(config)
         self.safety = safety
         self._prepared = True
@@ -134,7 +139,8 @@ class ConnectorRobot:
             self.process = subprocess.Popen([sys.executable, '-m', 'rc_connector_sdk',
                 '--source', str(self.directory / 'main.py'), '--socket', endpoint,
                 '--instance-id', self.instance_id, '--config-json', json.dumps(self.config),
-                '--journal', self._temporary.name + '/pool.json'], env=env, start_new_session=True)
+                '--journal', self._temporary.name + '/pool.json', *(['--debug-timing'] if self._debug_ros_timing else [])],
+                env=env, start_new_session=True)
         try:
             while not Path(endpoint + '.ready').exists():
                 if cancel_event.is_set() or time.monotonic() >= deadline:
@@ -142,7 +148,8 @@ class ConnectorRobot:
                 if self.process is not None and self.process.poll() is not None:
                     raise RuntimeError('connector process exited before connecting')
                 time.sleep(.01)
-            self.client = ConnectorClient(endpoint, wake=lambda: self.wake(), deadline=deadline, cancel_event=cancel_event)
+            self.client = ConnectorClient(endpoint, wake=lambda: self.wake(), deadline=deadline, cancel_event=cancel_event,
+                                         on_feedback_timing=self._log_feedback_timing if self._debug_ros_timing else None)
             if self.client.info['instance_id'] != self.instance_id:
                 raise RuntimeError('connector instance mismatch')
             if self.runtime is not None:
@@ -300,6 +307,14 @@ class ConnectorRobot:
     def _record_results(self, results):
         with self._result_lock: self._record_results_locked(results)
 
+    def _log_feedback_timing(self, batch):
+        for event in batch['events']:
+            self.performance.emit('connector.feedback_received', instance_id=self.instance_id,
+                                  source_id=self.spec['source'], **event)
+        if batch['dropped']:
+            self.performance.emit('connector.feedback_timing_gap', instance_id=self.instance_id,
+                                  source_id=self.spec['source'], dropped_feedback_events=batch['dropped'])
+
     def _record_results_locked(self, results):
         for response in results:
             perf = trace(response, 'rc.connector_receipt')
@@ -316,6 +331,13 @@ class ConnectorRobot:
             attempt = self._attempts.pop(response['id'], None)
             if perf: perf.mark('rc.command_observer_begin')
             for event in response.get('events', []):
+                if (self._debug_ros_timing and type(event.get('timestamp_ns')) is int
+                        and type(event.get('monotonic_ns')) is int):
+                    self.performance.emit('connector.command_sent', instance_id=self.instance_id,
+                        source_id=self.spec['source'], arm=event['arm'], mode=event['mode'],
+                        attempt_id=attempt, connector_request_id=response['id'],
+                        command_sent_timestamp_ns=event['timestamp_ns'],
+                        command_sent_monotonic_ns=event['monotonic_ns'])
                 if self._command_observer:
                     try: self._command_observer({**event, 'attempt_id': attempt, 'connector_request_id': response['id']})
                     except Exception: pass

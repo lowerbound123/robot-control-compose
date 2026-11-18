@@ -118,6 +118,7 @@ class Lift2Robot:
         self._close_lock = threading.Lock()
         self._stop = threading.Event()
         self._feedback, self._eef, self._feedback_errors = {}, {}, {}
+        self._feedback_observer = None
         self._sequences = dict.fromkeys(ARMS, 0)
         self._history = {arm: deque(maxlen=512) for arm in ARMS}
         self._images, self._pending_images, self._image_errors = {}, {}, {}
@@ -235,6 +236,9 @@ class Lift2Robot:
 
     def _feedback_received(self, side, message, kind):
         if self._stop.is_set(): return
+        if self._feedback_observer is not None:
+            try: self._feedback_observer(side, kind)
+            except Exception: pass  # Keep processing feedback even if diagnostics fail.
         received, timestamp = time.monotonic(), time.time()
         key = side + '.' + kind
         cache = self._feedback if kind == 'joint' else self._eef
@@ -394,6 +398,8 @@ class Lift2Robot:
         return images
 
     def set_command_observer(self, callback): self._observer = callback
+
+    def set_feedback_observer(self, callback): self._feedback_observer = callback
 
     def execute(self, action, mode='qpos'): return self.execute_arms(arm_targets(action, mode))
 

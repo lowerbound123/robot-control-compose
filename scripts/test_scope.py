@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 QWEN = {"qwen35_single", "qwen35_twostage"}
 HISTORY = {"qwen35_history", "qwen35_history_lift2"}
 LLM = {"llm_direction", "llm_failure"}
-POLICIES = {"example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM
+OPENWAM = {"openwam_maas_acone", "openwam_maas_lift2"}
+POLICIES = {"example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM | OPENWAM
 
 
 def suite(policies, interface):
@@ -40,6 +41,8 @@ def suite(policies, interface):
         add("test_pi05_monitor.py")
     if "pi05_lift2" in policies:
         add("test_pi05_lift2*.py")
+    if policies & OPENWAM:
+        add("test_openwam_maas*.py")
     if "internvla_maas" in policies:
         add("test_internvla_maas_*.py")
     if QWEN <= policies:
@@ -59,7 +62,7 @@ def suite(policies, interface):
 
     # Shared files parameterize the two Qwen entries / provider profiles by source ID.
     excluded = set()
-    for family in (QWEN, LLM):
+    for family in (QWEN, LLM, OPENWAM):
         if policies & family:
             excluded.update(family - policies)
     options = ["-k", " and ".join("not " + name for name in sorted(excluded))] if excluded else []

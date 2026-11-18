@@ -51,9 +51,11 @@ class _DeadlineIO:
 
 
 class ConnectorClient:
-    def __init__(self, endpoint, *, timeout=5., max_pending=32, wake=None, deadline=None, cancel_event=None):
+    def __init__(self, endpoint, *, timeout=5., max_pending=32, wake=None, deadline=None, cancel_event=None,
+                 on_feedback_timing=None):
         self.endpoint, self.timeout, self.max_pending = str(endpoint), timeout, max_pending
         self.wake = wake or (lambda: None)
+        self._on_feedback_timing = on_feedback_timing
         self.closed = False
         self.failure = None
         self.serial = 0
@@ -115,9 +117,13 @@ class ConnectorClient:
                 self._query.close()
                 raise
             if response.get('error'): raise RuntimeError(response['error'])
-            return response['result']
+            result = response['result']
         finally:
             self._query_lock.release()
+        if self._on_feedback_timing is not None and '_feedback_timing' in result:
+            try: self._on_feedback_timing(result.pop('_feedback_timing'))
+            except Exception: pass  # Diagnostic failures must not invalidate a state read or close receipt.
+        return result
 
     def describe(self, *, deadline=None, cancel_event=None):
         return self._request('describe', request_deadline=deadline, cancel_event=cancel_event)

@@ -9,7 +9,7 @@ from .runtime_spec import DeploymentSpec, map_host_path
 
 
 class ConnectorRuntime:
-    def prepare_connector_spec(self, identity, directory, config, cancel, deadline):
+    def prepare_connector_spec(self, identity, directory, config, cancel, deadline, *, debug_timing=False):
         anchor = self.check_infrastructure(deadline, cancel=cancel)
         directory = Path(directory)
         env = {key: value for key, value in os.environ.items() if key in
@@ -46,6 +46,8 @@ class ConnectorRuntime:
                                       HOME='/tmp', PYTHONPYCACHEPREFIX='/tmp/connector-pycache')
         service['command'] = ['python3', '-m', 'rc_connector_sdk', '--source', source + '/main.py',
             '--socket', endpoint, '--instance-id', identity, '--config-file', '/runtime/config.json', '--journal', '/runtime/pool.json']
+        if debug_timing:
+            service['command'].append('--debug-timing')
         model['volumes'] = {'connector-rpc': {'external': True, 'name': self.context['connector_rpc_volume']}}
         self._connector_generation = max(getattr(self, '_connector_generation', 0),
             max((h.generation for h in self.handles.values() if h.kind == 'connector'), default=0)) + 1

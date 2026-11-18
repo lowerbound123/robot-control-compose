@@ -156,10 +156,11 @@ def configuration_updates(root):
             default['robot'] = copy.deepcopy(current['robot'])
         prepared_current = current
         if (current is not None and target.name == 'policy.yaml' and
-                target.parent.parent == root / 'policy' and target.parent.name in GRIPPER_SOURCES):
+                target.parent.parent == root / 'policy' and target.parent.name in (*GRIPPER_SOURCES, 'openwam_maas_lift2')):
             # Rename before adding template defaults, preserving customized old
             # values. Compare against the original below so the rename is saved.
-            prepared_current = migrate_gripper_config(current)
+            prepared_current = (migrate_gripper_config(current) if target.parent.name in GRIPPER_SOURCES
+                                else copy.deepcopy(current))
             # Only these two policy settings accept number|string. Preserve
             # signed offsets without relaxing scalar type checks elsewhere.
             if isinstance(default, dict):
