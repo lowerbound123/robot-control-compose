@@ -27,7 +27,7 @@ def test_switch_replaces_connector_process_and_preserves_loaded_policy(example_r
     assert old_connector.closed and old_connector.process.poll() == 0
     assert rc.robot.raw.process.pid != old_pid
     assert rc._worker is worker and after['module_id'] == before['module_id']
-    assert after['context_id'] != before['context_id']
+    assert after['context_id'] == before['context_id']
     assert rc.robot.read_state()['qpos'] == pytest.approx([.4] * 14)
     assert rc.status()['state'] == 'paused'
 

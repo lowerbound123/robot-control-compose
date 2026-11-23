@@ -109,7 +109,7 @@ def configuration_updates(root):
     # adding source paths, and host down must work without the YAML dependency.
     from robot_control.config_paths import main_config_targets, is_main_json
     from robot_control.yaml_config import load_yaml_config, render_yaml_config, strict_equal
-    from rc_policy_sdk.catalog import validate_connector_switch_settings
+    from rc_policy_sdk.catalog import migrate_connector_switch_settings, validate_connector_switch_settings
     root = Path(root).resolve()
     mains = main_config_targets(root)  # Reject legacy main files before preparing any changes.
     profile_dir = root / 'configs/robots'
@@ -143,7 +143,11 @@ def configuration_updates(root):
         current = read(target) if target.exists() else None
         template = template if template is not None and template.is_file() else None
         default = read(template) if template is not None else None
-        for document in (current, default):
+        prepared_current = current
+        if target.name == 'policy.yaml':
+            prepared_current = migrate_connector_switch_settings(current)
+            default = migrate_connector_switch_settings(default)
+        for document in (prepared_current, default):
             if target.name == 'policy.yaml':
                 validate_connector_switch_settings(document)
             if (yaml and isinstance(document, dict) and isinstance(document.get('robot'), dict)
@@ -154,13 +158,12 @@ def configuration_updates(root):
                 ('profile' in current['robot']) != ('profile' in default['robot'])):
             default = copy.deepcopy(default)
             default['robot'] = copy.deepcopy(current['robot'])
-        prepared_current = current
         if (current is not None and target.name == 'policy.yaml' and
                 target.parent.parent == root / 'policy' and target.parent.name in (*GRIPPER_SOURCES, 'openwam_maas_lift2')):
             # Rename before adding template defaults, preserving customized old
             # values. Compare against the original below so the rename is saved.
-            prepared_current = (migrate_gripper_config(current) if target.parent.name in GRIPPER_SOURCES
-                                else copy.deepcopy(current))
+            if target.parent.name in GRIPPER_SOURCES:
+                prepared_current = migrate_gripper_config(prepared_current)
             # Only these two policy settings accept number|string. Preserve
             # signed offsets without relaxing scalar type checks elsewhere.
             if isinstance(default, dict):
@@ -184,14 +187,6 @@ def configuration_updates(root):
         value = (merge_json(default, prepared_current, str(target.relative_to(root)))
                  if prepared_current is not None and default is not None else
                  (prepared_current if prepared_current is not None else default))
-        if (target.name == 'policy.yaml' and isinstance(value, dict) and
-                isinstance(value.get('execution'), dict) and value.get('kind') != 'chain'):
-            value = copy.deepcopy(value)
-            value['execution'].setdefault('on_connector_switch', 'reinitialize_policy')
-            if isinstance(value.get('hot_reloadable', []), list):
-                paths = value.setdefault('hot_reloadable', [])
-                if 'execution.on_connector_switch' not in paths:
-                    paths.append('execution.on_connector_switch')
         if (target.name == 'policy.yaml' and target.parent.parent == root/'policy'
                 and target.parent.name in ('pi05', 'pi05_lift2') and isinstance(default, dict)):
             # Old manifests retain their whitelist list during ordinary merges.

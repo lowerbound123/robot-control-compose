@@ -62,6 +62,7 @@ class HistoryPolicy:
                              reset_count=0, pending=0, last_trim=0, trimmed_actions_total=0, cached_actions=0,
                              consumed_actions=0, control_epoch=-1, last_submission_actions=-1,
                              load_ms=0., warmup_ms=0., predict_ms=0., predict_avg_ms=0., predict_max_ms=0.,
+                             left_gripper_raw='[]', right_gripper_raw='[]',
                              last_error='', _pending_at=0., _deadline=0.,
                              _last_prediction_at=0.)
         if backend is None:
@@ -162,6 +163,10 @@ class HistoryPolicy:
             timings = {str(k): float(v) for k, v in timings.items()}
             if not all(np.isfinite(v) and v >= 0 for v in timings.values()):
                 raise ValueError('model stage timings must be finite and nonnegative')
+            # Snapshot the full model sequence before fusion/thresholding. Keep
+            # conversion outside the monitor lock and out of monitor reads.
+            left_gripper_raw = str(actions[:, 6].tolist())
+            right_gripper_raw = str(actions[:, 13].tolist())
             finished = time.monotonic()
             elapsed = (finished-started)*1000
             with self._metrics_lock:
@@ -170,6 +175,7 @@ class HistoryPolicy:
                 self._metrics.update(timings, inference_completed=count, predict_ms=elapsed,
                                      predict_avg_ms=average+(elapsed-average)/count,
                                      predict_max_ms=max(elapsed,self._metrics['predict_max_ms']),
+                                     left_gripper_raw=left_gripper_raw, right_gripper_raw=right_gripper_raw,
                                      _last_prediction_at=finished)
             return actions.copy(), time.monotonic()
         except Exception as exc:
@@ -341,6 +347,7 @@ class HistoryPolicy:
             self._metrics.update(history_tick=0, history_frames=0, context_slots=0,
                                  pending=0, last_trim=0, cached_actions=0, consumed_actions=0, control_epoch=-1,
                                  last_submission_actions=-1, _pending_at=0., _deadline=0.,
+                                 left_gripper_raw='[]', right_gripper_raw='[]',
                                  reset_count=self._metrics['reset_count']+1)
 
     def close(self):

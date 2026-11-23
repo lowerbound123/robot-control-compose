@@ -876,14 +876,14 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 from contextlib import contextmanager
                 from .config_export import save_export
                 from .config import policy_config_path, validate_policy
-                from .yaml_config import load_yaml_config
+                from .policy_catalog import load_policy_config
                 if target.record.directory != self.registry.directory / target.record.source_id:
                     raise ValueError('policy source directory differs')
                 exported = copy.deepcopy(target.config_export)
                 exported['policy']['id'] = target.record.source_id
                 path = policy_config_path(target.record.directory)
                 validate_policy(exported['policy'], target.record.source_id)
-                validate_policy(load_yaml_config(path), target.record.source_id)
+                validate_policy(load_policy_config(path), target.record.source_id)
                 @contextmanager
                 def current():
                     with self._lock:

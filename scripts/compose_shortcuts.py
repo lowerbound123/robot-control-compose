@@ -94,7 +94,7 @@ def build_command(root, target):
 def main(arguments=None, *, root=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='action', required=True)
-    up = commands.add_parser('up', help='按顺序合并 Compose 文件并后台启动')
+    up = commands.add_parser('up', help='先清理当前部署，再按指定 Compose 文件后台启动')
     up.add_argument('files', nargs='*', help='相对仓库根目录或绝对路径；基础 compose.yaml 自动加入')
     build = commands.add_parser('build', help='自动查找并构建指定服务、策略来源或 connector:<来源>')
     build.add_argument('target')
@@ -103,14 +103,17 @@ def main(arguments=None, *, root=None):
     args = parser.parse_args(arguments)
     root = Path(root or Path(__file__).resolve().parents[1]).resolve()
     try:
-        if args.action == 'down':
-            return compose_project.down(root, ['down', '--remove-orphans'])
-        if args.action == 'build':
+        env = os.environ.copy()
+        if args.action in ('up', 'down'):
+            overlays = compose_files(root, args.files) if args.action == 'up' else []
+            status = compose_project.down(root, [*overlays, 'down', '--remove-orphans'])
+            if status or args.action == 'down':
+                return status
+            command = compose_project.compose_command(root, [*overlays, 'up', '-d'])
+        elif args.action == 'build':
             command, env = build_command(root, args.target)
         else:
-            tail = (compose_files(root, args.files) + ['up', '-d'] if args.action == 'up'
-                    else ['attach', 'robot-control'])
-            command, env = compose_project.compose_command(root, tail), os.environ.copy()
+            command = compose_project.compose_command(root, ['attach', 'robot-control'])
         os.chdir(root)
         os.execvpe(command[0], command, env)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:

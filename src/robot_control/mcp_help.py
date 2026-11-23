@@ -22,7 +22,7 @@ TOOL_HELP = {
     'move_eef': ('控制与运动', '为指定机械臂提交绝对末端位置与姿态。'),
     'move_joints': ('控制与运动', '为指定机械臂提交六关节绝对角度。'),
     'connector_profiles': ('连接与策略', '只读列出命名连接配置，不建立连接。'),
-    'switch_connector': ('连接与策略', '切换连接并按各实例的 on_connector_switch 适配，完成后暂停。'),
+    'switch_connector': ('连接与策略', '切换连接并重置各实例的设备状态，保留当前策略和模型，完成后暂停。'),
     'retry_connector': ('连接与策略', '完成必要清理后手动重试失败连接。'),
     'policy_chain': ('连接与策略', '按顺序应用策略来源列表，或只保存为默认链。'),
     'policy_config': ('连接与策略', '查询、设置或保存一个确切已加载实例的配置。'),
@@ -180,7 +180,7 @@ EXTRA = {
     'cancel_tui_command': '只取消指定批次未开始的行；已经开始的行按原生命周期结束。重复取消幂等，查询 get_operation 等待父回执进入终态。',
     'move_eef': 'targets.left/right 使用绝对末端六维值，米与弧度；可选原始夹爪值与速度档。两侧同一步并行。需先 take，clear_queue 只清未开始步骤，等待超时不取消动作。',
     'move_joints': 'targets.left/right 使用六个绝对关节角，单位弧度；可选原始夹爪值与速度档。两侧同一步并行。需先 take，clear_queue 只清未开始步骤，等待超时不取消动作。',
-    'switch_connector': '需要 take。切换连接后按每个实例 execution.on_connector_switch 执行 reset 或原进程重新初始化，保留 MCP 控制权并暂停。连接失败使用 retry_connector，策略适配失败使用 retry_reload；均不自动重试。',
+    'switch_connector': '需要 take。切换连接后在原 policy 实例执行 reset_context，保留模型、MCP 控制权并暂停。跨机型更换策略由用户显式决定。连接失败使用 retry_connector，策略适配失败使用 retry_reload；均不自动重试。',
     'retry_connector': '需要 take；先完成尚未确认的清理，再重试失败连接。完成后保留 MCP 控制权并暂停。',
     'command': '查询命令和录制无需 take，其他写入需要 take。help 返回可读文本与 help_document；普通 status/state/operation 保持结构化结果。本地面板、递归 mcp 命令不允许从 HTTP 调用。',
 }

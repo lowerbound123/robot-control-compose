@@ -126,7 +126,7 @@ def create_server(controller):
         "Use structured take/return tools; command text uses policy list, config rc show, global show, "
         "policy <instance> config show|set|save, policy <instance> retry, and record start|stop. "
         "connector_profiles lists named connections; switch_connector/retry_connector require take and remain paused. "
-        "Connector changes apply execution.on_connector_switch for each instance; failed instances are listed in retry_reload_instances. "
+        "Connector changes reset device state in each loaded policy context and keep the current policies and models. Failed instances are listed in retry_reload_instances. "
         "Only confirmed operation success means completion; wait timeout does not cancel motion."
     ))
     read = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)

@@ -173,9 +173,9 @@ def validate_manifest(config):
     if execution.get('control_mode') != 'qpos':
         raise ValueError('history returns qpos actions')
     if any(path not in ('execution.mode', 'execution.call_every_actions', 'params.task',
-                       'execution.on_connector_switch', *('params.' + name for name in GRIPPER_DEFAULTS))
+                       *('params.' + name for name in GRIPPER_DEFAULTS))
            for path in config.get('hot_reloadable', [])):
-        raise ValueError('only task/gripper params and RC scheduling/connector-switch settings are hot reloadable')
+        raise ValueError('only task/gripper params and RC scheduling settings are hot reloadable')
     for name, default in GRIPPER_DEFAULTS.items():
         value = params.get(name, default)
         if name == 'gripper_lower_threshold' and value is None:

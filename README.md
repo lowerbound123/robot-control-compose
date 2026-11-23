@@ -29,7 +29,7 @@ python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setu
 四个快捷入口都可从其他工作目录调用，沿用 `SETUP_PYTHON`；使用前先完成 setup：
 
 ```bash
-# 自动加入 compose.yaml，其余文件按参数顺序追加 -f，执行 up -d
+# 先清理当前部署，再按 compose.yaml 和覆盖文件的顺序执行 up -d
 ./scripts/up.sh compose.acone.yaml compose.webui.yaml
 # 自动寻找构建定义，只构建指定服务；rc 是 robot-control 的别名
 ./scripts/build.sh rc
@@ -41,7 +41,9 @@ python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setu
 ./scripts/down.sh
 ```
 
-`up.sh` 只接收 Compose 文件路径（相对仓库根目录或绝对路径），无参数时只用基础文件。`build.sh` 恰好接收一个服务名或策略来源名，在基础文件、根目录 `compose*.yaml` / `compose*.yml` 和对应策略的 `compose.yaml` 中查找；找不到构建定义或多个覆盖文件定义同一目标时会报错。`down.sh` 复用原有退出证明与资源回收流程，并通过 `--remove-orphans` 清掉 WebUI、ROS 仿真等附加容器；范围仅限当前部署，不删除镜像或命名卷。需要额外 Compose 选项时继续使用 `scripts/compose.sh`。
+`up.sh` 默认先执行与 `down.sh` 相同的清理流程，成功后才执行 `up -d`。不带参数时使用基础 `compose.yaml`。覆盖文件可用绝对路径或相对仓库根目录的路径，两步都按参数顺序加载。
+
+`build.sh` 恰好接收一个服务名或策略来源名，在基础文件、根目录 `compose*.yaml` / `compose*.yml` 和对应策略的 `compose.yaml` 中查找；找不到构建定义或多个覆盖文件定义同一目标时会报错。`down.sh` 复用原有退出证明与资源回收流程，并通过 `--remove-orphans` 清掉 WebUI、ROS 仿真等附加容器；范围仅限当前部署，不删除镜像或命名卷。需要额外 Compose 选项时继续使用 `scripts/compose.sh`。
 
 ```text
 policy list
@@ -99,7 +101,7 @@ policy/my_policy/
 
 RC/policy 主配置现用 YAML，保存保留注释和顺序；旧 JSON 主配置需手动迁移，见 [迁移说明](docs/setup.md#yaml-主配置与手动迁移)。两个 LLM 策略各自通过 `params.provider_config_path` 读取供应商 YAML。在 TUI 中用 `policy <实例> switch-provider <文件路径>` 切换，成功后只重建该实例并暂停整链。目标初始化失败可修正文件后执行 `policy <实例> retry`。
 
-RC/SDK 0.17 支持 [机器人 connector 热切换](docs/connector-switching.md)：`connector switch <命名配置>` 退出旧 connector 并创建新 connector，RC 与策略容器持续运行，完成后暂停。每个策略的 `execution.on_connector_switch` 默认 `reinitialize_policy`，可热改为 `reset` 保留原 context；混合链按实例执行，录制自动分会话。
+`connector switch <命名配置>` 更换机器人连接。RC 在每个原 policy 实例中清除旧设备状态，保留已加载的模型，完成后暂停。跨机型使用其他策略时，由用户显式执行 `policy switch <策略>`。录制会按连接分会话。见 [机器人 connector 热切换](docs/connector-switching.md)。
 
 主配置和 LLM 供应商配置使用 `.yaml.example`，模型配置使用 `.json.example`，部署环境使用 `deployment.env.example`。setup 从模板生成缺失文件，保留已有供应商文件。本机 YAML/JSON、密钥、部署 env、`.setup` 和运行产物不提交。
 

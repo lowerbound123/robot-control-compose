@@ -103,12 +103,15 @@ monitor qwen35_history_lift2
 | 耗时 | `load_ms`、`warmup_ms`、`processor_ms`、`prefix_ms`、`denoise_ms`、`post_ms`、`predict_ms`、`predict_avg_ms`、`predict_max_ms` |
 | 历史与图像 | `history_enabled`、`history_tick`、`history_frames`、`history_capacity_frames`、`history_slot_count`、`history_slot_stride`、`context_slots`，以及三路 `*_image_shape` 和图像缩放配置 |
 | 动作缓存 | `chunk_size`、`cached_actions`、`consumed_actions`、`control_epoch`、`last_trim`、`trimmed_actions_total` |
+| 原始夹爪 | `left_gripper_raw`、`right_gripper_raw`，最近一次成功推理的完整左右夹爪序列，以列表字符串显示 |
 | 加速路径 | `denoise_graph_requested`、`prefix_graph_requested`、`denoise_graph_ready`、`prefix_graph_layouts`、`prediction_path`、`prefix_tokens`、`max_prefix_tokens`、`graph_error` |
 | 故障 | `last_error`；后台监控读取自身出错时显示 `backend_monitor_error`，不影响推理结果 |
 
 `context_state=ready` 表示策略 context 已就绪，不代表 RC 已恢复发送；RC 的暂停/控制权仍看主状态栏。`model_stage` 显示预处理、prefix、去噪、后处理等当前阶段，空闲时为 `idle`。`inference_busy=0` 且 `pending=1` 表示请求仍待 RC 回调收取，不能仅凭 pending 判断模型仍在计算。
 
 耗时为最近一次成功预测的墙钟耗时；平均/最大耗时、推理次数和裁剪累计值覆盖当前 context 生命周期，普通 reset 不清零，冷重载或重新初始化 context 后重新统计。历史与动作缓存指标随 reset 清零。毫秒字段以 `_ms` 结尾，秒字段以 `_s` 结尾；时间年龄为 `-1` 表示尚无成功预测。任务和错误文本最多显示 512 个字符。
+
+左右夹爪序列取反归一化输出的第 6、13 列（从 0 开始），在应用夹爪规则、轨迹融合和裁剪前保存。等待推理、使用缓存或推理失败时保留上一次成功的序列，初始化和 reset 后显示 `[]`。
 
 初始化完成前 SDK 尚未创建 monitor，初始化失败应查看日志；日志会补充失败的模型阶段。监控不触发初始化、重载或恢复运动。
 

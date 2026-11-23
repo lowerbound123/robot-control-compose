@@ -252,16 +252,13 @@ class ConnectorLifecycle:
         job['deadline'] = time.monotonic() + (config.get('connect_timeout_s', 10) +
             config.get('close_timeout_s', 5) + self.config.get('timeouts', {}).get('release_s', 30) * 2 +
             max((w.inference_timeout_s for w in workers.values()), default=1) +
-            sum(w.init_timeout_s + w.release_timeout_s + w.inference_timeout_s for w in workers.values()))
+            sum(w.inference_timeout_s for w in workers.values()))
         states = {}
         for member in members:
             worker = workers[member.instance_id]
             if not getattr(worker, 'supports_connector_switch', False):
                 raise RuntimeError(f'{member.instance_id}: missing connector_switch_v1; upgrade RC/SDK')
-            action = member.config['execution'].get('on_connector_switch', 'reinitialize_policy')
-            states[member.instance_id] = dict(action=action, status='pending')
-            if action == 'reinitialize_policy':
-                worker.validate_reinitialize(member.runtime_config, member.version + 1, cancel)
+            states[member.instance_id] = dict(action='reset', status='pending')
         self._connector_lifecycle_step(job, 'prepare', members=states)
         try:
             if record and record.is_chain:
@@ -324,25 +321,11 @@ class ConnectorLifecycle:
                     self._connector_remaining(job)
                     worker = workers[member.instance_id]
                     try:
-                        if states[member.instance_id]['action'] == 'reset':
-                            worker.reset_context(cancel_event=cancel)
-                        else:
-                            worker.release_context(cancel, stop=self._stop)
-                            cleanup = time.monotonic() + min(worker.release_timeout_s, self._connector_remaining(job))
-                            self._external.begin_close(worker, deadline=cleanup)
-                            if self._external.close_worker(worker, deadline=cleanup):
-                                self.exit_code = 1
-                            self._external.reopen_context(worker)
-                            proposed = replace(member, version=member.version + 1)
-                            flags = worker.initialize_context(proposed.runtime_config, proposed.version, cancel)
-                            with self._lock:
-                                self._check_connector_job(job)
-                                if not worker.runnable:
-                                    raise RuntimeError('policy exited before connector commit')
-                                worker.commit_reinitialize(proposed.runtime_config, proposed.version, flags)
-                                self._commit_connector_member(proposed)
+                        worker.reset_context(cancel_event=cancel)
                         with self._lock:
                             self._check_connector_job(job)
+                            if not worker.runnable:
+                                raise RuntimeError('policy exited before connector reset completed')
                             self._connector_members[member.instance_id]['status'] = 'succeeded'
                     except Exception as exc:
                         worker.revoke_context()

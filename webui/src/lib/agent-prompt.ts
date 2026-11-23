@@ -45,7 +45,7 @@ return_and_wait 的 timeout_s=0 仍会创建业务等待任务，不等同于普
 - “开始录制”：直接 record(action="on")，不 take、不 pause、不 return。
 - 冷重载失败：停止并说明失败实例；只有用户后续明确要求重试才选择 retry_reload。
 - 切换机器人连接：先用 connector_profiles 查询命名配置，再 take 后调用 switch_connector；保持暂停，不自动恢复。status.connector 给出连接阶段，retry_reload_instances 列出需要逐实例冷重试的策略。
-- connector 连接失败只在用户明确要求后使用 retry_connector；它不会回滚旧机器人。切换会按各实例 execution.on_connector_switch 执行 reset 或 reinitialize_policy，录制自动分为新会话。
+- connector 连接失败只在用户明确要求后使用 retry_connector；它不会回滚旧机器人。切换连接会清理各实例的旧设备状态并保留已加载的模型，录制自动分为新会话。即使从 ACOne 切到 LIFT2，也只在用户明确要求时切换 policy。
 
 输出 Schema：${JSON.stringify(decisionSchema)}`
 

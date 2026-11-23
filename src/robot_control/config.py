@@ -45,7 +45,7 @@ def dotted_set(config: dict, path: str, value: Any) -> None:
 
 
 from rc_policy_sdk.catalog import validate_policy
-from .policy_catalog import read_descriptor, discover
+from .policy_catalog import read_descriptor, discover, load_policy_config
 from .config_paths import rc_config_path, policy_config_path
 from .yaml_config import load_yaml_config, save_yaml_config
 
@@ -232,7 +232,7 @@ class PolicyRegistry:
         validate_policy(config, source)
         path = policy_config_path(record.directory)
         # Verify disk ownership before replacing a source manifest.
-        validate_policy(load_yaml_config(path), source)
+        validate_policy(load_policy_config(path), source)
         save_yaml_config(path, config)
         previous = self._records.get(source)
         self._records[source] = PolicyRecord(record.directory, config, max(previous.version if previous else 1, record.version))

@@ -1,45 +1,45 @@
 """Real example workers across connection replacement, without hardware."""
 import json
+import shutil
 import time
 
 import pytest
 
+from config_helpers import read_config
 from test_example_controller import example_rc, command, ROOT
 from project_templates import copy_templates
 from test_controller import setup_controller
 
 
-def profile(rc, name='second', position=.2):
+def profile(rc, name='second', position=.2, *, source='mock'):
     folder = rc.root / rc.config.get('robot_profiles_directory', 'robots')
     folder.mkdir(parents=True, exist_ok=True)
     device = folder / (name + '-device.json')
     device.write_text(json.dumps(dict(initial_qpos=[position]*14,
                                       initial_epos=[position]*14, image_size=[12, 16])))
-    (folder / (name + '.yaml')).write_text(json.dumps(dict(connector='body', source='mock', config=str(device))))
+    (folder / (name + '.yaml')).write_text(json.dumps(dict(connector='body', source=source, config=str(device))))
     return name
 
 
-def test_default_switch_reinitializes_without_replacing_worker(example_rc):
+def test_default_switch_preserves_loaded_policy_and_version(example_rc):
     rc = example_rc
     before = command(rc, 'policy example example')
     worker = rc._worker
-    old = rc.robot
     old_version = worker.config_version
     name = profile(rc)
-    result = command(rc, 'connector switch ' + name)
+    command(rc, 'connector switch ' + name)
     after = command(rc, 'policy example example')
     assert rc._worker is worker and after['module_id'] == before['module_id']
-    assert after['context_id'] != before['context_id']
-    assert worker.config_version == old_version + 1
+    assert after['context_id'] == before['context_id']
+    assert worker.config_version == old_version
     assert rc.status()['connector']['profile'] == name
     assert rc.status()['state'] == 'paused'
     assert rc.robot.read_state()['qpos'] == pytest.approx([.2]*14)
     assert rc.status()['queue_remaining'] == 0
 
 
-def test_hot_reset_choice_keeps_context_and_versions_on_switch(example_rc):
+def test_connector_switch_resets_device_state_of_existing_context(example_rc):
     rc = example_rc
-    command(rc, 'policy example config set execution.on_connector_switch "reset"')
     command(rc, 'resume')
     from test_controller import until
     until(lambda: rc.status()['consumed'] > 1)
@@ -53,19 +53,40 @@ def test_hot_reset_choice_keeps_context_and_versions_on_switch(example_rc):
     assert before['calls'] > 0 and after['calls'] == 0
 
 
-def test_mixed_repeated_instances_follow_their_own_switch_configuration(example_rc):
+def test_switch_with_legacy_manifest_preserves_all_chain_members(example_rc, monkeypatch):
     rc = example_rc
+    # Exercise the two source identities with local mock I/O in place of ROS.
+    sources = rc.root / 'test-connectors'
+    for source in ('acone', 'lift2'):
+        folder = sources / source
+        folder.mkdir(parents=True)
+        shutil.copyfile(ROOT / 'connector/mock/main.py', folder / 'main.py')
+        profile(rc, source, source=source)
+    monkeypatch.setitem(rc._initial_robot_config, 'connector_directory', str(sources))
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
+    path = rc.registry.directory / 'example/policy.yaml'
+    config = read_config(path)
+    config['execution']['on_connector_switch'] = 'reinitialize_policy'
+    path.write_text(json.dumps(config))
     command(rc, 'policy switch example_chain')
-    command(rc, 'policy example-0 config set execution.on_connector_switch "reset"')
+    command(rc, 'connector switch acone')
+    assert rc.robot.raw.spec['source'] == 'acone'
     before = [command(rc, f'policy example-{i} example') for i in range(2)]
     workers = rc._worker.member_workers()
-    command(rc, 'connector switch ' + profile(rc))
+    command(rc, 'connector switch lift2')
+    assert rc.robot.raw.spec['source'] == 'lift2'
     after = [command(rc, f'policy example-{i} example') for i in range(2)]
     assert rc._worker.member_workers() == workers
     assert after[0]['context_id'] == before[0]['context_id']
-    assert after[1]['context_id'] != before[1]['context_id']
+    assert after[1]['context_id'] == before[1]['context_id']
+    assert rc.status()['policy'] == 'example_chain'
     assert rc.status()['state'] == 'paused'
+    assert json.loads(path.read_text()) == config
+    command(rc, 'policy switch example')
+    assert rc.status()['policy'] == 'example'
+    assert rc.robot.raw.spec['source'] == 'lift2'
+    command(rc, 'policy example config save')
+    assert 'on_connector_switch' not in read_config(path)['execution']
 
 
 def test_bad_profile_preserves_connection_context_and_recording(example_rc):
@@ -93,12 +114,12 @@ def test_partial_failures_continue_and_retry_only_failed_instance(example_rc, mo
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
     command(rc, 'policy switch example_chain')
     workers = rc._worker.member_workers()
-    before = command(rc, 'policy example-1 example')
-    monkeypatch.setattr(workers['example-0'], 'initialize_context', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('injected init failure')))
+    healthy_version = workers['example-1'].config_version
+    healthy_context = workers['example-1'].context_id
+    monkeypatch.setattr(workers['example-0'], 'reset_context', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('injected reset failure')))
     command(rc, 'connector switch ' + profile(rc), status='failed')
     assert rc.status()['retry_reload_instances'] == ['example-0']
-    assert workers['example-1'].config_version > 1
-    healthy_context = workers['example-1'].context_id
+    assert workers['example-1'].config_version == healthy_version
     command(rc, 'resume', status='failed')
     command(rc, 'policy example-0 retry')
     assert rc._worker.member_workers()['example-1'] is workers['example-1']
@@ -112,7 +133,7 @@ def test_multiple_failed_instances_can_be_retried_in_any_order(example_rc, monke
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
     command(rc, 'policy switch example_chain')
     for worker in rc._worker.member_workers().values():
-        monkeypatch.setattr(worker, 'initialize_context', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('injected failure')))
+        monkeypatch.setattr(worker, 'reset_context', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('injected failure')))
     command(rc, 'connector switch ' + profile(rc), status='failed')
     assert rc.status()['retry_reload_instances'] == ['example-0', 'example-1']
     command(rc, 'policy example-1 retry')
@@ -188,12 +209,11 @@ def test_same_profile_reloads_file_and_never_reuses_old_hold(example_rc):
 
 def test_switch_cancellation_after_new_binding_preserves_connection_and_requires_retry(example_rc, monkeypatch):
     rc = example_rc
-    old = rc._worker.initialize_context
-    def pause_after_initialize(*args, **kwargs):
-        flags = old(*args, **kwargs)
+    reset = rc._worker.reset_context
+    def pause_after_reset(*args, **kwargs):
+        reset(*args, **kwargs)
         command(rc, 'pause')
-        return flags
-    monkeypatch.setattr(rc._worker, 'initialize_context', pause_after_initialize)
+    monkeypatch.setattr(rc._worker, 'reset_context', pause_after_reset)
     command(rc, 'connector switch ' + profile(rc), status='cancelled')
     assert rc.status()['connector']['profile'] == 'second'
     assert rc.status()['retry_reload_instances'] == ['example']
@@ -219,7 +239,7 @@ def test_connection_failure_keeps_model_and_resumes_recording_only_after_retry(e
     command(rc, 'connector retry')
     assert rc.status()['recording']['state'] == 'recording'
     assert rc.status()['recording']['session_id'] != old_session
-    assert command(rc, 'policy example example')['context_id'] != old_context
+    assert command(rc, 'policy example example')['context_id'] == old_context
 
 
 def test_running_old_request_cannot_supply_actions_or_images_to_new_connector(example_rc):
@@ -275,12 +295,11 @@ def test_cancelled_chain_revokes_unprocessed_old_contexts(example_rc, monkeypatc
     copy_templates(ROOT / 'policy/example_chain', rc.registry.directory / 'example_chain')
     command(rc, 'policy switch example_chain')
     workers = rc._worker.member_workers()
-    initialize = workers['example-0'].initialize_context
+    reset = workers['example-0'].reset_context
     def interrupted(*args, **kwargs):
-        flags = initialize(*args, **kwargs)
+        reset(*args, **kwargs)
         command(rc, 'pause')
-        return flags
-    monkeypatch.setattr(workers['example-0'], 'initialize_context', interrupted)
+    monkeypatch.setattr(workers['example-0'], 'reset_context', interrupted)
     command(rc, 'connector switch ' + profile(rc), status='cancelled')
     assert rc.status()['retry_reload_instances'] == ['example-0', 'example-1']
     assert not workers['example-1']._context_enabled
@@ -290,7 +309,6 @@ def test_cancelled_chain_revokes_unprocessed_old_contexts(example_rc, monkeypatc
 
 
 def test_named_startup_and_empty_policy_switch_can_be_saved(tmp_path):
-    from config_helpers import read_config
     from host_helpers import LocalPolicyProcess
     from robot_control.controller import RobotController
     from test_controller import until

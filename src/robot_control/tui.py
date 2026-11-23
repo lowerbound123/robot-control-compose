@@ -359,6 +359,19 @@ class RobotControlApp(App):
         self._refresh_timers.append(self.set_interval(1 / 30, self.refresh_preview))
         self.refresh_controller()
 
+    async def on_event(self, event: events.Event) -> None:
+        if (isinstance(event, events.Key) and not event.is_forwarded
+                and event.character and event.character.isalpha()
+                and '+' not in event.key.removeprefix('shift+')
+                and isinstance(self.focused, StructuredLog)):
+            command = self.query_one(CommandInput)
+            selection = command.selection
+            # Switch before Textual dispatches the key, so a burst uses one input queue.
+            self.screen.set_focus(command, scroll_visible=False)
+            # Input selects all on focus. Restore the draft selection before the key.
+            command.call_later(setattr, command, 'selection', selection)
+        await super().on_event(event)
+
     def _restore_terminal_input(self) -> None:
         """A late Docker attach never sees the driver's startup escape codes."""
         if not self._ui_active or self.exit_requested:
@@ -410,6 +423,7 @@ class RobotControlApp(App):
         command_input.value = ""
         if not line.strip():
             return
+        log = self.query_one(StructuredLog)
         try:
             command_input.remember(line)
         except ValueError:
@@ -417,12 +431,14 @@ class RobotControlApp(App):
             # receives every real nonempty submission so it revokes queued batches.
             pass
         else:
-            self.query_one(StructuredLog).write(Text(f"> {line}", style="bold cyan"))
+            log.write(Text(f"> {line}", style="bold cyan"))
         try:
             self.router.submit(line)
         except (ValueError, RuntimeError, PermissionError) as exc:
-            self.query_one(StructuredLog).write(Text(f"命令失败：{exc}", style="red"))
+            log.write(Text(f"命令失败：{exc}", style="red"))
             return
+        finally:
+            log.scroll_to_latest()
         if line.strip() == "exit":
             self.exit_requested = True
             self._stop_preview()

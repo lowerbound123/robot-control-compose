@@ -1,11 +1,15 @@
 """RC/setup policy discovery; never import a policy's implementation."""
-import copy
 import hashlib
 from pathlib import Path
 
-from rc_policy_sdk.catalog import policy_id, socket_path, validate_policy, validate_connector_switch_settings
+from rc_policy_sdk.catalog import (migrate_connector_switch_settings, policy_id, socket_path,
+                                   validate_connector_switch_settings, validate_policy)
 from .config_paths import policy_config_path
 from .yaml_config import load_yaml_config
+
+
+def load_policy_config(path):
+    return migrate_connector_switch_settings(load_yaml_config(path))
 
 
 def read_descriptor(directory):
@@ -19,16 +23,14 @@ def read_descriptor(directory):
         raw = path.read_bytes()
     except OSError as exc:
         raise ValueError(f'{identity}: missing or unreadable policy.yaml') from exc
-    config = load_yaml_config(path)
+    config = load_policy_config(path)
     validate_connector_switch_settings(config)
     try:
         validate_policy(config, identity)
     except (ValueError, TypeError, KeyError):
         raise ValueError(f'{path}: invalid policy schema') from None
-    config = copy.deepcopy(config)
     config['id'] = identity
     if config.get('kind') != 'chain':
-        config['execution'].setdefault('on_connector_switch', 'reinitialize_policy')
         for name in ('main.py', 'compose.yaml'):
             if not (directory / name).is_file():
                 raise ValueError(f'{identity}: missing {name}')

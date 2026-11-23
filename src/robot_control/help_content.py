@@ -17,7 +17,7 @@ BUILTINS = {
     'exit': ('控制与状态', '按统一清理期限退出 RC。', '等待策略进程、容器和图像读者清理；强制清理会返回非零退出码。', 'exit'),
     'connector list': ('机器人连接', '列出可用机器人连接配置及其校验状态。', '只读取配置，不建立连接、不切换活动设备。', 'connector list'),
     'connector status': ('机器人连接', '查看完整连接状态：阶段、当前与目标 profile、代次、错误和各实例适配记录。', '只读；状态栏只展示当前生效连接的来源和配置路径，连接失败与策略适配失败的详情在此查询。', 'connector status'),
-    'connector switch': ('机器人连接', '切换到指定连接配置，并按各实例的 on_connector_switch 适配上下文。', '切换后保持暂停。MCP 需先 take；不会自动重试，已提交设备动作不由此取消。', 'connector switch mock'),
+    'connector switch': ('机器人连接', '切换到指定连接配置，在原 policy 实例中清除旧设备状态并保留模型。', '切换后保持暂停。MCP 需先 take；不会自动重试，已提交设备动作不由此取消。', 'connector switch mock'),
     'connector retry': ('机器人连接', '显式重试失败的机器人连接。', '先完成尚未证明结束的清理，再重试连接。MCP 需先 take；策略实例失败使用 policy <实例> retry。', 'connector retry'),
     'config rc show': ('策略与配置', '查看 RC 当前配置、待保存草稿和差异。', '只读；公开输出会隐藏 api_key。', 'config rc show'),
     'config rc set': ('策略与配置', '修改 RC 配置草稿中的字段。', '仅编辑草稿；config rc save 落盘，重启 RC 后生效。不会热改当前控制周期。密钥只能在配置文件中修改。', 'config rc set frequency_hz 20'),

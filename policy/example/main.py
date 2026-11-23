@@ -299,7 +299,7 @@ def _configuration_value(raw):
 def configure(context, config, key, value, callback):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
     allowed_params = {'message', 'log_every_n_calls', 'table_logs', 'chunk_size', 'inference_delay_s', 'reader_url', 'reset_token'}
-    execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers', 'on_connector_switch'}
+    execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers'}
     section, separator, leaf = key.partition('.')
     if (not separator or (section == 'params' and leaf not in allowed_params)
             or (section == 'execution' and leaf not in execution_fields)
@@ -308,8 +308,6 @@ def configure(context, config, key, value, callback):
     candidate = copy.deepcopy(config)
     candidate.setdefault(section, {})[leaf] = _configuration_value(value)
     execution = candidate['execution']
-    if execution.get('on_connector_switch', 'reinitialize_policy') not in ('reset', 'reinitialize_policy'):
-        raise ValueError('execution.on_connector_switch must be reset or reinitialize_policy')
     for field in ('call_every_actions', 'tui_command_workers'):
         count = execution.get(field, 4 if field == 'tui_command_workers' else 1)
         if type(count) is not int or count <= 0:

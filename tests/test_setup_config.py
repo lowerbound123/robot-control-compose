@@ -87,7 +87,7 @@ help_details:
     assert result['params']['message'] == 'local message'
     assert result['help_details']['description'] == '空输入生成保持目标。 非空输入逐帧透传。'
     assert result == docs['policy/example/policy.yaml']
-    assert result['execution']['on_connector_switch'] == 'reinitialize_policy'
+    assert 'on_connector_switch' not in result['execution']
     assert next((tmp_path/'.setup/backups').rglob('policy.yaml')).read_text() == original
     before = path.read_bytes()
     changes, _ = module.configuration_updates(tmp_path)

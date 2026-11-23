@@ -31,7 +31,7 @@ class LogRecord:
     expanded: bool = False
     revision: int = 0
     ready: bool = False
-    preserve_view_revision: int = -1
+    preserve_view_generation: int = -1
     help_document: dict | None = None
     table_document: dict | None = None
     copy_json: str | None = None
@@ -121,6 +121,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._pointer = None
         self._copy_pending = None
         self._batching = False
+        self._view_generation = 0
         self._view_anchor = None
         self._view_anchor_y = None
 
@@ -220,7 +221,9 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         return self
 
     def _following(self):
-        return self.is_vertical_scroll_end and not self._selection and not self._pressed and not self.is_vertical_scrollbar_grabbed
+        # A scroll up can already have a target before its first animation frame.
+        return (self.is_vertical_scroll_end and self.scroll_target_y >= self.scroll_offset.y
+                and not self._selection and not self._pressed and not self.is_vertical_scrollbar_grabbed)
 
     def _row_at(self, y):
         index = bisect_right(self._starts, y) - 1
@@ -254,6 +257,11 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             height += len(record.formatted.rows)
         self.virtual_size = Size(self._width, height)
 
+    def scroll_to_latest(self):
+        # Pending expand/rewrap results must respect this newer explicit jump.
+        self._view_generation += 1
+        self._restore_view(None, follow=True)
+
     def _restore_view(self, anchor, follow=False):
         if follow:
             self._view_anchor = self._view_anchor_y = None
@@ -262,11 +270,21 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             record = self.records[anchor.record]
             row = record.formatted.row_for_offset(anchor.offset)
             target = self._starts[self._indices[anchor.record]] + row
-            self.scroll_to(y=target, animate=False, immediate=True)
+            if self.scroll_offset.y != target:
+                self.scroll_to(y=target, animate=False, immediate=True)
             if self.scroll_offset.y == target:
                 self._view_anchor, self._view_anchor_y = anchor, target
             else:
                 self._view_anchor = self._view_anchor_y = None
+
+    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
+        # By the time Resize is delivered, Textual has replaced the old scroll limit.
+        old_size = self.outer_size
+        follow = size.width == old_size.width and size.height < old_size.height and self._following()
+        changed = super()._size_updated(size, virtual_size, container_size, layout)
+        if follow:
+            self._restore_view(None, follow=True)
+        return changed
 
     def on_resize(self):
         self._resize_layout()
@@ -278,7 +296,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._width = width
         for record in self.records.values():
             record.revision += 1
-            record.preserve_view_revision = record.revision
+            record.preserve_view_generation = self._view_generation
             self._dirty[record.identity] = None
         self._prioritize_visible()
 
@@ -311,7 +329,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
                 continue
             if not changed and self._selection:
                 selected_before = self.selected_text
-            preserve_view = preserve_view or record.preserve_view_revision == revision
+            preserve_view = preserve_view or record.preserve_view_generation == self._view_generation
             record.formatted = result
             record.ready = True
             if self._copy_pending == identity:
@@ -348,7 +366,7 @@ drag cross rows and scroll without invoking the fold/copy click actions.
             return
         record.expanded = not record.expanded
         record.revision += 1
-        record.preserve_view_revision = record.revision
+        record.preserve_view_generation = self._view_generation
         self._dirty[identity] = None
         self._dirty.move_to_end(identity, last=False)
 
@@ -532,7 +550,9 @@ drag cross rows and scroll without invoking the fold/copy click actions.
         self._pointer = offset
         self._dragged = self._dragged or offset != pressed[0]
         self._update_drag()
-        if not self._dragged and hit == pressed[1]:
+        if not self._dragged and offset.y == self.scrollable_content_region.height - 1:
+            self.scroll_to_latest()
+        elif not self._dragged and hit == pressed[1]:
             position, action = hit
             if action == 'copy':
                 self.copy_record(position.record)

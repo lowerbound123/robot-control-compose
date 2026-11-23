@@ -40,9 +40,8 @@ def test_repeated_mock_ros_and_named_domain_switches_keep_policy_process(example
             processes.append(subprocess.Popen([sys.executable, '-m', 'robot_control_test_sim.simulator', '--namespace', namespace],
                 env={**os.environ, 'ROS_DOMAIN_ID': str(141+index)}, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         profile(rc, 'mock-return', .1)
-        command(rc, 'policy example config set execution.on_connector_switch "reset"')
         context = command(rc, 'policy example example')['context_id']
-        for name in ('ros-0', 'mock-return', 'ros-1', 'ros-0', 'mock-return'):
+        for name in ('ros-0', 'mock-return', 'ros-1', 'ros-0', 'mock-return', 'ros-1'):
             old = rc.robot.raw
             command(rc, 'connector switch ' + name)
             assert rc._worker is worker and rc._worker.pid == worker.pid
@@ -55,9 +54,6 @@ def test_repeated_mock_ros_and_named_domain_switches_keep_policy_process(example
             if name.startswith('ros-'):
                 assert rc.robot.raw.spec['source'] == 'acone'
                 assert rc.robot.raw.config['ros_domain_id'] == 141 + int(name[-1])
-        command(rc, 'policy example config set execution.on_connector_switch "reinitialize_policy"')
-        command(rc, 'connector switch ros-1')
-        assert rc._worker is worker and command(rc, 'policy example example')['context_id'] != context
     finally:
         # Close the active connection before its simulator; avoid a stale-feedback fault during teardown.
         rc.submit('exit')

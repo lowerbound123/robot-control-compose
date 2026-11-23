@@ -294,7 +294,6 @@ def mcp_management_checks(controller, report, connector_checkpoint):
         device = profiles / 'alternate-device.json'
         device.write_text(json.dumps({'initial_qpos': [.25]*14}))
         (profiles / 'alternate.yaml').write_text(json.dumps({'connector': 'body', 'source': 'mock', 'config': str(device)}))
-        call('policy_config', instance_id='example-0', action='set', key='execution.on_connector_switch', value_text='reset', wait=True)
         connector_before = identities()
         context_before = {i: context(i) for i in connector_before}
         recorded_before = call('record', action='on', wait=True)['result']['session_id']
@@ -306,16 +305,14 @@ def mcp_management_checks(controller, report, connector_checkpoint):
         connector_checkpoint('explicit connector switch', replaced=True)
         connector_after = identities()
         context_after = {i: context(i) for i in connector_before}
-        assert connector_after['example-0'] == connector_before['example-0']
-        assert connector_after['example-1'] == {**connector_before['example-1'], 'version':connector_before['example-1']['version']+1}
-        assert context_after['example-0']['context_id'] == context_before['example-0']['context_id']
-        assert context_after['example-1']['context_id'] != context_before['example-1']['context_id']
+        assert connector_after == connector_before
+        assert all(context_after[i]['context_id'] == context_before[i]['context_id'] for i in connector_before)
         assert all(abs(value-.25) < 1e-6 for value in controller.robot.read_state()['qpos'])
         assert controller.status()['recording']['session_id'] != recorded_before
         call('record', action='off', wait=True)
         report['connector_switch'] = dict(before=connector_before, after=connector_after,
             connector_before=old_connector_cid, connector_after=new_connector_cid, status=controller.status()['connector'])
-        report['checks'].append('connector switch replaces connector, keeps policy containers/PIDs, mixes reset/reinitialize and splits recording')
+        report['checks'].append('connector switch replaces connector, preserves all policy containers/PIDs/contexts and splits recording')
         episode = call('return_and_wait', timeout_s=0)['operation_id']
         wait(lambda: controller.status()['state'] == 'running')
         epoch = controller._control_epoch

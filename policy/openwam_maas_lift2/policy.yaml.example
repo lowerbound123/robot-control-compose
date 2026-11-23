@@ -5,7 +5,6 @@ execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
-  on_connector_switch: reinitialize_policy
 params:
   service_url: ws://openwam:8848
   task: pick up the green bitter gourd
@@ -40,4 +39,3 @@ config_hints:
     execution.call_every_actions: {type: int, help: RC 每消费多少个目标调用一次策略}
     execution.control_mode: {type: enum, choices: [qpos], help: 绝对关节位置}
     execution.tui_command_workers: {type: int, help: TUI 命令线程数}
-    execution.on_connector_switch: {type: enum, choices: [reset, reinitialize_policy], help: 设备切换后的上下文操作}

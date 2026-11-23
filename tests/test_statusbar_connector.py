@@ -71,11 +71,11 @@ def test_binding_metadata_changes_together_only_at_commit(example_rc, monkeypatc
         stop_at('disconnected')
         close(**kwargs)
     monkeypatch.setattr(rc.robot.raw, 'close', disconnected)
-    initialize = rc._worker.initialize_context
+    reset = rc._worker.reset_context
     def connected(*args, **kwargs):
         stop_at('connected')
-        return initialize(*args, **kwargs)
-    monkeypatch.setattr(rc._worker, 'initialize_context', connected)
+        return reset(*args, **kwargs)
+    monkeypatch.setattr(rc._worker, 'reset_context', connected)
 
     def observe():
         while not finished.wait(.001):
@@ -136,8 +136,8 @@ def test_policy_adaptation_failure_keeps_committed_connection_metadata(example_r
     rc = example_rc
     next_profile(rc)
     def failed(*args, **kwargs):
-        raise RuntimeError('new policy context failed')
-    monkeypatch.setattr(rc._worker, 'initialize_context', failed)
+        raise RuntimeError('policy context reset failed')
+    monkeypatch.setattr(rc._worker, 'reset_context', failed)
     command(rc, 'connector switch next', status='failed')
     assert rc.connector_status()['connected']
     assert rc.connector_status()['instances']['example']['status'] == 'failed'

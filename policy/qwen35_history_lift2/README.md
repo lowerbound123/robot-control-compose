@@ -59,7 +59,7 @@ ACOne 和 LIFT2 使用同一个 RC 控制周期，统一配置为30Hz；修改 R
 
 普通 `pause → resume` 和 MCP 接管后归还保留视觉历史；显式 `reset` 在复位目标完整发布确认后清空历史，清理完成才返回成功，并保持暂停。详见[暂停、恢复与复位](../../docs/history-policy-configuration.md#暂停恢复与复位)。
 
-用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。通用指标与原 history 一致，LIFT2 另外提供 `left_gripper_raw`、`right_gripper_raw`：最近一次成功推理的完整左右夹爪原始序列，直接按 `str(list)` 显示。数值取反归一化后、轨迹融合和夹爪阈值处理前的第 6、13 列；缓存直返保留原序列，初始或 reset 后为 `[]`。详见[策略监控说明](docs/runtime.md#策略监控)；不采集显存、内存或 CPU 等资源信息。
+用 `monitor qwen35_history_lift2` 打开策略面板，可查看模型/任务、推理阶段与耗时、历史帧、动作缓存、请求等待、裁剪、CUDA Graph 路径和最近错误。两个 history 来源都提供 `left_gripper_raw` 和 `right_gripper_raw`，以列表字符串显示最近一次成功推理的完整左右夹爪序列。数值取反归一化后、应用夹爪规则和轨迹融合前的第 6、13 列。缓存直返保留原序列，初始或 reset 后为 `[]`。详见[策略监控说明](docs/runtime.md#策略监控)。
 
 ## 定向验证
 

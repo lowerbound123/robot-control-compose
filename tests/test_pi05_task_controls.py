@@ -123,8 +123,9 @@ def test_setup_upgrades_existing_hot_whitelist_and_preserves_signed_values(tmp_p
     rules={'gripper_upper_threshold':5.,'gripper_upper_value':5.,
            'gripper_lower_threshold':0.,'gripper_lower_value':0.}
     template['params'].update(task=None,**rules)
-    template['hot_reloadable']=['params.task',*('params.'+k for k in rules),'execution.on_connector_switch']
+    template['hot_reloadable']=['params.task',*('params.'+k for k in rules)]
     old=copy.deepcopy(template)
+    old['execution']['on_connector_switch']='reinitialize_policy'
     old['hot_reloadable']=['execution.on_connector_switch']
     old['params'].update(task='saved task',gripper_upper_value='+0.5',gripper_lower_value='-0.25')
     (folder/'policy.yaml.example').write_text(json.dumps(template))

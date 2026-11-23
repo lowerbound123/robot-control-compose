@@ -1,6 +1,7 @@
 """Schema 3 policy identity and dictionary validation; standard library only."""
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import math
@@ -11,25 +12,42 @@ IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,47}')
 INSTANCE_IDENTITY = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
 
 
+def migrate_connector_switch_settings(config):
+    """Read a schema 3 file that still advertises the old per-instance choice."""
+    if not isinstance(config, dict) or config.get('kind') == 'chain':
+        return config
+    config = copy.deepcopy(config)
+    execution = config.get('execution')
+    if isinstance(execution, dict) and 'on_connector_switch' in execution:
+        if execution.pop('on_connector_switch') not in ('reset', 'reinitialize_policy'):
+            raise ValueError('invalid legacy execution.on_connector_switch')
+    path = 'execution.on_connector_switch'
+    paths = config.get('hot_reloadable')
+    if isinstance(paths, list):
+        config['hot_reloadable'] = [item for item in paths if item != path]
+    hints = config.get('config_hints')
+    if isinstance(hints, dict) and isinstance(hints.get('settings'), dict):
+        hints['settings'].pop(path, None)
+    return config
+
+
 def validate_connector_switch_settings(config):
-    """Reject removed connection settings before any defaults can hide them."""
+    """Connector switches always reset the existing policy context."""
     if not isinstance(config, dict):
         return
-    execution = config.get('execution', {})
-    removed = 'execution.on_backend_switch'
-    if isinstance(execution, dict):
-        if 'on_backend_switch' in execution:
-            raise ValueError(removed + ' is not supported; use execution.on_connector_switch')
-        if execution.get('on_connector_switch', 'reinitialize_policy') not in ('reinitialize_policy', 'reset'):
-            raise ValueError('invalid execution.on_connector_switch')
-    paths = config.get('hot_reloadable', [])
-    hints = config.get('config_hints', {})
-    settings = hints.get('settings', {}) if isinstance(hints, dict) else {}
-    candidates = [*paths] if isinstance(paths, list) else []
+    execution = config.get('execution')
+    paths = config.get('hot_reloadable')
+    hints = config.get('config_hints')
+    settings = hints.get('settings') if isinstance(hints, dict) else None
+    candidates = list(paths) if isinstance(paths, list) else []
     if isinstance(settings, dict):
         candidates.extend(settings)
-    if any(isinstance(path, str) and (path == removed or path.startswith(removed + '.')) for path in candidates):
-        raise ValueError(removed + ' is not supported in hot_reloadable/config_hints; use execution.on_connector_switch')
+    for key in ('on_backend_switch', 'on_connector_switch'):
+        path = 'execution.' + key
+        if ((isinstance(execution, dict) and key in execution)
+                or any(isinstance(item, str) and (item == path or item.startswith(path + '.'))
+                       for item in candidates)):
+            raise ValueError(path + ' is no longer configurable; connector switches reset the existing context')
 
 
 def policy_id(value):

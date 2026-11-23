@@ -431,8 +431,8 @@ def test_configure_capability_does_not_claim_unnegotiated_connector_switch(tmp_p
         assert ready["connector_switch_v1"] is False
 
 
-@pytest.mark.parametrize("value", ["unsupported", None, 1, True])
-def test_configure_rejects_invalid_connector_adaptation_before_apply(tmp_path, value):
+@pytest.mark.parametrize("value", ["reset", "reinitialize_policy", "unsupported", None, 1, True])
+def test_configure_rejects_removed_connector_adaptation_before_apply(tmp_path, value):
     source = POLICY.replace('config["execution"]["control_mode"] = value',
                             'config["execution"]["on_connector_switch"] = ' + repr(value))
     with worker(tmp_path, source, connector_switch=True) as (send, recv, _, _):

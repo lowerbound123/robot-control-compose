@@ -4,7 +4,6 @@ execution:
   mode: sync
   call_every_actions: 1
   control_mode: qpos
-  on_connector_switch: reinitialize_policy
 params:
   model_config_path: model.json
   task: null
@@ -18,7 +17,6 @@ hot_reloadable:
 - params.gripper_upper_value
 - params.gripper_lower_threshold
 - params.gripper_lower_value
-- execution.on_connector_switch
 tui_commands:
   switch-task:
     handler: switch_task
@@ -81,9 +79,3 @@ config_hints:
     execution.tui_command_workers:
       type: int
       help: 命令执行线程数；修改后重新初始化并暂停
-    execution.on_connector_switch:
-      type: enum
-      choices:
-      - reset
-      - reinitialize_policy
-      help: 下次连接切换时重置上下文或原进程重新初始化；本次设置不执行切换

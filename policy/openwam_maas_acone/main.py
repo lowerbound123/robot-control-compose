@@ -8,7 +8,7 @@ from rc_openwam_maas_acone.gripper import GRIPPER_PARAMS, gripper_rules
 from rc_openwam_maas_acone.runtime import OpenWAMPolicy
 
 PARAMS = {'service_url', 'task', 'request_when_remaining', 'open_timeout_s', 'inference_timeout_s', *GRIPPER_PARAMS}
-EXECUTION = {'control_mode', 'on_connector_switch', 'call_every_actions', 'mode', 'tui_command_workers'}
+EXECUTION = {'control_mode', 'call_every_actions', 'mode', 'tui_command_workers'}
 
 
 def validate_config(config):
@@ -33,8 +33,6 @@ def validate_config(config):
     execution = config['execution']
     if execution['control_mode'] != 'qpos' or execution['mode'] not in ('sync', 'async'):
         raise ValueError('OpenWAM requires qpos and sync or async scheduling')
-    if execution.get('on_connector_switch', 'reinitialize_policy') not in ('reset', 'reinitialize_policy'):
-        raise ValueError('invalid connector switch action')
     for key in ('call_every_actions', 'tui_command_workers'):
         value = execution.get(key, 1)
         if type(value) is not int or value <= 0:

@@ -47,7 +47,7 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 
 ## Compose 快捷入口
 
-完成 setup 后可使用以下入口。up 默认加入基础 `compose.yaml`，后续覆盖文件按参数顺序合并；不带参数只启动基础服务。
+完成 setup 后，`up.sh` 会先停止并清理当前部署。清理成功后，脚本使用同一组 Compose 文件执行 `up -d`。基础文件 `compose.yaml` 自动加入，覆盖文件按传入顺序追加。无参数时只启动基础服务。
 
 ```bash
 ./scripts/up.sh
@@ -162,6 +162,6 @@ RC 与 SDK 同步升级到 0.15.0，清单仍为 schema 3。更新源码后完�
 
 RC 与 SDK 同步使用 0.17.0，schema 保持 3。RC 镜像不包含 ROS，独立 connector 提供设备连接；`./setup.sh --policies example --connectors mock,acone` 准备所需镜像，setup 不覆盖本地设备 YAML。连接使用 [connector 配置](connectors.md)，命名 profile 为 `{connector: body, source: acone, config: devices/robot-main.yaml}`，设备参数与 `ros_domain_id` 位于 connector 来源目录。
 
-`connector switch` 现在重建 connector 并保留正常 policy 容器。完成后保持暂停；policy 的 reset/reinitialize 选择、逐实例冷重试与录制分会话继续有效，见 [热切换说明](connector-switching.md)。TUI 0.15 的命令树、配置入口、候选菜单及容器路径补全保留。
+`connector switch` 重建 connector 并清除各 policy 实例的旧设备状态。模型保持加载，切换完成后暂停，跨机型时由用户手动选择策略。逐实例冷重试与录制分会话见 [热切换说明](connector-switching.md)。
 
-策略切换选项统一为 `execution.on_connector_switch`，包括 `hot_reloadable` 与 `config_hints.settings` 中的字段路径。setup 会先拒绝已移除的字段，再增补缺失默认值；不自动改名或转换既有私有配置。同步更新 RC/SDK 后重新创建运行组，协商 `connector_switch_v1`。
+已有 schema 3 策略配置可直接加载。setup 合并配置时会移除旧的 `execution.on_connector_switch` 字段及其白名单和补全提示。

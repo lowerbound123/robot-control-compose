@@ -158,17 +158,13 @@ def test_example_reset_token_has_a_meaningful_context_reset(entry):
     assert context['pending_result'] is None
 
 
-@pytest.mark.parametrize('source', SOURCES)
-def test_connector_switch_action_is_policy_owned_and_applies_to_future_switch(entry, source):
+@pytest.mark.parametrize('source', (*SOURCES, 'pi05_lift2', 'openwam_maas_acone', 'openwam_maas_lift2'))
+def test_connector_switch_action_is_retired(entry, source):
     module, config = entry(source)
-    for value in ('reset', 'reinitialize_policy'):
-        effects = []
-        module.configure(object(), config, 'execution.on_connector_switch', value, effects.append)
-        assert config['execution']['on_connector_switch'] == value
-        assert effects == []
     before = copy.deepcopy(config)
+    effects = []
     with pytest.raises(ValueError):
-        module.configure(object(), config, 'execution.on_connector_switch', 'unknown', effects.append)
+        module.configure(object(), config, 'execution.on_connector_switch', 'reinitialize_policy', effects.append)
     assert config == before and effects == []
 
 

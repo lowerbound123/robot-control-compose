@@ -233,10 +233,10 @@ def validate_manifest(config):
     # RC owns call scheduling; policies only constrain their action format.
     if execution.get('control_mode') != 'qpos':
         raise ValueError('Pi05 returns qpos actions')
-    allowed = {'execution.mode', 'execution.call_every_actions', 'execution.on_connector_switch', 'params.task',
+    allowed = {'execution.mode', 'execution.call_every_actions', 'params.task',
                *('params.'+name for name in GRIPPER_DEFAULTS)}
     if any(path not in allowed for path in config.get('hot_reloadable', [])):
-        raise ValueError('only RC scheduling, connector handling and gripper rules are hot reloadable')
+        raise ValueError('only RC scheduling, task and gripper rules are hot reloadable')
     for name, default in GRIPPER_DEFAULTS.items():
         value = params.get(name, default)
         if name == 'gripper_lower_threshold' and value is None:

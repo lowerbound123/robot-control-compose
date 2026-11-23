@@ -126,8 +126,8 @@ def validate_manifest(config):
     # RC owns call scheduling; policies only constrain their action format.
     if execution.get('control_mode') != 'qpos':
         raise ValueError('Qwen returns qpos actions')
-    if any(path not in ('execution.mode', 'execution.call_every_actions', 'params.task', 'execution.on_connector_switch') for path in config.get('hot_reloadable', [])):
-        raise ValueError('only params.task, RC scheduling and connector handling are hot reloadable; use switch-model for model settings')
+    if any(path not in ('execution.mode', 'execution.call_every_actions', 'params.task') for path in config.get('hot_reloadable', [])):
+        raise ValueError('only params.task, RC scheduling are hot reloadable; use switch-model for model settings')
     task = config.get('params', {}).get('task')
     if task is not None and (not isinstance(task, str) or not task.strip()):
         raise ValueError('params.task must be null or a nonempty string')

@@ -116,6 +116,67 @@ async def test_log_and_command_paste_preserve_all_lines_without_submission():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('draft', 'selection', 'typed', 'expected'), [
+    ('', Selection(0, 0), 'help', 'help'),
+    ('set  tail', Selection(4, 4), 'Ab', 'set Ab tail'),
+    ('set OLD tail', Selection(7, 4), 'Ab', 'set Ab tail'),
+])
+async def test_typing_from_log_preserves_draft_and_key_order(draft, selection, typed, expected):
+    app = RobotControlApp(FakeController())
+    async with app.run_test() as pilot:
+        log = app.query_one(StructuredLog)
+        command = app.query_one(CommandInput)
+        command.value = draft
+        command.selection = selection
+        await pilot.click(log, offset=point(log))
+        await pilot.press('1', 'full_stop')
+        app.post_message(events.Key('alt+x', 'x'))
+        await pilot.pause()
+        assert app.focused is log and command.value == draft
+
+        # A terminal can deliver the whole word before the first key is handled.
+        for letter in typed:
+            app.post_message(events.Key(letter, letter))
+        await pilot.pause()
+        assert app.focused is command
+        assert command.value == expected
+        assert app.controller.commands == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('line', ['help', 'unknown-command'])
+async def test_command_submission_returns_log_to_latest_record(line):
+    app = RobotControlApp(FakeController())
+    async with app.run_test() as pilot:
+        log = app.query_one(StructuredLog)
+        command = app.query_one(CommandInput)
+        log.write_events([dict(message=f'event {i}') for i in range(60)])
+        await settled(log, pilot)
+        log.scroll_to(y=5, animate=False, immediate=True)
+        assert not log.is_vertical_scroll_end
+
+        await pilot.press('space', 'enter')
+        assert log.scroll_offset.y == 5
+        await pilot.click(log, offset=point(log))
+        await pilot.press('h')
+        app.post_message(events.Paste('el'))
+        await pilot.pause()
+        assert command.value == 'hel' and log.scroll_offset.y == 5
+        await pilot.press('tab', 'enter')
+        assert command.value.strip() == 'help'
+        assert app.controller.commands == [] and log.scroll_offset.y == 5
+
+        command.value = line
+        await pilot.press('enter')
+        assert log.is_vertical_scroll_end and app.focused is command
+        latest = next(reversed(log.records.values())).message
+        if line == 'help':
+            assert latest == '> help' and app.controller.commands == ['help']
+        else:
+            assert '命令失败' in latest and app.controller.commands == []
+
+
+@pytest.mark.asyncio
 async def test_osc52_copy_and_exit_keys_still_use_cleanup_flow():
     app = RobotControlApp(FakeController())
     async with app.run_test() as pilot:
@@ -160,6 +221,76 @@ async def test_history_eviction_scroll_anchor_and_worker_cleanup():
         thread = log._formatter.thread
     await asyncio.sleep(.1)
     assert not thread.is_alive()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('click_copy_label', [False, True])
+async def test_last_visible_row_click_resumes_following(click_copy_label):
+    app = RobotControlApp(FakeController())
+    async with app.run_test(size=(64, 26)) as pilot:
+        log = app.query_one(StructuredLog)
+        log.write_events([dict(message=json.dumps({'index': i})) for i in range(60)])
+        await settled(log, pilot)
+        log.scroll_to(y=5, animate=False, immediate=True)
+        width, height = log.scrollable_content_region.size
+        last_row = height - 1
+        record, _ = log._row_at(log.scroll_offset.y + last_row)
+        assert record.formatted.parsed is not None
+
+        # Dragging from the hot row still selects the underlying text.
+        await pilot.mouse_down(log, offset=point(log, 2, last_row))
+        await pilot.hover(log, offset=point(log, 12, last_row))
+        await pilot.mouse_up(log, offset=point(log, 12, last_row))
+        assert log.selected_text and log.scroll_offset.y == 5
+        log.write('arrived during selection')
+        assert log.selected_text and log.scroll_offset.y == 5
+
+        await pilot.click(log, offset=point(log, width - 3 if click_copy_label else 4, last_row))
+        assert log.is_vertical_scroll_end and not log.selected_text
+        assert not record.expanded and app.clipboard == ''
+        log.write_events([dict(message='another event'), dict(message='wrapped ' * 25 + 'last')])
+        await settled(log, pilot)
+        assert log.is_vertical_scroll_end and 'last' in log.render_line(last_row).text
+        assert app.focused is log
+
+
+@pytest.mark.asyncio
+async def test_new_output_during_scroll_up_allows_reading_history():
+    app = RobotControlApp(FakeController())
+    async with app.run_test() as pilot:
+        log = app.query_one(StructuredLog)
+        log.write_events([dict(message=f'event {i}') for i in range(60)])
+        await settled(log, pilot)
+        log.scroll_end(animate=False, immediate=True)
+        log.scroll_to(y=4, duration=.1, immediate=True)
+        log.write('arrived during scroll')
+        await pilot.wait_for_scheduled_animations()
+        assert log.scroll_offset.y == 4
+
+
+@pytest.mark.asyncio
+async def test_height_change_and_new_output_respect_current_scroll_position():
+    app = RobotControlApp(FakeController())
+    async with app.run_test(size=(80, 36)) as pilot:
+        log = app.query_one(StructuredLog)
+        area = app.query_one('#log-area')
+        log.write_events([dict(message=f'event {i}') for i in range(60)])
+        await settled(log, pilot)
+        log.scroll_to(y=4, animate=False, immediate=True)
+        height = log.size.height
+        area.styles.height = area.size.height - 3
+        await pilot.pause()
+        log.write('while reading history')
+        assert log.size.height == height - 3 and log.scroll_offset.y == 4
+
+        log.scroll_end(animate=False, immediate=True)
+        area.styles.height = area.size.height - 3
+        await pilot.pause()
+        assert log.size.height == height - 6 and log.is_vertical_scroll_end
+        log.write('long message ' * 25 + 'last')
+        await settled(log, pilot)
+        assert log.is_vertical_scroll_end and 'last' in log.render_line(log.size.height - 1).text
+        assert app.focused is app.query_one(CommandInput)
 
 
 @pytest.mark.asyncio
@@ -318,6 +449,21 @@ async def test_expanding_bottom_record_preserves_top_log_instead_of_following_ne
         await settled(log, pilot)
         assert log.render_line(0).text == top
         assert not log.is_vertical_scroll_end
+
+
+@pytest.mark.asyncio
+async def test_explicit_jump_to_latest_overrides_pending_expand():
+    app = RobotControlApp(FakeController())
+    async with app.run_test(size=(60, 25)) as pilot:
+        log = app.query_one(StructuredLog)
+        log.write_events([dict(message=f'event {i}') for i in range(30)])
+        log.write(json.dumps({f'field{i}': i for i in range(60)}))
+        await settled(log, pilot)
+        log.scroll_to(y=3, animate=False, immediate=True)
+        log.toggle(next(reversed(log.records)))
+        log.scroll_to_latest()
+        await settled(log, pilot)
+        assert log.is_vertical_scroll_end
 
 
 @pytest.mark.asyncio

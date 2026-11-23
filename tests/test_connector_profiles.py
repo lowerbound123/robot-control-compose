@@ -49,13 +49,15 @@ def test_profile_reads_fresh_file_without_accepting_paths_or_symlinks(tmp_path):
         profiles.read('alias')
 
 
-def test_setup_upgrades_policy_field_without_overwriting_hot_list_or_choice(tmp_path):
+def test_setup_removes_legacy_switch_choice_and_preserves_other_hot_fields(tmp_path):
     from test_setup_config import helpers
     folder = tmp_path / 'policy/demo'
     folder.mkdir(parents=True)
     config = manifest()
     config['id'] = 'demo'
     config['execution']['on_connector_switch'] = 'reset'
+    config['hot_reloadable'].append('execution.on_connector_switch')
+    config['config_hints'] = {'settings': {'execution.on_connector_switch': {'type': 'str'}}}
     (folder / 'policy.yaml').write_text(json.dumps(config))
     template = copy.deepcopy(config)
     template['execution']['on_connector_switch'] = 'reinitialize_policy'
@@ -63,8 +65,11 @@ def test_setup_upgrades_policy_field_without_overwriting_hot_list_or_choice(tmp_
     (folder / 'policy.yaml.example').write_text(json.dumps(template))
     changes, documents = helpers().configuration_updates(tmp_path)
     updated = documents['policy/demo/policy.yaml']
-    assert updated['execution']['on_connector_switch'] == 'reset'
-    assert updated['hot_reloadable'] == ['params.nested.value', 'execution.on_connector_switch']
+    assert 'on_connector_switch' not in updated['execution']
+    assert updated['hot_reloadable'] == ['params.nested.value']
+    assert 'execution.on_connector_switch' not in updated['config_hints']['settings']
+    helpers().write_updates(tmp_path, changes)
+    assert helpers().configuration_updates(tmp_path)[0] == []
 
 
 def test_setup_keeps_direct_connector_and_creates_profiles_only_once(tmp_path):
