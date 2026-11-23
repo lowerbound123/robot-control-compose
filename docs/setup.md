@@ -19,6 +19,12 @@ python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setu
 
 setup 直接使用 PATH 上的 `python3`（3.9 或更高版本）和 Docker CLI。也可用 `SETUP_PYTHON` 指定宿主解释器。若所选解释器缺少 `ruamel.yaml==0.19.1` 或版本不匹配，setup 会在写入配置前退出，并显示使用该解释器安装锁定依赖的命令。
 
+升级 RC 的自由线程运行时可单独执行 `./scripts/compose.sh build robot-control`，在下一次创建 RC 容器时生效。用以下命令可在新镜像中核对版本及原生依赖加载后的 GIL 状态。预期最后一项为 `False`。
+
+```bash
+./scripts/compose.sh run --rm --no-deps robot-control python3 -c 'import sys, numpy, scipy; from robot_control import controller, mcp_server, tui; print(sys.version, numpy.__version__, scipy.__version__, sys._is_gil_enabled())'
+```
+
 正式 `policy.yaml` 是发现依据，`.example` 只是补齐缺失配置的模板；只有模板时目录显示 needs_config。无效目录会显示原因。通用校验不解释 provider、model.json、GPU 或 HF 业务字段，真正业务校验由目标策略执行。
 
 setup 先合并、验证，再以原子写入更新本机文件。既有值保留，发生变更的文件备份到 `.setup/backups/`，权限为 0600。配置、密钥、输出与运行账本都被 Git 和镜像构建上下文忽略。

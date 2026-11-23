@@ -2,6 +2,8 @@
 
 RC 通过独立 connector 容器读取设备状态、请求图像和发送目标。`acone` 封装原有 ROS 2 接口，`mock` 提供同一接口的模拟设备。RC 与 mock 镜像不包含 ROS；ACOne 使用 Humble / Python 3.10。厂商驱动仍由现场独立启动。
 
+单独构建 ACOne 可运行 `docker compose -f connector/acone/compose.yaml build connector`。构建只读取 connector 自己的依赖锁、入口脚本以及 `ros_ws/src` 下的 `arx5_arm_msg` 和 `robot_control_test_msgs` 两个消息包。RC 的解释器和依赖由 RC 镜像单独构建。
+
 `lift2` 使用独立 ROS 1 Noetic Python 通信包 / CPython 3.10 镜像，支持双臂关节控制、末端状态查询与三路 RGB。包含 `epos` 的请求整条失败；配置、消息单位与定向验收见 [LIFT2 connector](lift2.md)。
 
 ACOne 和 LIFT2 的控制频率统一为 RC 的 `frequency_hz: 30`。connector 本身不管理控制周期，切换设备也不改变 RC 频率；已有配置修改后需重启 RC 生效。

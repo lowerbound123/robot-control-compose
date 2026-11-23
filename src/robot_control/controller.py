@@ -10,6 +10,7 @@ import os
 import queue
 import re
 import shlex
+import sys
 import threading
 import time
 import uuid
@@ -244,8 +245,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             if self._thread is not None:
                 return
             try:
-                prepare_control_threads()
+                gil_enabled = prepare_control_threads()
                 self._recorder.start()
+                self._performance.emit('rc.runtime', python_version=sys.version.split()[0], gil_enabled=gil_enabled)
                 self._manager = threading.Thread(target=self._manager_loop, name="rc-lifecycle", daemon=False)
                 self._thread = threading.Thread(target=self._control_loop, name="rc-control", daemon=False)
                 self._recorder.bind_control_thread(self._thread)

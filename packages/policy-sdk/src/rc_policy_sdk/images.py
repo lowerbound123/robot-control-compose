@@ -7,10 +7,10 @@ import mmap
 import os
 import re
 import uuid
-import posix_ipc
 import threading
 
 import numpy as np
+from . import posix_shm
 
 MAX_IMAGE_BYTES = 256 * 1024 * 1024
 _HEADER = struct.Struct("!QQ")  # payload length and immutable frame identity
@@ -75,7 +75,7 @@ class ImagePool:
             raise MemoryError("shared image pool capacity exceeded")
         self._serial += 1
         name = f"/rc{self.pool_id}{self._serial:010x}"
-        segment = posix_ipc.SharedMemory(name, flags=posix_ipc.O_CREX, size=size)
+        segment = posix_shm.create(name, size)
         try:
             # Reserve real tmpfs pages before touching mmap, avoiding SIGBUS on
             # Linux when another pool has already exhausted /dev/shm.
@@ -198,7 +198,7 @@ def map_images(descriptors):
                     or descriptor.get('pool_id') != name[3:15]
                     or type(descriptor.get('frame_id')) is not int or descriptor['frame_id'] < 1):
                 raise ValueError("invalid shared image identity")
-            segment = posix_ipc.SharedMemory(name, read_only=True)
+            segment = posix_shm.open_readonly(name)
             try:
                 if segment.size < size + _HEADER.size:
                     raise ValueError("shared image length does not match descriptor")

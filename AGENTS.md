@@ -5,7 +5,7 @@
 - 用户说“提交并推送”时，默认提交当前项目全部待提交改动并推送当前分支的既有远端，不仅限于当前聊天产生的改动；只有用户明确指定范围时才做局部提交。仍须遵守忽略规则，不提交 `.codex`、运行产物、凭据或被忽略的本地配置。
 - 本项目的固定远程仓库为 `github.com/lowerbound123/robot-control-compose`，Git 远端名为 `origin`，SSH 地址为 `git@github.com:lowerbound123/robot-control-compose.git`。用户要求“推送”或“提交并推送”时，目的地即此仓库；除非用户明确要求，不更换远程仓库。
 
-- RC 与 mock connector 使用无 ROS 的 Python 3.10 镜像；ACOne connector 独占 ROS 2 Humble / Python 3.10 容器。hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
+- RC 使用无 ROS 的自由线程 CPython 3.14t 和 NumPy 2。mock connector 使用无 ROS 的 Python 3.10，ACOne connector 独占 ROS 2 Humble / Python 3.10 容器。hold 为 Python 3.14，两个 Qwen 共用 Python 3.11 镜像、分别运行独立容器；不使用 Conda。其他 policy 的 Python 与依赖版本由对应镜像锁定。
 - connector 仅查询设备状态和 FIFO 发送消息，不管理控制周期、控制权、动作过期或重发。take/pause/switch 不取消已提交动作；RC 按 Hz 提交并在设备完整发布确认后消费目标。图像仅在 get_images 请求后写入只读 POSIX 共享内存，socket 只传描述符；RC 复制并明确释放输入租约，policy 使用原 RC 图像池。
 - 每个可执行 policy 实例独占一个容器、host 和执行进程；原生 chain 自身不增加容器，每个环节独立实例化。重复策略按出现顺序命名为 policyName-0/1/2，来源目录与镜像保持共用。显式 switch 和 reload_all_policy 在整个旧组退出证明齐备后重建全组。reload_policy 仅重建命令目标实例，先证明其进程树、容器及外部 reader 已退出。其他成员的在途共享图像必须独立确认释放。
 - SDK 仅依赖 NumPy 与 posix-ipc，不引入 ROS/TUI/模型框架。

@@ -1,4 +1,4 @@
-"""Mounted-source RC 3.10 + workers 3.11/3.14; task-owned mock deployment only."""
+"""Mounted-source RC 3.14t + workers 3.11/3.14; task-owned mock deployment only."""
 from config_helpers import read_config
 from source_helpers import configure_connector
 import json
@@ -58,7 +58,7 @@ def container():
     from robot_control.cli import shutdown_signals
     from robot_control.global_state_file import read_state
     from robot_control.mcp_server import MCPService
-    assert sys.version_info[:2] == (3, 10)
+    assert sys.version_info[:2] == (3, 14) and not sys._is_gil_enabled()
     import rc_policy_sdk
     assert rc_policy_sdk.__file__.startswith('/workspace/packages/policy-sdk/src/')
     import robot_control
@@ -93,7 +93,7 @@ def container():
         assert command('policy a-1 info')['data']['a_0_message']['text'] == '跨容器 hello'
         command('policy b write')
         assert command('policy a-0 info')['data']['b_message']['text'] == '跨容器 hello'
-        outcomes.append('source 3.10 RC / 3.14 a-0,a-1 / 3.11 b: three independent initializations and mutually visible globals')
+        outcomes.append('source 3.14t RC / 3.14 a-0,a-1 / 3.11 b: three independent initializations and mutually visible globals')
         command('resume')
         wait(lambda: all(controller.globals.get(name+'_inferences', 0) > 0 for name in ('a_0', 'b', 'a_1')))
         command('pause')

@@ -14,7 +14,7 @@ import time
 import uuid
 import zlib
 
-import posix_ipc
+from . import posix_shm
 
 PROTOCOL_VERSION = 1
 MAX_BYTES = 3 * 1024 * 1024
@@ -103,7 +103,7 @@ class SharedState:
         segment = mapping = None
         try:
             size = _IDENTITY.size + 2 * (_SLOT.size + max_bytes)
-            segment = posix_ipc.SharedMemory(descriptor['shm_name'], flags=posix_ipc.O_CREX, size=size, mode=0o600)
+            segment = posix_shm.create(descriptor['shm_name'], size)
             if hasattr(os, 'posix_fallocate'):
                 os.posix_fallocate(segment.fd, 0, size)
             mapping = mmap.mmap(segment.fd, size, access=mmap.ACCESS_WRITE)
@@ -136,7 +136,7 @@ class SharedState:
         timeout = descriptor.get('timeout_s')
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError('invalid global state timeout')
-        segment = posix_ipc.SharedMemory(descriptor['shm_name'], read_only=True)
+        segment = posix_shm.open_readonly(descriptor['shm_name'])
         mapping = None
         lock_fd = None
         try:
@@ -222,7 +222,7 @@ class SharedState:
             if unlink and self.owner:
                 try:
                     self.segment.unlink()
-                except posix_ipc.ExistentialError:
+                except posix_shm.MissingSegment:
                     pass
                 Path(self.descriptor['lock_path']).unlink(missing_ok=True)
 

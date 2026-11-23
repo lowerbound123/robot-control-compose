@@ -7,16 +7,16 @@ name = "robot-control"
 version = "0.18.0"
 description = "Terminal robot control with isolated policy workers"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = [
-  "numpy>=1.26,<3",
+  "numpy>=2.3,<3",
   "ruamel.yaml==0.19.1",
-  "Pillow>=10.3.0",
+  "Pillow>=13,<14",
   "textual>=8.2.8,<9",
   "textual-image[textual]==0.8.5",
   "rc-policy-sdk>=0.18.0",
   "rc-connector-sdk>=0.1.0",
-  "scipy>=1.10",
+  "scipy>=1.16.1,<2",
   "mcp>=2.3,<3",
   "starlette>=0.46,<2",
   "uvicorn>=0.34,<1",

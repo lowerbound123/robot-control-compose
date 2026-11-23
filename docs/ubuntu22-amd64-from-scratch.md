@@ -1,6 +1,6 @@
 # Ubuntu 22.04 amd64 部署
 
-部署使用本地 Linux Docker daemon，RC 和 mock connector 使用无 ROS 的 Python 3.10 镜像，ACOne connector 独立运行 ROS 2 Humble / Python 3.10。宿主需要 Python 3.9 或更高版本，安装 YAML 依赖所用的 pip 由 Ubuntu 的 `python3-pip` 包提供。厂商硬件驱动由操作者独立启动和验收。
+部署使用本地 Linux Docker daemon。RC 使用无 ROS 的自由线程 CPython 3.14t，mock connector 使用 Python 3.10，ACOne connector 独立运行 ROS 2 Humble / Python 3.10。宿主需要 Python 3.9 或更高版本，安装 YAML 依赖所用的 pip 由 Ubuntu 的 `python3-pip` 包提供。厂商硬件驱动由操作者独立启动和验收。
 
 1. 按 [Docker 官方 Ubuntu 安装文档](https://docs.docker.com/engine/install/ubuntu/) 安装 Docker Engine 与 Compose 插件。让日常用户能够访问 Unix socket，重新登录后验证 docker info；不要把 socket chmod 为 666。
 2. 将仓库放到稳定路径，在项目根目录用普通用户运行 `python3 -m pip install --require-hashes --only-binary=:all: -r requirements/setup.lock`，为宿主 Python 安装 YAML 依赖。再运行 `./setup.sh --config-only`，确认 configs、policy、outputs、snapshot 可由此用户读写。

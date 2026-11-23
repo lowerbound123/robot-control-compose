@@ -1,11 +1,12 @@
 """Independent recorder acceptance with changing RGB, a real SDK host and local HTTP.
 
-Run with --docker-image for a uniquely labelled, network-isolated container, or
-with the current interpreter. No live provider, ROS driver or robot is contacted.
+Run with --docker-image for a network-isolated RC, or use the current interpreter
+for mock tests. --ros adds an independent ACOne simulator and connector fixture.
 """
 import argparse
 import base64
 import csv
+from contextlib import contextmanager, nullcontext
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -15,7 +16,6 @@ import os
 from pathlib import Path
 import platform
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -112,9 +112,52 @@ def source_hashes():
     return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in names}
 
 
-def docker_run(args, evidence):
-    """Only the uniquely named container created here may be removed."""
+@contextmanager
+def ros_docker_fixture(args, evidence, source, run_label):
+    """Run the simulator and ACOne on private loopback. RC only shares their IPC."""
     deployment = args.deployment_id
+    namespace = '/recording_acceptance/run_' + deployment
+    endpoint = '/dev/shm/record-' + deployment
+    (evidence / 'ros-simulator.py').write_text(ROS_SOURCE)
+    dump(evidence / 'ros-device.json', ros_device(namespace))
+    image = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', args.ros_image],
+                                    text=True).strip()
+    container = subprocess.check_output([
+        'docker', 'run', '-d', '--pull=never', '--name', 'rc-record-ros-' + deployment,
+        '--label', 'io.robot-control.deployment=' + deployment, '--label', run_label, '--network', 'none',
+        '--ipc', 'shareable', '--shm-size', '512m', '--read-only', '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges', '--user', f'{os.getuid()}:{os.getgid()}',
+        '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m', '-e', 'HOME=/tmp', '-e', 'ROS_LOG_DIR=/tmp/ros',
+        '-e', 'ROS_LOCALHOST_ONLY=1', '-e', 'ROS_DOMAIN_ID=' + str(10 + int(deployment[:2], 36) % 190),
+        '-e', 'PYTHONDONTWRITEBYTECODE=1',
+        '-e', 'PYTHONPATH=/workspace/packages/connector-sdk/src:/workspace/ros_ws/src/robot_control_test_sim',
+        '--mount', f'type=bind,source={source},target=/workspace,readonly',
+        '--mount', f'type=bind,source={evidence},target=/evidence', image,
+        '/bin/sh', '-c', 'exec "$@" > /evidence/ros-simulator.log 2>&1', '--',
+        'python3', '-u', '/evidence/ros-simulator.py', namespace, str(args.width), str(args.height)
+    ], text=True).strip()
+    connector = None
+    try:
+        with (evidence / 'acone.log').open('w') as log:
+            connector = subprocess.Popen([
+                'docker', 'exec', container, '/bin/bash', '/connector-entrypoint.sh', 'python3', '-m', 'rc_connector_sdk',
+                '--source', '/workspace/connector/acone/main.py', '--socket', endpoint,
+                '--config-file', '/evidence/ros-device.json', '--instance-id', 'body'
+            ], stdout=log, stderr=subprocess.STDOUT)
+            yield container, endpoint, image
+            if connector.wait(timeout=8):
+                raise RuntimeError('ACOne exited abnormally; see acone.log')
+    finally:
+        subprocess.run(['docker', 'stop', '-t', '5', container], check=True, stdout=subprocess.DEVNULL)
+        if connector is not None:
+            connector.wait(timeout=8)
+        subprocess.run(['docker', 'rm', container], check=True, stdout=subprocess.DEVNULL)
+
+
+def docker_run(args, evidence):
+    """Only this deployment's test containers may be removed."""
+    deployment = args.deployment_id
+    run_label = 'io.robot-control.recording-run=' + uuid.uuid4().hex
     source = evidence / 'source'
     for name in ('src', 'packages/policy-sdk/src', 'packages/connector-sdk/src', 'ros_ws/src/robot_control_test_sim'):
         shutil.copytree(ROOT / name, source / name,
@@ -129,24 +172,17 @@ def docker_run(args, evidence):
     image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', args.docker_image], text=True))[0]
     name = 'rc-record-' + deployment
     command = ['docker', 'run', '--rm', '--pull=never', '--name', name,
-               '--label', 'io.robot-control.deployment=' + deployment,
+               '--label', 'io.robot-control.deployment=' + deployment, '--label', run_label,
                '--label', 'io.robot-control.acceptance=recording', '--network', 'none',
                '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-               '--user', f'{os.getuid()}:{os.getgid()}', '--shm-size', '512m',
+               '--user', f'{os.getuid()}:{os.getgid()}',
                '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
                '--mount', f'type=bind,source={source},target=/workspace,readonly',
                '--mount', f'type=bind,source={evidence},target=/evidence',
                '--workdir', '/workspace', '--env', 'PYTHONDONTWRITEBYTECODE=1',
                '--env', 'HOME=/tmp',
-               '--env', 'PYTHONPATH=/workspace/src:/workspace/tests:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src:/workspace/ros_ws/src/robot_control_test_sim']
-    if args.ros:
-        command += ['--env', 'ROS_LOCALHOST_ONLY=1', '--env', 'ROS_DOMAIN_ID=' + str(10 + int(deployment[:2], 36) % 190),
-                    '--entrypoint', '/bin/bash', args.docker_image, '-lc',
-                    'source /opt/ros/humble/setup.bash && source /opt/rc_ros_ws/install/setup.bash && exec "$@"',
-                    '--', 'python3']
-    else:
-        command += ['--entrypoint', 'python3', args.docker_image]
-    command += [
+               '--env', 'PYTHONPATH=/workspace/src:/workspace/tests:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src']
+    arguments = [
                '/workspace/tests/manual/recording_acceptance.py',
                '--evidence', '/evidence', '--deployment-id', deployment,
                '--duration', str(args.duration), '--width', str(args.width), '--height', str(args.height),
@@ -154,14 +190,19 @@ def docker_run(args, evidence):
                '--model-delay', str(args.model_delay), '--max-gap-ratio', str(args.max_gap_ratio),
                '--sample-budget-mib', str(args.sample_budget_mib), '--pattern', args.pattern]
     if args.smoke:
-        command.append('--smoke')
-    if args.ros:
-        command.append('--ros')
-    dump(evidence / 'deployment.json', {'deployment_id': deployment, 'container_name': name,
-         'image': args.docker_image, 'image_id': image['Id'], 'network': 'none', 'command': command})
+        arguments.append('--smoke')
     code = 1
     try:
-        with (evidence / 'container.log').open('w', encoding='utf-8') as log:
+        fixture = ros_docker_fixture(args, evidence, source, run_label) if args.ros else nullcontext((None, None, None))
+        with fixture as ros, (evidence / 'container.log').open('w', encoding='utf-8') as log:
+            ros_container, endpoint, ros_image = ros
+            command += ['--ipc', 'container:' + ros_container] if ros_container else ['--shm-size', '512m']
+            command += ['--entrypoint', 'python3', image['Id'], *arguments]
+            if endpoint:
+                command += ['--ros', '--ros-endpoint', endpoint]
+            dump(evidence / 'deployment.json', {'deployment_id': deployment, 'container_name': name,
+                 'image': args.docker_image, 'image_id': image['Id'], 'network': 'none', 'command': command,
+                 'ros_image_id': ros_image})
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
             try:
                 code = process.wait(timeout=args.duration + 120)
@@ -171,12 +212,12 @@ def docker_run(args, evidence):
                 raise RuntimeError('acceptance container exceeded its absolute deadline')
     finally:
         owned = subprocess.check_output(['docker', 'ps', '-aq', '--filter',
-                  'label=io.robot-control.deployment=' + deployment], text=True).split()
+                  'label=' + run_label], text=True).split()
         if owned:
             subprocess.run(['docker', 'rm', '-f', *owned], check=True, stdout=subprocess.DEVNULL)
             code = 1
         remaining = subprocess.check_output(['docker', 'ps', '-aq', '--filter',
-                      'label=io.robot-control.deployment=' + deployment], text=True).split()
+                      'label=' + run_label], text=True).split()
         dump(evidence / 'teardown.json', {'deployment_id': deployment, 'containers_remaining': remaining,
                                         'forced_container_removal': bool(owned)})
         if remaining:
@@ -267,25 +308,21 @@ def make_robot(args, evidence):
                       'pattern': args.pattern}, directory)
 
 
-def make_ros_robot(args, evidence):
-    os.environ['ROS_LOCALHOST_ONLY'] = '1'
-    os.environ['ROS_LOG_DIR'] = str(evidence / 'ros-logs')
-    os.environ.setdefault('ROS_DOMAIN_ID', str(10 + int(args.deployment_id[:2], 36) % 190))
-    namespace = '/recording_acceptance/run_' + args.deployment_id
+def ros_device(namespace):
     topic = lambda suffix: namespace + '/' + suffix
-    source = evidence / 'ros-simulator.py'
-    source.write_text(ROS_SOURCE)
-    log = (evidence / 'ros-simulator.log').open('w', encoding='utf-8')
-    process = subprocess.Popen([sys.executable, str(source), namespace, str(args.width), str(args.height)],
-        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    robot = make_proxy(evidence, 'acone', {'namespace': namespace, 'message_type': 'robot_control_test_msgs/msg/ArmState',
+    return {'namespace': namespace, 'message_type': 'robot_control_test_msgs/msg/ArmState',
         'command_message_type': 'robot_control_test_msgs/msg/ArmCommand',
         'feedback_left_topic': topic('feedback/left'), 'feedback_right_topic': topic('feedback/right'),
         'command_left_topic': topic('command/left'), 'command_right_topic': topic('command/right'),
         'camera_topics': {camera: topic('camera/' + camera + '/compressed') for camera in CAMERAS},
-        'connect_timeout_s': 15., 'feedback_timeout_s': 1., 'camera_timeout_s': 1.})
+        'connect_timeout_s': 15., 'feedback_timeout_s': 1., 'camera_timeout_s': 1.}
+
+
+def make_ros_robot(args, evidence):
+    robot = make_proxy(evidence, 'acone', ros_device('/recording_acceptance/run_' + args.deployment_id))
     try:
-        robot.connect()
+        robot.prepare()
+        robot._connect_endpoint(args.ros_endpoint, time.monotonic() + 20, threading.Event())
         deadline = time.monotonic() + 5
         while len(robot.recording_snapshot()['frames']) != 3:
             if time.monotonic() >= deadline:
@@ -293,9 +330,8 @@ def make_ros_robot(args, evidence):
             time.sleep(.01)
     except BaseException:
         robot.close()
-        os.killpg(process.pid, signal.SIGTERM); process.wait(5); log.close()
         raise
-    return robot, process, log
+    return robot
 
 
 def model_server(args):
@@ -493,10 +529,9 @@ def run_local(args, evidence):
     from rc_policy_sdk.images import ImagePool
     from robot_control.recording import RecordingService
     from robot_control.scheduling import prepare_control_threads
-    prepare_control_threads()  # Match the RC interpreter setup used in production.
-    simulator = simulator_log = None
+    gil_enabled = prepare_control_threads()
     if args.ros:
-        robot, simulator, simulator_log = make_ros_robot(args, evidence)
+        robot = make_ros_robot(args, evidence)
     else:
         robot = make_robot(args, evidence)
         robot.connect()
@@ -506,7 +541,8 @@ def run_local(args, evidence):
         on_error=recorder_errors.append, sample_budget=args.sample_budget_mib * 1024 * 1024)
     server = server_thread = worker = host = host_log = temporary = pool = lease = None
     report = {'deployment_id': args.deployment_id, 'mode': 'smoke' if args.smoke else 'acceptance',
-              'platform': platform.platform(), 'python': sys.version, 'source_sha256': source_hashes(),
+              'platform': platform.platform(), 'python': sys.version, 'gil_enabled': gil_enabled,
+              'source_sha256': source_hashes(),
               'requested_duration_s': args.duration, 'width': args.width, 'height': args.height,
               'pattern': 'ros-static-png' if args.ros else args.pattern, 'robot_connector': 'acone_ros' if args.ros else 'mock',
               'camera_hz': 30, 'control_hz': args.control_hz,
@@ -653,13 +689,7 @@ def run_local(args, evidence):
             temporary.cleanup()
         forced.append(bool(recorder.shutdown(time.monotonic() + 35)))
         robot.close()
-        if simulator is not None:
-            os.killpg(simulator.pid, signal.SIGTERM)
-            try:
-                simulator.wait(5)
-            except subprocess.TimeoutExpired:
-                os.killpg(simulator.pid, signal.SIGKILL); simulator.wait(2); forced.append(True)
-            simulator_log.close()
+        if args.ros:
             received = []
             for line in (evidence / 'ros-simulator.log').read_text().splitlines():
                 if line.startswith('{'):
@@ -700,8 +730,13 @@ def main():
     parser.add_argument('--deployment-id', default=uuid.uuid4().hex[:16])
     parser.add_argument('--docker-image', help='existing RC test image; no image pulls or builds')
     parser.add_argument('--ros', action='store_true', help='use real ACOne ROS transport and the test simulator')
+    parser.add_argument('--ros-image', default='robot-control-compose-acone-connector:local',
+                        help='existing ACOne runtime image used with --docker-image --ros')
+    parser.add_argument('--ros-endpoint', help=argparse.SUPPRESS)
     parser.add_argument('--smoke', action='store_true', help='allow durations below 60 seconds, reported only as smoke')
     args = parser.parse_args()
+    if args.ros and not (args.docker_image or args.ros_endpoint):
+        parser.error('--ros requires --docker-image for the RC runner and --ros-image for the ACOne runtime')
     numbers = (args.duration, args.control_hz, args.model_interval, args.sample_budget_mib)
     if any(not math.isfinite(value) or value <= 0 for value in numbers):
         parser.error('duration, control-hz, model-interval and sample-budget-mib must be positive finite values')

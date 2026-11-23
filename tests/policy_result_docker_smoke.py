@@ -1,4 +1,4 @@
-"""Mounted-source RC 3.10 -> SDK 3.14 acceptance, using only task-owned mock containers.
+"""Mounted-source RC 3.14t -> SDK 3.14 acceptance, using only task-owned mock containers.
 
 Build robot-control-compose-policy-result-tests:local with docker/rc.Dockerfile
 and robot-control-compose-policy-result-worker:local with policy/hold/Dockerfile.
@@ -57,7 +57,7 @@ def container():
     from robot_control.mcp_server import MCPService
     import robot_control
 
-    assert sys.version_info[:2] == (3, 10)
+    assert sys.version_info[:2] == (3, 14) and not sys._is_gil_enabled()
     import robot_control
     assert robot_control.__file__.startswith('/workspace/src/')
     import rc_policy_sdk
@@ -108,7 +108,7 @@ def container():
         assert command('policy a-0 info')['calls'] == 1
         assert command('policy a-1 info')['calls'] == 1
         assert controller.status()['consumed'] == 0
-        outcomes.append('source Py3.10/Py3.14; a-0/b/a-1 uses three containers and independent counters; deferred first-instance result and readonly frames')
+        outcomes.append('source Py3.14t/Py3.14; a-0/b/a-1 uses three containers and independent counters; deferred first-instance result and readonly frames')
 
         gate.unlink()
         result = tool('return_and_wait', timeout_s=0).structured_content

@@ -326,19 +326,7 @@ Linux / OrbStack arm64、三路 640×480、开启录制时，各测量约 30 秒
 
 **example 基线的证据**来自 [策略回调](../tests/test_example_policy.py)、[真实 worker 和重复实例](../tests/test_example_worker.py)、[RC/TUI/MCP 闭环](../tests/test_example_controller.py)、[独立外部读者](../tests/test_example_reader.py) 和 [ROS 仿真](../tests/test_example_ros.py)。它覆盖 sync/async、qpos/epos/mixed、慢推理缓存、观测/图像、监控、录制/快照、姿态存取、配置、全局状态、暂停/完成/终止/故障与控制权。RC 故障注入、部分发布、超时清理等专项仍保留原有单测。
 
-容器生命周期、IPC 或部署改动时，在默认基线之外运行 `./setup.sh --policies example` 和 `python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence`。该脚本不需要 hold 或其他策略。ROS 缺失时相应测试会跳过；在已 source Humble/ros_ws 的环境用同一入口即可执行。RC 镜像不再包含 ROS，可以使用 ACOne connector 的测试镜像跑 ROS 用例，无须在宿主安装 ROS：
-
-```bash
-docker build -f connector/acone/Dockerfile --target test -t rc-example-tests:local .
-docker run --rm --network none --shm-size=512m --user "$(id -u):$(id -g)" \
-  --workdir /workspace --mount "type=bind,source=$PWD,target=/workspace,readonly" \
-  -e HOME=/tmp -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 -e 'PYTEST_ADDOPTS=-p no:cacheprovider' \
-  -e PYTHONPATH=/workspace/src:/workspace/packages/policy-sdk/src:/workspace/packages/connector-sdk/src \
-  -e 'RC_SOURCE_MODULES={"robot_control":"/workspace/src","rc_policy_sdk":"/workspace/packages/policy-sdk/src"}' \
-  rc-example-tests:local python3 scripts/test_scope.py
-```
-
-跨容器 ROS 验收使用 `python3 tests/example_docker_smoke.py --ros --evidence-dir /tmp/connector-ros`：RC 镜像必须无 rclpy，ACOne connector 与模拟器分别运行在独立容器中，共享 anchor IPC 并使用隔离的 namespace/domain。详情见 [connector 说明](connectors.md)。
+容器生命周期、IPC 或部署改动的独立 example 验收使用 `python3 tests/example_docker_smoke.py --evidence-dir /tmp/example-evidence`。跨容器 ROS 仿真使用 `python3 tests/example_docker_smoke.py --ros --evidence-dir /tmp/connector-ros`。RC 在自己的镜像中运行，ACOne connector 和模拟器使用 ACOne 的 runtime 镜像，运行在独立容器中，通过隔离的 namespace/domain 通信并共享 anchor IPC。准备镜像与设备配置见 [connector 说明](connectors.md)。
 
 ### 0.13 同进程重初始化、实例与整链重载
 

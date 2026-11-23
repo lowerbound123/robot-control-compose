@@ -1,10 +1,12 @@
-numpy==1.26.4
+numpy>=2.3,<3
+# The local connector subprocess uses this extension. RC uses CPython's shm_open.
 posix-ipc==1.3.2
-Pillow>=10.3.0
-textual>=1.0,<9
+# textual-image 0.8.5 uses Image.getdata, scheduled for removal in Pillow 14.
+Pillow>=13,<14
+textual>=8.2.8,<9
 textual-image[textual]==0.8.5
-scipy>=1.10
-mcp==2.3.0
-starlette>=0.46,<2
+scipy>=1.16.1,<2
+mcp>=2.3,<3
+starlette>=1,<2
 uvicorn>=0.34,<1
 ruamel.yaml==0.19.1

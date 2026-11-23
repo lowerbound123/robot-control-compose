@@ -2,8 +2,10 @@ services:
   connector:
     image: robot-control-compose-acone-connector:local
     build:
-      context: ../..
-      dockerfile: connector/acone/Dockerfile
+      context: .
+      additional_contexts:
+        arx-msg: ../../ros_ws/src/arx5_arm_msg
+        test-msg: ../../ros_ws/src/robot_control_test_msgs
       target: runtime
     network_mode: host
     environment:

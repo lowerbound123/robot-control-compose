@@ -4,10 +4,11 @@ import math
 
 
 def prepare_control_threads():
-    # RC owns this interpreter. Its socket/cache/serialization threads must
-    # yield often enough for the 30 Hz controller and 30 Hz recorder. This
-    # bounds the ideal CPython timeslice, not OS scheduling or native calls.
-    sys.setswitchinterval(min(sys.getswitchinterval(), .001))
+    """Tune the GIL timeslice only when the interpreter actually uses it."""
+    gil_enabled = sys._is_gil_enabled()
+    if gil_enabled:
+        sys.setswitchinterval(min(sys.getswitchinterval(), .001))
+    return gil_enabled
 
 
 class ControlSchedule:

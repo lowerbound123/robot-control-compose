@@ -496,7 +496,7 @@ class ComposeRuntimeManager(ConnectorRuntime):
         # otherwise survive SIGKILL when the shareable anchor is kept alive.
         import mmap
         import re
-        import posix_ipc
+        from rc_policy_sdk import posix_shm
         from rc_policy_sdk.images import _HEADER
         from .external import ExternalResources
         for path,data in self.pool_records():
@@ -518,7 +518,7 @@ class ComposeRuntimeManager(ConnectorRuntime):
                 remaining(deadline)
                 if not re.fullmatch('rc'+data['pool_id']+r'[0-9a-f]{10}',entry.name):
                     continue
-                segment=posix_ipc.SharedMemory('/'+entry.name,read_only=True)
+                segment=posix_shm.open_readonly('/'+entry.name)
                 try:
                     if segment.size<_HEADER.size:
                         raise BlockedCleanup('invalid orphan image segment')
@@ -558,7 +558,7 @@ class ComposeRuntimeManager(ConnectorRuntime):
         return records
 
     def recover_globals(self, deadline):
-        import posix_ipc
+        from rc_policy_sdk import posix_shm
         for path, data in self.global_records():
             remaining(deadline)
             if data['anchor_id'] != self.anchor_id or data.get('anchor_epoch') != self.anchor_epoch:
@@ -568,8 +568,8 @@ class ComposeRuntimeManager(ConnectorRuntime):
                 continue
             # Caller has already proved every old worker/container has exited.
             try:
-                posix_ipc.unlink_shared_memory('/rcg' + data['store_id'])
-            except posix_ipc.ExistentialError:
+                posix_shm.unlink('/rcg' + data['store_id'])
+            except posix_shm.MissingSegment:
                 pass
             Path(data['lock_path']).unlink(missing_ok=True)
             path.unlink()

@@ -2,10 +2,10 @@ import sys
 import time
 
 import numpy as np
-import posix_ipc
 import pytest
 
 from rc_policy_sdk.images import ImagePool, map_images
+from rc_policy_sdk.posix_shm import MissingSegment
 from host_helpers import LocalPolicyProcess as PolicyProcess
 
 
@@ -26,7 +26,7 @@ def test_retained_descriptor_pins_exact_frame(tmp_path):
         pool.close()
     # Reclaiming the pinned segment must invalidate stale descriptors instead of
     # leaking the shared-memory object.
-    with pytest.raises(posix_ipc.Error):
+    with pytest.raises(MissingSegment):
         with map_images(descriptors):
             pass
 

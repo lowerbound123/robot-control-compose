@@ -199,7 +199,7 @@ class ExternalResources:
     def _reclaim_segments(descriptors, deadline=None):
         import mmap
         import re
-        import posix_ipc
+        from rc_policy_sdk import posix_shm
         from rc_policy_sdk.images import _HEADER, MAX_IMAGE_BYTES
         opened = []
         try:
@@ -223,8 +223,8 @@ class ExternalResources:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise TimeoutError('image recovery deadline exceeded')
                 try:
-                    segment = posix_ipc.SharedMemory(name, read_only=True)
-                except posix_ipc.ExistentialError:
+                    segment = posix_shm.open_readonly(name)
+                except posix_shm.MissingSegment:
                     continue
                 opened.append(segment)
                 if segment.size < _HEADER.size + identity[0]:
@@ -234,7 +234,7 @@ class ExternalResources:
                         raise RuntimeError('recovered frame mismatch; rebuild IPC namespace')
             for segment in opened:
                 try: segment.unlink()
-                except posix_ipc.ExistentialError: pass
+                except posix_shm.MissingSegment: pass
         finally:
             for segment in opened:
                 segment.close_fd()

@@ -24,6 +24,13 @@ def test_only_acone_image_contains_ros():
     assert 'FROM ros:' not in rc and 'ros-humble-' not in rc
     assert 'FROM ros:' not in mock
     assert 'FROM ros:humble-' in acone
+    assert [line.split()[1] for line in acone.splitlines() if line.startswith('COPY ') and '.lock' in line] == [
+        'requirements.lock']
+    from test_setup_dynamic import read_compose
+    build = read_compose(ROOT / 'connector/acone/compose.yaml')['services']['connector']['build']
+    assert build['context'] == '.'
+    assert set(build['additional_contexts'].values()) == {
+        '../../ros_ws/src/arx5_arm_msg', '../../ros_ws/src/robot_control_test_msgs'}
     assert '/opt/ros/' not in (ROOT / 'docker/rc-entrypoint.sh').read_text()
 
 

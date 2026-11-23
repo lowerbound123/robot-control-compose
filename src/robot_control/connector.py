@@ -16,7 +16,7 @@ import numpy as np
 
 from rc_connector_sdk.actions import arm_targets
 from rc_connector_sdk.client import ConnectorClient
-from rc_connector_sdk.images import map_images
+from rc_policy_sdk.images import map_images
 from rc_policy_sdk.performance import trace
 from .yaml_config import load_yaml_config
 from .safety_config import device_reset_qpos, safety_settings
@@ -141,6 +141,10 @@ class ConnectorRobot:
                 '--instance-id', self.instance_id, '--config-json', json.dumps(self.config),
                 '--journal', self._temporary.name + '/pool.json', *(['--debug-timing'] if self._debug_ros_timing else [])],
                 env=env, start_new_session=True)
+        self._connect_endpoint(endpoint, deadline, cancel_event)
+
+    def _connect_endpoint(self, endpoint, deadline, cancel_event):
+        """Attach the RC client and sampler after the connector has been launched."""
         try:
             while not Path(endpoint + '.ready').exists():
                 if cancel_event.is_set() or time.monotonic() >= deadline:

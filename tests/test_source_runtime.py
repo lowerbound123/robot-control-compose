@@ -36,7 +36,9 @@ def test_base_and_simulator_mount_source_readonly():
     assert '/workspace/src' in services['robot-control']['environment']['PYTHONPATH']
     assert services['robot-control']['environment']['PYTHONPYCACHEPREFIX'].startswith('/tmp/')
     sim = read_compose(ROOT / 'compose.yaml', ROOT / 'compose.ros-sim.yaml')['services']['ros-sim']
-    assert any(m['target'] == '/workspace/ros_ws/src/robot_control_test_sim' and m['read_only'] for m in sim['volumes'])
+    simulator_source = '/workspace/ros_ws/src/robot_control_test_sim'
+    assert sim['environment']['PYTHONPATH'] == simulator_source
+    assert [(m['target'], m['read_only']) for m in sim['volumes']] == [(simulator_source, True)]
 
 
 @pytest.mark.parametrize('identity,module', [('qwen35_single','rc_qwen35_policy'), ('qwen35_twostage','rc_qwen35_twostage'),

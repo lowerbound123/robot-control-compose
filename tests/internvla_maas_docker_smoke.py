@@ -61,7 +61,7 @@ def container():
             assert obs['images']['front'][112, 112, 0] == 1
             assert all(frame.shape == (224, 224, 3) for frame in obs['images'].values())
             assert obs['state']['joint_pos'].shape == (14,)
-            report['checks'].append('Python3.10 RC to Python3.11 policy; binary MaaS handshake, 224x224 letterboxed RGB, state and action consumption')
+            report['checks'].append('RC to Python3.11 policy; binary MaaS handshake, 224x224 letterboxed RGB, state and action consumption')
 
             command('policy internvla_maas switch-model alternate.json')
             current = controller._worker
