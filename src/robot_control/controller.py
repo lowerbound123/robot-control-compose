@@ -148,6 +148,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         self._init_policy_commands()
         self._init_chain_editor()
         self._init_globals()
+        self._control_loop_id = 0
+        self._loop_trace = None
         self._init_recording()
         self._performance = PerformanceLogger(self.config['logging']['level'], self.run_id, ingress=self._recorder)
         self._recorder.performance = self._performance if self._performance.enabled else None
@@ -246,6 +248,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                 self._recorder.start()
                 self._manager = threading.Thread(target=self._manager_loop, name="rc-lifecycle", daemon=False)
                 self._thread = threading.Thread(target=self._control_loop, name="rc-control", daemon=False)
+                self._recorder.bind_control_thread(self._thread)
                 self._external.start()
                 self._manager.start()
                 self._thread.start()
@@ -1468,6 +1471,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             else:
                 self._emit(f"policy {source} 请求 {request['id']} 暂停：{control['reason']}；保持当前目标，等待 resume")
             return
+        if self._loop_trace:
+            self._loop_trace.mark('rc.buffer_accept_begin', request_id=request['id'])
+        if perf: perf.mark('rc.buffer_accept_begin')
         if chunk.clipped is None:
             accepted = self.buffer.accept(request['token'], chunk)
         else:
@@ -1484,6 +1490,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     raise ValueError('stale action annotation owner')
                 owner = (identity, source['context_id'])
             accepted = self.buffer.accept(request['token'], chunk, owner=owner)
+        if self._loop_trace:
+            self._loop_trace.mark('rc.buffer_accepted', request_id=request['id'])
+        if perf: perf.mark('rc.buffer_accepted')
         self._needs_request = not accepted and self.buffer.submission_state() == 'empty'
         self._last_action_request = ActionRequestSnapshot(
             request['id'], request['token'].generation, self.buffer.last_trim, len(self.buffer.remaining()))
@@ -1496,6 +1505,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
 
     def _snapshot(self):
         perf = self._performance.trace('snapshot')
+        if self._loop_trace: self._loop_trace.mark('rc.snapshot_begin')
         if perf: perf.mark('rc.snapshot_begin')
         observation = self.robot.read_state()
         images = self.robot.read_images()
@@ -1521,7 +1531,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             stats[identity] = {'context_id': context_id, **self.buffer.clip_stats(owner)}
         self.buffer.retain_clip_stats(owners)
         runtime['action_stats'] = stats
+        if self._loop_trace: self._loop_trace.mark('rc.observation_handoff_begin')
+        if perf: perf.mark('rc.observation_handoff_begin')
         self._recorder.observation(runtime['observation_id'], observation, recording_images, descriptors=lease.descriptors)
+        if self._loop_trace: self._loop_trace.mark('rc.observation_handoff_end')
         if perf:
             perf.mark('rc.snapshot_recorded')
             self._performance.emit('rc.snapshot', trace=perf, observation_id=runtime['observation_id'],
@@ -1715,7 +1728,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         attempt = self._recorder.control_attempt({'requested':target, 'limited':command,
             'mode':mode, 'owner':self.control_owner, 'generation':self.buffer.generation,
             'is_hold':is_hold, 'hold_reason':hold_reason})
-        if perf: perf.mark('rc.attempt_recorded')
+        if perf:
+            self._loop_attempt = attempt
+            perf.mark('rc.attempt_recorded', loop_id=self._control_loop_id, attempt_id=attempt)
         try:
             if mode == "qpos":
                 identity = self.robot.execute(command)
@@ -1752,7 +1767,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         attempt = self._recorder.control_attempt({'requested':targets, 'limited':commands,
             'owner':self.control_owner, 'generation':self.buffer.generation,
             'is_hold':is_hold, 'hold_reason':hold_reason})
-        if perf: perf.mark('rc.attempt_recorded')
+        if perf:
+            self._loop_attempt = attempt
+            perf.mark('rc.attempt_recorded', loop_id=self._control_loop_id, attempt_id=attempt)
         try:
             identity = self.robot.execute_arms(commands)
             self._last_send_at = time.monotonic()
@@ -1986,6 +2003,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         period = 1 / self.config["frequency_hz"]
         schedule = ControlSchedule(period, time.monotonic())
         wake_reason = 'startup'
+        wait_setup_ns = wait_started_ns = wait_returned_ns = wake_deadline_ns = 0
         while not self.done.is_set():
             # Queue producers publish data before setting _wake. Clear before
             # inspecting those queues, never after wait returns.
@@ -1993,8 +2011,15 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             deadline = schedule.deadline(self._last_send_at)
             skipped_periods = 0
             perf = self._performance.trace('loop')
-            if perf: perf.mark('rc.loop_begin', scheduled_ns=int(deadline*1e9),
-                               nominal_deadline_ns=int(schedule.nominal*1e9))
+            self._loop_trace = perf
+            if perf:
+                self._control_loop_id += 1
+                self._loop_attempt = None
+                perf.mark('rc.loop_begin', loop_id=self._control_loop_id, scheduled_ns=int(deadline*1e9),
+                          nominal_deadline_ns=int(schedule.nominal*1e9), wait_setup_ns=wait_setup_ns,
+                          wait_started_ns=wait_started_ns, wait_returned_ns=wait_returned_ns,
+                          wake_deadline_ns=wake_deadline_ns)
+
             with self._lock:
                 if perf: perf.mark('rc.loop_lock_acquired')
                 try:
@@ -2005,6 +2030,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         urgent = None
                     if urgent:
                         self._dispatch(urgent)
+                    if perf: perf.mark('rc.publications_begin')
                     target_published = self._collect_publications()
                     if perf: perf.mark('rc.publications_collected')
                     self._poll_policy_commands()
@@ -2014,6 +2040,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         break
                     self._clear_finished_lease()
                     self._collect_observation()
+                    if perf: perf.mark('rc.observation_collected')
                     self._collect_prediction()
                     if perf: perf.mark('rc.prediction_collected')
                     self._launch_deferred()
@@ -2031,6 +2058,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                             self._dispatch(command)
                     if perf: perf.mark('rc.before_tick')
                     now = time.monotonic()
+                    if perf: perf.mark('rc.tick_decision', due=int(now >= deadline))
                     if now >= deadline:
                         self._tick()
                         skipped_periods = schedule.advance(time.monotonic())
@@ -2042,6 +2070,7 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                         next_deadline_ns=int(schedule.deadline(self._last_send_at)*1e9),
                         nominal_deadline_ns=int(schedule.nominal*1e9), skipped_periods=skipped_periods)
                 except Exception as exc:
+                    if perf: perf.mark('rc.loop_error', error_type=type(exc).__name__)
                     self._cancel_direct(f"control failure: {exc}")
                     self._pause("fault", cancel_wait=False)
                     self._emit(f"控制错误：{exc}", "error")
@@ -2052,9 +2081,13 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
                     self._fail_policy_wait(exc)
                     schedule = ControlSchedule(period, time.monotonic()+period)
             if perf:
-                self._performance.emit('rc.loop', trace=perf, state=self._state,
+                self._loop_trace = None
+                perf.mark('rc.loop_lock_released')
+                self._performance.emit('rc.loop', trace=perf, state=self._state, loop_id=self._control_loop_id,
+                                       attempt_id=self._loop_attempt,
                                        generation=self.buffer.generation, in_flight=self._inflight is not None,
                                        consumed_actions=self.buffer.consumed, wake_reason=wake_reason)
+                wait_setup_ns = time.monotonic_ns()
             deadline = schedule.deadline(self._last_send_at)
             pending_worker = (self._inflight or {}).get('worker')
             # A prepared context handoff waits for an actual reader receipt,
@@ -2062,5 +2095,10 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             result_deadline = (None if self._prediction_draining_context(pending_worker)
                                else getattr(pending_worker, 'next_result_deadline', None))
             if result_deadline is not None: deadline = min(deadline, result_deadline)
+            if self._performance.enabled:
+                wake_deadline_ns = int(deadline * 1e9)
+                wait_started_ns = time.monotonic_ns()
             signaled = self._wake.wait(max(0, deadline - time.monotonic()))
-            if self._performance.enabled: wake_reason = 'signal' if signaled else 'deadline'
+            if self._performance.enabled:
+                wait_returned_ns = time.monotonic_ns()
+                wake_reason = 'signal' if signaled else 'deadline'

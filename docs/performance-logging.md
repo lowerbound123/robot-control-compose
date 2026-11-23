@@ -96,19 +96,15 @@ exit
 | `rc.observe_result` | 独立观察回调的通信、执行与链收取；包含历史观察锁和更新耗时 |
 | `rc.send` | 限速、原有 control.attempt 记录、动作提交；用 attempt ID 关联发布回执 |
 | `connector.receipt` | connector 收到命令、FIFO 出队、驱动发布、回执返回、RC observer 交付前后 |
-| `record.enqueue` | 生产线程上的轻量入口总耗时、入口短锁等待、必要元数据快照和额度估算 |
+| `record.enqueue` | 录制入口受理耗时、获取入口锁耗时、元数据复制和额度估算。已交接的记录另有排队时间 |
 | `record.prepare` | 已接收记录等待后台整理的时间，以及后台登记到 writer 队列的耗时 |
 | `record.sample` | 计划/实际采样时刻、采样迟到、缓存读取耗时、missed、逐臂发布引用与 late 标志 |
 
 `worker.policy.duration_ns` 才是 SDK 调用策略函数的耗时；它与原有 `policy.result.elapsed_s` 的跨进程往返口径不同。`worker.normalize` 单列返回动作校验耗时，`worker.images_mapped` / `worker.images_released` 标记共享图像映射与释放边界。
 
-录制隔离后的入口指标带 `timing_version: 2`，与旧版指标区别如下：
+`rc.loop` 按运行分配连续的 `loop_id`。有动作提交的循环带 `attempt_id`，可以关联 `rc.send`、`control.published` 和原始 ROS 发布时间。`rc.loop_begin` 中的 `wait_setup_ns`、`wait_started_ns` 和 `wait_returned_ns` 分别记录上一轮准备等待、进入等待和返回的时刻。对 `wake_reason=deadline` 的轮次，用 `wait_returned_ns - wake_deadline_ns` 计算唤醒迟到量。首轮这些值为零。轮内可定位取得控制锁、开始及结束收回执、收取观测、动作缓存安装、观测录制交接、tick 决策和释放控制锁。缓存安装和观测交接只在实际执行时打点。
 
-- `record.enqueue.duration_ns`：控制／接收线程实际执行入口的总时间；`lock_wait_ns` 只测入口短锁，已不包含录制后台锁。`copy_ns` 和 `estimate_ns` 在共享录制锁外执行，图像不进行像素深拷贝。录制未开启或关闭时提前拒绝的记录可能没有这些分项。
-- `record.prepare.queue_wait_ns`：从入口接收到后台开始整理的等待；`prepare_ns`：整理及登记耗时，均发生在后台。用同一运行中的 `record_sequence` 与入口事件关联。
-- `record.sample.collect_lock_wait_ns`：采样线程取得回执队列的短锁等待；`rc.command_observer_begin/end` 仍测真实回执回调的总耗时。
-
-不要把 `queue_wait_ns` 加到控制线程耗时上，也不要把后台写得更晚当成控制变快。判断修复效果应同时检查入口耗时、策略结果可用时间、RC 收取时间和相邻真实发布时间。
+通过 `record-control-ingress` 交接的 `record.enqueue` 使用 `timing_version: 3`。`handoff_ns` 记录生产方准备交接的单调时间，`handoff_wait_ns` 计到后台开始受理为止。`duration_ns`、`lock_wait_ns`、`copy_ns` 和 `estimate_ns` 均在录制线程测量。采样器等直接受理的记录仍使用版本 2。`record.prepare.queue_wait_ns` 与 `prepare_ns` 描述后续进入 writer 队列的阶段。分析控制线程延迟时使用 `rc.loop` 中对应操作的起止打点。
 
 两个 history 策略还记录 `history.settings_lock`、`history.lock_acquired`、`history.update`、`history.snapshot`、`history.cache` 和 `history.model`。这可以区分缓存返回、历史图像处理、观察线程锁竞争和模型等待。观察回调使用 `history.observe_lock` / `history.observe_update`。
 
@@ -122,9 +118,9 @@ exit
 
 ## 容量和数据完整性
 
-DEBUG 在途记录最多 2048 条，同时占用录制服务原有 64 MiB 附加诊断额度；单次传输诊断最多 128 个时间点。饱和时丢弃可选诊断，`record status.debug_dropped` 累计 DEBUG 丢弃量，`extra_dropped` 包含所有可选记录丢弃。会话内的 `session.jsonl` 或会话外的基础日志用 `diagnostic_gap.count/reasons` 报告缺口，例如 `debug_capacity`、`debug_format_failed`、`diagnostic_capacity`。时间点超限仍用 `performance.dropped_points` 报告；分析旧版本时也需检查 `dropped_events`。有缺口时不能用“找不到事件”证明该环节没有执行。
+普通 DEBUG 的后台在途额度为 2048 条，并受录制服务的 64 MiB 附加额度约束。`rc.loop` 和 `rc.send` 共享独立的 256 个交接槽，后台另有最多 512 条、4 MiB 的额度；单次传输诊断最多 128 个时间点。饱和时丢弃可选诊断，`record status.debug_dropped` 累计 DEBUG 丢弃量，`extra_dropped` 包含所有可选记录丢弃。会话内的 `session.jsonl` 或会话外的基础日志用 `diagnostic_gap.count/reasons` 报告缺口，例如 `debug_capacity`、`debug_format_failed`、`diagnostic_capacity`。时间点超限仍用 `performance.dropped_points` 报告；分析旧版本时也需检查 `dropped_events`。有缺口时不能用“找不到事件”证明该环节没有执行。
 
-性能事件不会再次触发 `record.enqueue` 或 `record.prepare`，避免递归放大。RC 的性能日志直接进入有界录制入口，格式化由后台执行，入口不取得 writer／后台锁。普通录制、回执记录及状态查询也使用这个短入口。慢写入和诊断格式化失败不会使动作等待；必需采样或发布历史无法保全时，仅停止本段录制并报告错误。
+控制线程将性能事件交给后台，格式化和 writer 登记均在录制侧执行。`record status` 的 `handoff_pending` 给出交接队列长度。关键诊断自己的交接槽或后台额度耗尽时，分别记录 `control_handoff_loop` 或 `loop_trace_capacity`。核对完整性时请同时检查 `loop_id` 和会话的丢弃计数。
 
 ## 真机对照复测
 

@@ -256,3 +256,91 @@ def test_publication_history_overflow_fails_recording_without_evicting_or_raisin
     # Motion code still gets its attempt identity after recording has failed.
     assert service.control_attempt({'requested': [1.] * 14})
     item.release.set()
+
+
+def test_control_thread_handoff_survives_locked_admission_and_stop(service):
+    """Hold the actual contended lock across all hot producer calls."""
+    import numpy as np
+    logger = PerformanceLogger('DEBUG', 'isolation', ingress=service)
+    pixels = np.zeros((2, 3, 3), np.uint8)
+    pixels.flags.writeable = False
+    def produce():
+        service.bind_control_thread(threading.current_thread())
+        attempt = service.control_attempt({'requested': [0.] * 14})
+        service.sent({'arm': 'left', 'mode': 'qpos', 'values7': [1.] * 7,
+                      'attempt_id': attempt, 'monotonic_ns': time.monotonic_ns()})
+        assert service.observation('isolated', {'qpos': [0.] * 14}, {'head': (pixels, 1.)})
+        assert service.active and service.status()['state'] == 'recording'
+        assert service.log({'message': 'isolated control log'})
+        logger.emit('rc.loop', loop_id=123)
+        return attempt
+    with service._admission:
+        attempt = run_before_unlock(service._admission, produce)
+        assert any(e['attempt_id'] == attempt for e in service._sent)
+    ended = service.command('off').result(3)
+    folder = Path(ended['path'])
+    assert {r['event'] for r in rows(folder/'control.jsonl') if r.get('attempt_id') == attempt} == {
+        'control.attempt', 'control.published'}
+    assert any(r.get('observation_id') == 'isolated' for r in rows(folder/'policy.jsonl'))
+    assert any(r.get('loop_id') == 123 for r in rows(folder/'events.jsonl'))
+    assert logger.close(time.monotonic()+1)
+
+
+def test_loop_and_send_have_independent_budget_when_debug_is_full(service):
+    logger = PerformanceLogger('DEBUG', 'isolation', ingress=service)
+    with service._lock:
+        for i in range(2100):
+            logger.emit('connector.feedback_received', sample=i)
+        logger.emit('rc.send', attempt_id='reserved-slot')
+        logger.emit('rc.loop', loop_id=123, attempt_id='reserved-slot')
+    ended = service.command('off').result(3)
+    events = rows(Path(ended['path'])/'events.jsonl')
+    assert {e['stage'] for e in events if e.get('attempt_id') == 'reserved-slot'} == {'rc.loop','rc.send'}
+    assert ended['debug_dropped'] == 52
+    assert logger.close(time.monotonic()+1)
+
+
+def test_handoff_overload_counts_drops_and_preserves_loop_across_rotation(service):
+    service.bind_control_thread(threading.current_thread())
+    logger = PerformanceLogger('DEBUG', 'isolation', ingress=service)
+    with service._admission:
+        for i in range(300):
+            logger.emit('connector.feedback_received', sequence=i)
+        logger.emit('rc.loop', loop_id=123)
+    first = service.command('off').result(3)
+    logger.emit('between-sessions')
+    second = service.command('on').result(3)
+    logger.emit('rc.loop', loop_id=124)
+    service.command('off').result(3)
+    gaps = rows(Path(first['path'])/'session.jsonl')
+    assert sum(row.get('reasons', {}).get('control_handoff_debug', 0) for row in gaps) == 44
+    for segment, expected in ((first, 123), (second, 124)):
+        events = rows(Path(segment['path'])/'events.jsonl')
+        assert [e['loop_id'] for e in events if e.get('stage') == 'rc.loop'] == [expected]
+        assert not any(e.get('stage') == 'between-sessions' for e in events)
+    assert logger.close(time.monotonic()+1)
+
+
+def test_slow_producer_cannot_move_event_to_restarted_session(service):
+    service.bind_control_thread(threading.current_thread())
+    copying = threading.Event()
+    release = threading.Event()
+
+    class Snapshot:
+        def __deepcopy__(self, memo):
+            copying.set()
+            assert release.wait(5)
+            return 'old'
+
+    thread = threading.Thread(target=service.event, args=('policy', {'event': 'delayed', 'payload': Snapshot()}))
+    thread.start()
+    try:
+        assert copying.wait(2)
+        service.command('off').result(3)
+        current = service.command('on').result(3)
+    finally:
+        release.set()
+        thread.join(2)
+    assert service.event('policy', {'event': 'current'})
+    service.command('off').result(3)
+    assert [r['event'] for r in rows(Path(current['path'])/'policy.jsonl')] == ['current']

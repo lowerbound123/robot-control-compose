@@ -36,10 +36,8 @@ class PerformanceLogger:
             entry['performance'] = trace.snapshot()
             entry['trace_id'] = trace.data['trace_id']
         if self.ingress is not None:
-            # RC uses recorder admission directly, so session assignment and
-            # stop barriers also cover DEBUG records before formatting begins.
-            with self._lock:
-                if self._closed: return
+            # The recorder owns the nonblocking handoff and its shutdown fence.
+            if self._closed: return
             try: self.ingress.performance_entry(entry)
             except Exception: pass  # Diagnostics never change control results.
             return

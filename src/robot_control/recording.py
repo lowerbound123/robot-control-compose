@@ -55,8 +55,8 @@ class RecordingService(RecordingIngress):
         self._pending = {}
         self._futures = {}
         self._transition_waiters = {'starting': [], 'stopping': []}
-        self._bytes = {'sample':0,'extra':0}
-        self._counts = {'sample':0,'extra':0}
+        self._bytes = {'sample':0,'extra':0,'loop':0}
+        self._counts = {'sample':0,'extra':0,'loop':0}
         self._serial = 0
         self._sender = self._receiver = self._process = None
         self._manager = self._feeder = self._sampler = None
@@ -64,7 +64,7 @@ class RecordingService(RecordingIngress):
         self._state = 'idle'
         self._session = self._path = self._error = None
         self._stats = self._new_stats()
-        self._sent = deque(maxlen=4096)
+        self._sent = deque()
         self._attempt = None
         self._stop_deadline = None
         self._forced = False
@@ -87,6 +87,7 @@ class RecordingService(RecordingIngress):
             self._manager = threading.Thread(target=self._manage, name='record-manager', daemon=True)
             self._feeder = threading.Thread(target=self._feed, name='record-feed', daemon=True)
             self._sampler = threading.Thread(target=self._sample_loop, name='record-sample', daemon=True)
+            self._handoff.thread.start()
             self._manager.start(); self._feeder.start(); self._sampler.start()
         try:
             self._boot.result(timeout)
@@ -120,7 +121,14 @@ class RecordingService(RecordingIngress):
                 frames[name].update(timestamp=descriptor['timestamp'], pool_id=descriptor['pool_id'],
                                     pool_frame_id=descriptor['frame_id'])
         return self.event('policy', {'event':'policy.observation','observation_id':identity,'state':state},
-                          frames=frames)
+                          frames=frames, owned=self._handoff.on_control())
+
+    def _missing_observation(self):
+        if self._handoff.on_control():
+            self._handoff.offer('data', self._session, self._missing_observation)
+            return
+        with self._admission:
+            self._drop_locked(self._session, 'observation_frame_unavailable')
 
     def _spawn(self):
         context = multiprocessing.get_context('spawn')
@@ -177,7 +185,7 @@ class RecordingService(RecordingIngress):
                     self._ingress_pending -= 1
                     self._drop_locked(entry['session'], 'debug_format_failed', True)
                 return
-        lane = ('sample' if entry['kind'] == 'sample' else 'priority' if entry['priority']
+        lane = ('sample' if entry['kind'] == 'sample' else 'priority' if entry['priority'] or entry['credit'][0] == 'loop'
                 else 'debug' if entry['debug'] else 'extra')
         packet = self._packet(entry['kind'], lane=lane, data=data, frames=entry['frames'],
                               stream=entry['stream'], session=entry['session'])
@@ -270,8 +278,7 @@ class RecordingService(RecordingIngress):
                 self._session, self._path = identity, path
                 self._state, self._error = 'starting', None
                 self._stats = self._new_stats()
-                old_sent, self._sent = self._sent, deque(maxlen=4096)
-                self._receipt_count = 0
+                self._sent = deque()
                 self._boundary = time.monotonic_ns()
                 self._command_bytes -= self._command_sizes.pop(future, 0)
                 self._bytes['extra'] += size
@@ -285,9 +292,21 @@ class RecordingService(RecordingIngress):
             if state == 'stopping':
                 self._transition_waiters['stopping'].append(future)
                 return
-            with self._admission:
-                self._state = 'stopping'
-                self._stop_deadline = time.monotonic()+self.stop_timeout
+            deadline = time.monotonic()+self.stop_timeout
+
+            def stop_session():
+                with self._admission:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('record stop fence exceeded deadline')
+                    if self._state == 'recording':
+                        self._state = 'stopping'
+                    self._stop_deadline = deadline
+
+            try:
+                self._handoff.fence(stop_session, deadline, seal=self._session)
+            except TimeoutError:
+                self._fail_record('record stop handoff exceeded deadline')
+                raise
             # Fence admission before registering the complete old-session queue
             # with the existing writer barrier. Base logs can still be offered.
             self._drain_ingress(all_entries=True)
@@ -305,6 +324,13 @@ class RecordingService(RecordingIngress):
             if kind == 'ack':
                 credit = self._pending.pop(message['token'], None)
                 if credit: self._release_credit(credit)
+            if kind == 'started':
+                def start_session():
+                    with self._admission:
+                        if self._state == 'starting':
+                            self._boundary = time.monotonic_ns()
+                            self._state = 'recording'
+                self._handoff.fence(start_session, time.monotonic() + self.stop_timeout)
             with self._admission:
                 if kind == 'ready':
                     self._worker_ready = True
@@ -312,9 +338,6 @@ class RecordingService(RecordingIngress):
                 elif kind == 'ack':
                     if message.get('stats') and self._state in ('recording','stopping'):
                         self._stats.update(message['stats'])
-                elif kind == 'started':
-                    if self._state == 'starting':
-                        self._state = 'recording'; self._boundary = time.monotonic_ns()
                 elif kind == 'stopped':
                     self._stats.update(message.get('stats', {}))
                     self._state = 'error' if message.get('error') or self._error else 'idle'
@@ -407,7 +430,7 @@ class RecordingService(RecordingIngress):
             self._futures.clear()
             self._transition_waiters = {'starting': [], 'stopping': []}
             with self._admission:
-                self._bytes = {'sample':0,'extra':0}; self._counts = {'sample':0,'extra':0}
+                self._bytes = {'sample':0,'extra':0,'loop':0}; self._counts = {'sample':0,'extra':0,'loop':0}
                 abandoned, self._ingress = self._ingress, deque()
                 commands, self._commands = self._commands, deque()
                 sizes, self._command_sizes = self._command_sizes, {}
@@ -423,7 +446,6 @@ class RecordingService(RecordingIngress):
 
     def _sample_loop(self):
         current, index, previous = None, 0, 0
-        observed = deque()
         while not self._quit.is_set():
             with self._admission:
                 session = self._session if self._state == 'recording' else None
@@ -432,7 +454,7 @@ class RecordingService(RecordingIngress):
                 self._quit.wait(.01); continue
             if session != current:
                 current, index, previous = session, 0, epoch
-                observed.clear()
+                sent = self._sent
             scheduled = epoch + index*1_000_000_000//self.HZ
             delay = (scheduled-time.monotonic_ns())/1e9
             if delay > 0:
@@ -448,20 +470,14 @@ class RecordingService(RecordingIngress):
             with self._admission:
                 acquired = time.monotonic_ns() if self.performance is not None else 0
                 if self._state != 'recording' or self._session != session: continue
-                batch = None
-                if not missed:
-                    batch, self._sent = self._sent, deque(maxlen=4096)
-            controls, consumed = {}, 0
-            if batch is not None:
-                observed.extend(batch)
-                while observed and observed[0]['monotonic_ns'] <= cutoff:
-                    event = observed.popleft()
+            controls = {}
+            if not missed:
+                for _ in range(len(sent)):
+                    if sent[0]['monotonic_ns'] > cutoff:
+                        break
+                    event = sent.popleft()
                     controls[event['arm']] = {**event, 'late_observer':event['monotonic_ns'] <= previous}
-                    consumed += 1
                 previous = cutoff
-            with self._admission:
-                if self._state != 'recording' or self._session != session: continue
-                self._receipt_count -= consumed
             payload = {**capture, 'sample_id':index, 'timestamp_ns':wall, 'monotonic_ns':cutoff,
                        'scheduled_ns':scheduled, 'missed':missed, 'controls':controls}
             self._enqueue('sample', payload, session=session)
@@ -481,6 +497,8 @@ class RecordingService(RecordingIngress):
         cancelled = []
         with self._lock:
             if self._manager is None: return False
+            if not self._handoff.close(deadline-cleanup_margin):
+                self._forced = True
             with self._admission:
                 failed = self._writer_failed
                 initiating = not self._closing

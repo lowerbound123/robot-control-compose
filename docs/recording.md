@@ -96,7 +96,7 @@ RC 按相机保留最近成功发布帧的只读数组引用，用 `pool_id/fram
 
 `record status` 返回 `state`、`session_id`、`path`、`error`、`samples_written`、`samples_accepted`、`repeated_frames`、`missing_frames`、`missed_samples`、`extra_dropped`、`pending_bytes`、`pending_samples` 和 `peak_pending_bytes`；另有 `ingress_pending`（入口已接收、尚未完成后台整理的条数）和 `debug_dropped`（本轮统计中的 DEBUG 丢弃数，计入 `extra_dropped`）。视频工作开始后还包含 `video_pending_frames`、`video_pending_bytes`、`video_segments_written`。
 
-控制提交、策略 trace、真实发布回执和普通日志只进入有界内存入口，不获取录制后台锁，不等待队列空间或 writer ACK。必要元数据快照和额度估算不持共享录制锁；已经拥有快照的策略 trace 不再重复深拷贝。状态查询也不等待后台锁。采样线程成批取走回执引用后在锁外处理，保留原有 `late_observer` 及不补写旧动作的语义。
+RC 控制线程通过有界队列把观测、控制尝试、发布记录和日志交给独立的 `record-control-ingress` 线程。Linux 上此线程以较低调度优先级运行。生产方保留必要的元数据快照和只读图像引用，后台获取录制入口锁、估算大小并登记 writer 额度。发布回执到达时，控制线程立即把带原始时间戳的引用追加到本会话专属的采样队列，采样器按原截止时间选择每臂最近一次发布。状态中的 `handoff_pending` 是等待交接的任务数，`pending_bytes` 统计后台已登记的额度。
 
 每条数据在入口接收时固定所属会话。停止先关闭该段入口，再把全部已接收记录纳入 writer 排空边界，收到实际处理确认并完成尾段封口后才报告成功。停止过程中接收的普通日志仍写基础日志；自动切段不会把上一段已接收的数据或丢弃计数移入下一段。`pending_bytes` 从入口接收一直计到 writer ACK，转交后台不会提前释放或重复占用额度。
 

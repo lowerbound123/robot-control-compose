@@ -32,7 +32,8 @@ if __name__ == '__main__':
                           'path':controller.status()['recording']['path']}), flush=True)
         assert controller.done.wait(8)
         assert not any(t.is_alive() for t in (controller._recorder._manager,
-                      controller._recorder._sampler, controller._recorder._feeder))
+                      controller._recorder._sampler, controller._recorder._feeder,
+                      controller._recorder._handoff.thread))
     sys.exit(controller.exit_code)
 ''')
     env = dict(os.environ)

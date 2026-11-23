@@ -35,7 +35,7 @@ def test_debug_logging_covers_running_pipeline_and_info_stays_silent(tmp_path, m
         command(rc,'record start')
         # The real example / native self-chain must still install results,
         # submit actions and consume full connector ACKs while recording stalls.
-        with rc._recorder._lock:
+        with rc._recorder._lock, rc._recorder._admission:
             command(rc,'resume')
             until(lambda:rc.status()['consumed']>=5,1.5)
             command(rc,'pause')
@@ -57,6 +57,18 @@ def test_debug_logging_covers_running_pipeline_and_info_stays_silent(tmp_path, m
     assert {'worker.policy','worker.images_released','rc.result_installed'} <= points
     connector=next(e for e in perf if e['stage']=='connector.receipt')
     assert {'connector.server_received','connector.driver_begin','connector.driver_end'} <= {p['stage'] for p in connector['performance']['points']}
+    loops = [e for e in perf if e['stage'] == 'rc.loop' and e.get('attempt_id')]
+    assert loops
+    sends = {e['attempt_id']: e for e in perf if e['stage'] == 'rc.send'}
+    loop = next(e for e in loops if e['attempt_id'] in sends)
+    marks = {p['stage']: p for p in loop['performance']['points']}
+    assert {'rc.publications_begin', 'rc.publications_collected', 'rc.observation_collected',
+            'rc.tick_decision', 'rc.loop_lock_released'} <= marks.keys()
+    assert marks['rc.tick_decision']['due'] == 1
+    begin = marks['rc.loop_begin']
+    assert 0 < begin['wait_setup_ns'] <= begin['wait_started_ns'] <= begin['wait_returned_ns'] <= begin['monotonic_ns']
+    sent = sends[loop['attempt_id']]['performance']['points']
+    assert next(p for p in sent if p['stage'] == 'rc.attempt_recorded')['loop_id'] == loop['loop_id']
     assert all(e['level']=='debug' for e in perf)
     recorded=[json.loads(l) for l in (Path(recording['path'])/'events.jsonl').read_text().splitlines()]
     assert any(e.get('event')=='performance' for e in recorded)
