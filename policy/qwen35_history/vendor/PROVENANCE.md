@@ -67,3 +67,7 @@ The runtime uses this directory's source only and does not import the reference 
 The optional per-observation visual feature input used by a2_optimized reuses
 the pooled current-image and history-video tensors in its two action-first
 prompts. Both paths retain the same placeholder count checks and embedding layout.
+
+A2 opts into batching its owned uint8 history frames before normalization and
+batching independent, equal-length visual slices for SDPA. The shared Qwen
+vision patch supports this layout in both eager inference and prefix graph capture.

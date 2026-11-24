@@ -17,6 +17,11 @@ class OptimizedBackend(HistoryBackend):
         self.subtask = ''
         self._cold_observation = self._refresh = None
 
+    def load(self):
+        super().load()
+        self.processor.batch_uint8_history = True
+        self.model.qwen.model.visual.batch_equal_slices = True
+
     def build_input(self, qpos, images, instruction, contexts):
         observation = (qpos, images, instruction, contexts)
         # With an empty cache the action prompt must announce only actions.

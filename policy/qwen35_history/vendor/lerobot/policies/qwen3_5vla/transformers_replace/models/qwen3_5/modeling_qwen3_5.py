@@ -984,6 +984,31 @@ def apply_rotary_pos_emb_vision(
     return q_embed, k_embed
 
 
+def _batched_vision_sdpa(query, key, value, lengths, scale):
+    """Attend independently within each slice, then return tokens in their original order."""
+    def attend(q, k, v):
+        # [slices, tokens, heads, dim] -> SDPA -> [slices, tokens, heads, dim]
+        return F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), scale=scale
+        ).transpose(1, 2)
+
+    if len(set(lengths)) == 1:
+        # Normal camera/video layouts need only views to form a batch.
+        shape = (len(lengths), lengths[0])
+        return attend(*(x.unflatten(0, shape) for x in (query, key, value))).flatten(0, 1)
+
+    by_length = {}
+    for index, length in enumerate(lengths):
+        by_length.setdefault(length, []).append(index)
+    parts = [x.split(lengths, dim=0) for x in (query, key, value)]
+    outputs = [None] * len(lengths)
+    for indices in by_length.values():
+        batch = [torch.stack([pieces[i] for i in indices]) for pieces in parts]
+        for index, output in zip(indices, attend(*batch).unbind(0), strict=True):
+            outputs[index] = output
+    return torch.cat(outputs, dim=0)
+
+
 class Qwen3_5VisionAttention(nn.Module):
     def __init__(self, config: Qwen3_5VisionConfig) -> None:
         super().__init__()
@@ -1004,6 +1029,7 @@ class Qwen3_5VisionAttention(nn.Module):
         cu_seqlens: torch.Tensor,
         rotary_pos_emb: torch.Tensor | None = None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        sdpa_slice_lengths: tuple[int, ...] | None = None,
         **kwargs,
     ) -> torch.Tensor:
         seq_length = hidden_states.shape[0]
@@ -1012,6 +1038,10 @@ class Qwen3_5VisionAttention(nn.Module):
         )
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb_vision(query_states, key_states, cos, sin)
+
+        if sdpa_slice_lengths is not None:
+            output = _batched_vision_sdpa(query_states, key_states, value_states, sdpa_slice_lengths, self.scaling)
+            return self.proj(output.reshape(seq_length, self.dim))
 
         query_states = query_states.transpose(0, 1).unsqueeze(0)
         key_states = key_states.transpose(0, 1).unsqueeze(0)
@@ -1096,11 +1126,17 @@ class Qwen3_5VisionBlock(GradientCheckpointingLayer):
 
 class Qwen3_5VisionModel(Qwen3_5PreTrainedModel):
     config: Qwen3_5VisionConfig
+    batch_equal_slices = False
     _no_split_modules = ["Qwen3_5VisionBlock"]
     _can_record_outputs = {
         "hidden_states": Qwen3_5VisionBlock,
         "attentions": Qwen3_5VisionAttention,
     }
+
+    def sdpa_slice_lengths(self, cu_seqlens):
+        if self.batch_equal_slices and not self.training and self.config._attn_implementation == "sdpa":
+            return tuple(cu_seqlens.diff().tolist())
+        return None
 
     def __init__(self, config, *inputs, **kwargs) -> None:
         super().__init__(config, *inputs, **kwargs)
@@ -1267,10 +1303,12 @@ class Qwen3_5VisionModel(Qwen3_5PreTrainedModel):
         )
         cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
 
+        sdpa_slice_lengths = self.sdpa_slice_lengths(cu_seqlens)
         for blk in self.blocks:
             hidden_states = blk(
                 hidden_states,
                 cu_seqlens=cu_seqlens,
+                sdpa_slice_lengths=sdpa_slice_lengths,
                 position_embeddings=position_embeddings,
                 **kwargs,
             )

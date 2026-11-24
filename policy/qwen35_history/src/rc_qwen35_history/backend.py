@@ -122,8 +122,11 @@ class HistoryBackend:
     def build_input(self, qpos, images, instruction, contexts, *, generate=None):
         import torch
         from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video import ContextSlot, ContextSource
-        slots = [ContextSlot(images=(torch.from_numpy(item.image.copy()).float()/255.,),
-                             source=ContextSource.HIST, frame_index=item.index) for item in contexts]
+        slots = []
+        batch_uint8 = getattr(self.processor, 'batch_uint8_history', False)
+        for item in contexts:
+            image = item.image if batch_uint8 else torch.from_numpy(item.image.copy()).float()/255.
+            slots.append(ContextSlot(images=(image,), source=ContextSource.HIST, frame_index=item.index))
         return self.processor.build_inference(self.prepare_sample(qpos, images, instruction),
             contexts=slots, include_task=True, inference_order='action_first', view_indices=(0,),
             language={}, generate=self.generate_language if generate is None else generate)

@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 from transformers.video_utils import VideoMetadata
@@ -49,6 +50,7 @@ from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video i
     SOURCE_RENDER_ORDER,
     SOURCE_TOKEN_IDS,
     ContextSlot,
+    ContextSource,
     replace_marker_spans,
     sort_context_slots,
 )
@@ -105,6 +107,8 @@ def _single_chw_image(value: Any) -> torch.Tensor:
 @dataclass
 class Qwen3_5ContextVideoProcessorTransformFn(Qwen3_5UnifiedCondProcessorTransformFn):  # noqa: N801
     context_slot_count: int = 16
+    # Runtime-only: A2 supplies owned, immutable CHW uint8 history frames.
+    batch_uint8_history = False
     context_fps: float = 30.0
     context_view_index: int = 0
     # "first" | "last": where the meta line sits relative to the clips.
@@ -165,7 +169,11 @@ class Qwen3_5ContextVideoProcessorTransformFn(Qwen3_5UnifiedCondProcessorTransfo
             content.append({"type": "text", "text": f"{SOURCE_MARKERS[source]} "})
             content.append({"type": "video"})
             content.append({"type": "text", "text": "\n"})
-            videos.append(torch.stack([_single_chw_image(slot.images[0]) for slot in group]))
+            if self.batch_uint8_history and source is ContextSource.HIST:
+                clip = np.ascontiguousarray(np.stack([slot.images[0] for slot in group]))
+                videos.append(torch.from_numpy(clip).float().div_(255.))
+            else:
+                videos.append(torch.stack([_single_chw_image(slot.images[0]) for slot in group]))
             # A fresh list per clip: the processor mutates frames_indices in
             # place when the frame count is odd.  fps is the policy's fixed
             # rate, not the dataset's -- only relative spacing is meaningful.

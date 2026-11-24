@@ -319,13 +319,15 @@ class PrefixGraph:
         # off cu_seqlens; a CPU copy keeps its ``.tolist()`` off the device.
         cu_seqlens = F.pad(torch.repeat_interleave(grid[:, 1] * grid[:, 2], grid[:, 0]).cumsum(0, dtype=torch.int32),
                            (1, 0))
-        return {"pos_embeds": pos_embeds, "position_embeddings": (emb.cos(), emb.sin()), "cu_seqlens": cu_seqlens}
+        return {"pos_embeds": pos_embeds, "position_embeddings": (emb.cos(), emb.sin()),
+                "cu_seqlens": cu_seqlens, "sdpa_slice_lengths": visual.sdpa_slice_lengths(cu_seqlens)}
 
     def _vision(self, pixels, constants):
         visual = self.visual
         hidden = visual.patch_embed(pixels.type(visual.dtype)) + constants["pos_embeds"]
         for block in visual.blocks:
             hidden = block(hidden, cu_seqlens=constants["cu_seqlens"],
+                           sdpa_slice_lengths=constants["sdpa_slice_lengths"],
                            position_embeddings=constants["position_embeddings"])
         return visual.merger(hidden)
 
