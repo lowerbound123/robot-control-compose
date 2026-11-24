@@ -44,6 +44,7 @@ def test_vendor_hashes_and_dependency_locks_are_complete():
                 if '==' in line and not line.lstrip().startswith('#'))
     assert pins['torch'] == '2.10.0+cu128' and pins['transformers'] == '5.2.0'
     assert pins['torchvision'] == '0.25.0+cu128'
+    assert pins['fla-core'] == '0.6.0' and pins['einops'] == '0.8.2'
 
 
 def test_scope_includes_new_tests_and_not_other_qwen_models():

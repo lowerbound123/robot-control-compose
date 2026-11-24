@@ -47,8 +47,9 @@ No weights, tokenizer assets, camera frames or training data are included.
 
 Target: independent Python 3.11 Linux container, Torch2.10+CUDA12.8,
 torchvision0.25, Transformers5.2.0. Dependencies are pinned and hashed in the
-policy directory. Optional FLA/causal-conv kernels are not required; latency and
-CUDA graph support require separate target-GPU validation.
+policy directory. The shared history image pins FLA and includes the compiler
+needed by Triton at runtime. The separate causal-conv1d extension is optional.
+Latency and CUDA graph support require target-GPU validation.
 
 
 This snapshot is owned by `policy/qwen35_history/vendor`. Historical `source` paths in SOURCE_MANIFEST.json record the original snapshot provenance; they are not runtime imports or mounts. Derived implementation paths point to this policy's own `src/rc_qwen35_history`.

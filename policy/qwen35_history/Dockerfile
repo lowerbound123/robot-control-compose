@@ -8,12 +8,13 @@ RUN python -m pip install --no-cache-dir setuptools==75.8.2 wheel==0.45.1 packag
 
 FROM python:3.11-slim-bookworm@sha256:f06d01d4ba3f8ad5af45a3ec87df19c1d317d8e8961edc0fabda61811af6f7cf AS runtime
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 HF_HOME=/data/huggingface
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+# Triton builds its CUDA launcher in the execution container on first use.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 COPY --from=policy-deps /requirements.lock /opt/qwen35-history/requirements.lock
 # Bind the wheelhouse only for installation; it must not double the final image size.
 RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
     python -m pip install --no-cache-dir --no-index --no-deps /wheels/*.whl && python -m pip check
-ENV PYTHONPYCACHEPREFIX=/tmp/rc-pycache
+ENV PYTHONPYCACHEPREFIX=/tmp/rc-pycache TRITON_CACHE_DIR=/tmp/rc-triton-cache
 WORKDIR /workspace
 ENTRYPOINT ["python", "/workspace/packages/policy-sdk/src/rc_policy_sdk/source.py", "--module", "rc_policy_sdk.host"]
 
