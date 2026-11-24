@@ -13,7 +13,7 @@ from rc_policy_sdk.transitions import TrajectoryAddTransition
 from rc_policy_sdk.actions import normalize_actions
 
 from .history import HistoryBuffer
-from .configuration import DEFAULTS, GRIPPER_DEFAULTS
+from .configuration import DEFAULTS, GRIPPER_DEFAULTS, load_model_config, resolve_path
 from .settings import SNAPSHOT
 from .gripper import process_grippers
 
@@ -55,7 +55,8 @@ class HistoryPolicy:
         self._created_at = time.monotonic()
         self._metrics = dict(context_state='initializing', robot_type=self.robot_type,
                              checkpoint=str(config.get('model', {}).get('checkpoint', 'injected backend')),
-                             pipelined=int(self.pipelined), history_enabled=int(self.history_enabled),
+                             pipelined=int(self.pipelined), trunk_mode=self.transition.trunk_mode,
+                             history_enabled=int(self.history_enabled),
                              replan_every_actions=self.x, inference_timeout_s=self.timeout,
                              history_tick=0, history_frames=0, context_slots=0,
                              inference_count=0, inference_completed=0, inference_errors=0, inference_busy=0,
@@ -149,7 +150,7 @@ class HistoryPolicy:
         self.timeout = float(raw['execution']['inference_timeout_s'])
         self.history_enabled = raw['history']['enabled']
         self.transition = TrajectoryAddTransition(**raw['transition'])
-        self._record(replan_every_actions=self.x, pipelined=int(self.pipelined),
+        self._record(replan_every_actions=self.x, pipelined=int(self.pipelined), trunk_mode=self.transition.trunk_mode,
                      inference_timeout_s=self.timeout, history_enabled=int(self.history_enabled))
 
     def _predict(self, qpos, images, instruction, contexts):
@@ -369,10 +370,9 @@ class HistoryPolicy:
             raise ValueError('task must be a nonempty string')
         return {'params.task': task}
 
-    def switch_model(self, path):
-        from .configuration import load_model_config, resolve_path
+    def switch_model(self, path, *, load_config=load_model_config):
         path = resolve_path(path, self.project_root)
-        load_model_config(path, project_root=self.project_root, robot_type=self.robot_type)
+        load_config(path, project_root=self.project_root, robot_type=self.robot_type)
         try:
             selected = path.relative_to(self.project_root).as_posix()
         except ValueError:

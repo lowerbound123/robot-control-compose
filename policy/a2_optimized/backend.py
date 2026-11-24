@@ -1,4 +1,7 @@
 """History actions conditioned on the latest complete language segment."""
+from contextlib import contextmanager
+import time
+
 import torch
 
 from rc_qwen35_history.backend import HistoryBackend
@@ -6,6 +9,22 @@ from rc_qwen35_history.backend import HistoryBackend
 IDS = 'observation.input_ids'
 MASK = 'observation.attention_mask'
 PIXELS = 'observation.pixel_values'
+EMPTY_SUBTASK_TIMINGS = dict(subtask_ms=0., subtask_queue_ms=0., subtask_prepare_ms=0.,
+                             subtask_prefill_ms=0., subtask_decode_ms=0., subtask_post_ms=0.)
+
+
+@contextmanager
+def _timed_slice(cuda, samples):
+    if cuda:
+        start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        start.record()
+        yield
+        end.record()
+        samples.append((start, end))
+    else:
+        start = time.perf_counter()
+        yield
+        samples.append((time.perf_counter() - start) * 1000)
 
 
 class OptimizedBackend(HistoryBackend):
@@ -16,6 +35,7 @@ class OptimizedBackend(HistoryBackend):
         self.language_ids = ()
         self.subtask = ''
         self._cold_observation = self._refresh = None
+        self._monitor_update(**EMPTY_SUBTASK_TIMINGS)
 
     def load(self):
         super().load()
@@ -49,7 +69,7 @@ class OptimizedBackend(HistoryBackend):
                     prepared.pop(PIXELS), prepared['observation.image_grid_thw'],
                     prepared.pop(PIXEL_VALUES_VIDEOS_KEY, None), prepared.get(VIDEO_GRID_THW_KEY))
                 forced, _ = model._language_request(batch, 1)
-                self._refresh = self._decode_language(prepared, prompt, forced[0], self._cold_observation)
+                self._refresh = (prepared, prompt, forced[0], self._cold_observation)
                 self._cold_observation = None
             if self.language_ids:
                 action_prompt = [*prompt, model.special_tokens.subtask_start, *self.language_ids,
@@ -71,9 +91,13 @@ class OptimizedBackend(HistoryBackend):
         refresh, self._refresh = self._refresh, None
         if refresh is None:
             raise RuntimeError('language refresh has no action observation')
-        return refresh
+        return self._decode_language(*refresh, submitted=time.perf_counter())
 
-    def _decode_language(self, prepared, prompt, forced, cold_observation):
+    def _decode_language(self, prepared, prompt, forced, cold_observation, *, submitted):
+        started = time.perf_counter()
+        prepare_ms = 0.
+        prefill, decode = [], []
+        cuda = self.device.type == 'cuda'
         from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video import parse_language_segment
         from lerobot.policies.qwen3_5_context_video_ki.modeling_qwen3_5_context_video_ki import _inference_autocast
         model = self.model
@@ -86,15 +110,16 @@ class OptimizedBackend(HistoryBackend):
             prompt = model._extract_semantic_prefix(ids, mask, 0, selected_mode_token=model.special_tokens.action_image)
             forced = model._language_request(inputs, 1)[0][0]
             del inputs, cold_observation
+            prepare_ms = (time.perf_counter() - started) * 1000
             yield
-        with torch.no_grad(), _inference_autocast(model):
+        with _timed_slice(cuda, prefill), torch.no_grad(), _inference_autocast(model):
             hidden, kv, mask, _, deltas = self._prefill(prepared, [*prompt, model.special_tokens.subtask_start, *forced])
         del prepared
         yield
         tokens = list(forced)
         for _ in range(model.config.max_subtask_tokens + 1):
             # Leave autocast/no_grad before yielding to an unrelated action on this worker.
-            with torch.no_grad(), _inference_autocast(model):
+            with _timed_slice(cuda, decode), torch.no_grad(), _inference_autocast(model):
                 next_ids = model._greedy_subtask_tokens(hidden)
                 token = int(next_ids.item())
                 if token == model.special_tokens.subtask_end:
@@ -105,16 +130,30 @@ class OptimizedBackend(HistoryBackend):
             yield
         else:
             raise RuntimeError('Generation did not emit subtask_end within its token budget')
+        if cuda:
+            # Per-slice events exclude actions that ran between yields. Only
+            # the terminal event needs to be synchronized to read timings.
+            decode[-1][1].synchronize()
+            prefill_ms = prefill[0][0].elapsed_time(prefill[0][1])
+            decode_ms = sum(start.elapsed_time(end) for start, end in decode)
+        else:
+            prefill_ms, decode_ms = sum(prefill), sum(decode)
+        post_started = time.perf_counter()
         fields = parse_language_segment(model.decode_subtasks([torch.tensor(tokens)])[0])
         self.language_ids = tuple(tokens)
         self.subtask = fields.get('Subtask', '')[:512] if 'Subtask' in self.generate_language else ''
-        self._monitor_update(subtask=self.subtask)
+        finished = time.perf_counter()
+        self._monitor_update(subtask=self.subtask, subtask_ms=(finished - submitted) * 1000,
+                             subtask_queue_ms=(started - submitted) * 1000, subtask_prepare_ms=prepare_ms,
+                             subtask_prefill_ms=prefill_ms, subtask_decode_ms=decode_ms,
+                             subtask_post_ms=(finished - post_started) * 1000)
 
     def reset_context(self):
         self.language_ids = ()
         self.subtask = ''
         self._cold_observation = self._refresh = None
         super().reset_context()
+        self._monitor_update(**EMPTY_SUBTASK_TIMINGS)
 
     def close(self):
         self._cold_observation = self._refresh = None

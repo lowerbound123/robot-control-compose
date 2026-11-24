@@ -26,6 +26,27 @@ def test_deep_merge_preserves_user_values_and_whole_lists():
     assert 'new' not in old['nested']
 
 
+def test_setup_updates_old_a2_pipeline_completion_without_changing_model(tmp_path):
+    module = helpers()
+    source = tmp_path / 'policy/a2_optimized'
+    source.mkdir(parents=True)
+    template = ROOT / 'policy/a2_optimized/policy.yaml.example'
+    (source / template.name).write_bytes(template.read_bytes())
+    manifest = read_config(template)
+    hints = manifest['config_hints']['settings']
+    hints['model_config.transition.trunk_mode']['choices'] = ['tail', 'close', 'now']
+    hints['model_config.execution.pipelined']['help'] = 'old help'
+    (source / 'policy.yaml').write_text(json.dumps(manifest))
+    model = {'execution': {'pipelined': True}, 'transition': {'trunk_mode': 'close'}}
+    (source / 'model.json').write_text(json.dumps(model))
+    changes, docs = module.configuration_updates(tmp_path)
+    assert {path.name for path, _ in changes} == {'policy.yaml'}
+    updated = docs['policy/a2_optimized/policy.yaml']['config_hints']['settings']
+    assert updated['model_config.transition.trunk_mode']['choices'] == ['close', 'tail']
+    assert '热更新' in updated['model_config.execution.pipelined']['help']
+    assert docs['policy/a2_optimized/model.json'] == model
+
+
 def test_configuration_updates_validate_all_files_before_writes(tmp_path):
     module = helpers()
     (tmp_path / 'rc.yaml.example').write_text('{"a": 1}')

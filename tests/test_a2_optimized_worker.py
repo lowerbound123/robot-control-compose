@@ -127,6 +127,16 @@ def test_async_rc_sends_fourth_chunk_while_language_is_held(tmp_path, held_langu
         assert 'language_end' not in journal.read_text()
         (directory / 'continue').touch()
         wait(lambda: 'language_end' in journal.read_text())
+        worker = controller._worker
+        for key, value in (('execution.pipelined', 'true'), ('transition.trunk_mode', 'close')):
+            reply = completed(controller, f'policy a2_optimized config set model_config.{key} {value}')
+            assert reply['status'] == 'succeeded', reply
+            assert reply['result']['configuration_effect'] == 'ordinary'
+        assert controller._worker is worker and controller.status()['state'] == 'running'
+        assert completed(controller, 'policy a2_optimized config save')['status'] == 'succeeded'
+        saved = json.loads((directory / 'model.json').read_text())
+        assert saved['execution']['pipelined'] is True and saved['transition']['trunk_mode'] == 'close'
+        assert 'reset' not in journal.read_text()
     finally:
         (directory / 'continue').touch()
         controller.submit('exit')

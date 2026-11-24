@@ -1,14 +1,19 @@
 from pathlib import Path
 
-from rc_qwen35_history.configuration import validate_manifest
+from rc_qwen35_history.configuration import load_model_config, validate_manifest
 from rc_qwen35_history.settings import configure_policy, export_settings, initialize_policy
 from .runtime import OptimizedPolicy
 
 POLICY_ROOT = Path(__file__).resolve().parent
+HOT_MODEL_KEYS = ('model_config.execution.pipelined', 'model_config.transition.trunk_mode')
+
+
+def _load_model_config(path, **kwargs):
+    return load_model_config(path, trunk_modes=('close', 'tail'), **kwargs)
 
 
 def initialize(config, *, runtime):
-    return initialize_policy(config, POLICY_ROOT, OptimizedPolicy)
+    return initialize_policy(config, POLICY_ROOT, OptimizedPolicy, load_config=_load_model_config)
 
 
 def export_config(context, config):
@@ -45,7 +50,7 @@ def switch_task(context, task):
 
 
 def switch_model(context, path):
-    return context.switch_model(path)
+    return context.switch_model(path, load_config=_load_model_config)
 
 
 def validate_config(config):
@@ -53,4 +58,5 @@ def validate_config(config):
 
 
 def configure(context, config, key, value, callback):
-    return configure_policy(context, config, key, value, callback, POLICY_ROOT)
+    return configure_policy(context, config, key, value, callback, POLICY_ROOT,
+                            load_config=_load_model_config, hot_model_keys=HOT_MODEL_KEYS)

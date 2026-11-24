@@ -5,6 +5,13 @@ import logging
 from rc_qwen35_history.runtime import HistoryPolicy
 
 REFRESH_CHUNKS = 4
+ACTION_TIMINGS = {
+    'action_ms': 'predict_ms',
+    'action_processor_ms': 'processor_ms',
+    'action_prefix_ms': 'prefix_ms',
+    'action_denoise_ms': 'denoise_ms',
+    'action_post_ms': 'post_ms',
+}
 
 
 class OptimizedPolicy(HistoryPolicy):
@@ -17,6 +24,15 @@ class OptimizedPolicy(HistoryPolicy):
         super().__init__(config, backend=backend, **kwargs)
         self._record(language_refresh_chunks=REFRESH_CHUNKS, language_refresh_completed=0,
                      language_refresh_pending=0, language_refresh_error='')
+
+    def monitor(self):
+        snapshot = super().monitor()
+        return {
+            'subtask': snapshot['subtask'],
+            **{label: snapshot.get(source, 0.) for label, source in ACTION_TIMINGS.items()},
+            **{key: value for key, value in snapshot.items() if key.startswith('subtask_')},
+            **snapshot,
+        }
 
     def _launch(self, *args):
         self.backend.capture_refresh = bool(self.config['inference']['generate_language']

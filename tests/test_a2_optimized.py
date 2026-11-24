@@ -1,9 +1,14 @@
 """Action publication, refresh cadence and instance-owned language state."""
+import copy
+import json
 from pathlib import Path
 import threading
 
 import numpy as np
+import pytest
 
+from history_helpers import model_file
+from rc_policy_sdk.configuration import apply_candidate
 from test_qwen35_history_runtime import Backend, config, step
 
 SOURCE = Path(__file__).resolve().parents[1] / 'policy/a2_optimized'
@@ -13,6 +18,77 @@ def entrypoint():
     # The real worker imports main as a member of a per-instance package.
     from rc_policy_sdk.worker import _load_policy
     return _load_policy(SOURCE, "_a2_test")
+
+
+@pytest.fixture
+def configured_a2(tmp_path, monkeypatch):
+    from robot_control.yaml_config import load_yaml_config
+    module = entrypoint()
+    backend = Backend()
+    manifest = load_yaml_config(SOURCE / 'policy.yaml.example')
+    path = model_file(tmp_path)
+    monkeypatch.setattr(module, 'POLICY_ROOT', tmp_path)
+    implementation = module.OptimizedPolicy
+    monkeypatch.setattr(module, 'OptimizedPolicy', lambda settings, **kw: implementation(settings, backend=backend, **kw))
+    context = module.initialize(manifest, runtime=None)
+    try:
+        yield module, context, manifest, backend, path
+    finally:
+        context.close()
+
+
+def test_pipeline_mode_and_enable_are_hot_and_select_distinct_fusions(configured_a2):
+    module, context, manifest, backend, _ = configured_a2
+    old = backend.output[:4].copy()
+    old[:, 0] = [0, 3, 4, 7]
+    backend.output[:, 0] = np.arange(50) + 8
+    backend.output[:3, 0] = [0, 3.2, 7.1]
+    for key, value in [('execution.pipelined', 'true'), ('transition.trunk_mode', 'close')]:
+        candidate, effects = copy.deepcopy(manifest), []
+        module.configure(context, candidate, 'model_config.' + key, value, effects.append)
+        assert effects == []
+        apply_candidate(manifest, candidate)
+    np.testing.assert_array_equal(step(context, old, 0), backend.output)
+    assert context.monitor()['trunk_mode'] == 'close'
+
+    candidate, effects = copy.deepcopy(manifest), []
+    module.configure(context, candidate, 'model_config.transition.trunk_mode', '"tail"', effects.append)
+    assert effects == []
+    assert module.export_config(context, candidate)['files'][0]['data']['transition']['trunk_mode'] == 'tail'
+    assert context.monitor()['trunk_mode'] == 'close'
+    apply_candidate(manifest, candidate)
+    result = step(context, old, 2)
+    alpha = (1 - np.exp(-1.25 * .5)) / (1 - np.exp(-1.25))
+    np.testing.assert_allclose(result[:4, 0], [0, 3, 4 + alpha * (3.2 - 4), 7.1])
+    np.testing.assert_array_equal(result[4:], backend.output[3:])
+    monitor = context.monitor()
+    assert monitor['trunk_mode'] == 'tail' and monitor['reset_count'] == 0
+    assert monitor['history_tick'] == 2
+
+
+def test_a2_rejects_legacy_pipeline_mode_in_set_and_model_file(configured_a2):
+    module, context, manifest, _, path = configured_a2
+    candidate, effects = copy.deepcopy(manifest), []
+    with pytest.raises(ValueError, match='close or tail'):
+        module.configure(context, candidate, 'model_config.transition.trunk_mode', 'now', effects.append)
+    assert candidate == manifest and effects == []
+    raw = json.loads(path.read_text())
+    raw['transition'] = {'trunk_mode': 'now'}
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match='close or tail'):
+        module.switch_model(context, 'model.json')
+    with pytest.raises(ValueError, match='close or tail'):
+        module.initialize(manifest, runtime=None)
+
+
+def test_action_monitor_exposes_phase_names_without_changing_action_metrics(configured_a2):
+    _, context, _, _, _ = configured_a2
+    assert context.monitor()['action_ms'] == 0
+    step(context, [], 0)
+    result = context.monitor()
+    assert result['action_ms'] == result['predict_ms'] > 0
+    assert result['action_prefix_ms'] == result['prefix_ms'] == 1
+    assert result['action_denoise_ms'] == result['denoise_ms'] == 2
 
 
 class RecordingBackend(Backend):

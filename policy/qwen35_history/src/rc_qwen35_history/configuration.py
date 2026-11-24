@@ -125,10 +125,12 @@ def model_defaults(raw):
     return config
 
 
-def load_model_config(path, *, project_root, robot_type='arx_acone', raw=None):
+def load_model_config(path, *, project_root, robot_type='arx_acone', raw=None, trunk_modes=()):
     path = resolve_path(path, project_root)
     config = model_defaults(read_json(path) if raw is None else raw)
     from rc_policy_sdk.transitions import TrajectoryAddTransition
+    if trunk_modes and str(config['transition']['trunk_mode']).strip().lower() not in trunk_modes:
+        raise ValueError('transition.trunk_mode must be ' + ' or '.join(trunk_modes))
     for name in ('exponential_factor', 'exponential_smoothing'):
         positive(config['transition'][name], 'transition.' + name)
     TrajectoryAddTransition(**config['transition'])

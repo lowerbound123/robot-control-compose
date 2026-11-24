@@ -198,6 +198,14 @@ def configuration_updates(root):
             for key in ('params.task', *('params.'+name for name in GRIPPER_PARAM_RENAMES.values())):
                 if key in default.get('hot_reloadable', []) and key not in hot:
                     hot.append(key)
+        if target == root/'policy/a2_optimized/policy.yaml' and isinstance(default, dict):
+            hints = value.get('config_hints')
+            if isinstance(hints, dict) and isinstance(hints.get('settings'), dict):
+                template_hints = default.get('config_hints', {}).get('settings', {})
+                # Refresh these two hints in old manifests, without changing model settings.
+                for key in ('model_config.execution.pipelined', 'model_config.transition.trunk_mode'):
+                    if key in template_hints:
+                        hints['settings'][key] = copy.deepcopy(template_hints[key])
         documents[target.relative_to(root).as_posix()] = value
         if not strict_equal(current, value):
             content = (render_yaml_config(target, value, template=template) if yaml else

@@ -8,11 +8,11 @@ from .configuration import DEFAULTS, GRIPPER_DEFAULTS, validate_manifest, load_m
 SNAPSHOT = '_model_config_snapshot'
 
 
-def initial_settings(config, root, robot_type):
+def initial_settings(config, root, robot_type, load_config):
     path = resolve_path(config['params']['model_config_path'], root)
     raw = config['params'].get(SNAPSHOT)
     raw = model_defaults(read_json(path) if raw is None else json.loads(raw))
-    effective = load_model_config(path, project_root=root, robot_type=robot_type, raw=raw)
+    effective = load_config(path, project_root=root, robot_type=robot_type, raw=raw)
     return raw, effective, path
 
 
@@ -21,16 +21,20 @@ def current_settings(context, config):
     return copy.deepcopy(context.model_config_snapshot if raw is None else json.loads(raw))
 
 
-def configure_model(context, config, key, value, callback):
+def configure_model(context, config, key, value, callback, *, load_config, hot_model_keys):
     parts = key.split('.')
     if (len(parts) != 3 or parts[1] not in DEFAULTS or parts[2] not in DEFAULTS[parts[1]]):
         raise ValueError('unsupported configuration key: ' + key)
     raw = current_settings(context, config)
     raw[parts[1]][parts[2]] = value
-    load_model_config(config['params']['model_config_path'], project_root=context.project_root,
-                      robot_type=context.robot_type, raw=raw)
-    action = ('reinitialize' if parts[1] in ('model', 'inference') else None
-              if parts[1:] == ['execution', 'inference_timeout_s'] else 'reset')
+    load_config(config['params']['model_config_path'], project_root=context.project_root,
+                robot_type=context.robot_type, raw=raw)
+    if parts[1] in ('model', 'inference'):
+        action = 'reinitialize'
+    elif key == 'model_config.execution.inference_timeout_s' or key in hot_model_keys:
+        action = None
+    else:
+        action = 'reset'
     config['params'][SNAPSHOT] = json.dumps(raw, ensure_ascii=False, allow_nan=False)
     if action: callback(action)
 
@@ -53,9 +57,9 @@ def export_settings(context, config):
             'files': [{'path': name, 'data': raw}]}
 
 
-def initialize_policy(config, root, policy_class):
+def initialize_policy(config, root, policy_class, *, load_config=load_model_config):
     validate_manifest(config)
-    raw, model, model_file = initial_settings(config, root, 'arx_acone')
+    raw, model, model_file = initial_settings(config, root, 'arx_acone', load_config)
     context = policy_class(model, policy_config=config, project_root=root)
     context.model_config_snapshot = raw
     context.model_config_file = model_file
@@ -77,10 +81,12 @@ def _configuration_value(raw):
         return raw
 
 
-def configure_policy(context, config, key, value, callback, root):
+def configure_policy(context, config, key, value, callback, root, *,
+                     load_config=load_model_config, hot_model_keys=()):
     """Validate a detached candidate; the SDK applies lifecycle work after return."""
     if key.startswith('model_config.'):
-        return configure_model(context, config, key, _configuration_value(value), callback)
+        return configure_model(context, config, key, _configuration_value(value), callback,
+                               load_config=load_config, hot_model_keys=hot_model_keys)
     allowed_params = {'model_config_path', 'task', *GRIPPER_DEFAULTS}
     execution_fields = {'mode', 'call_every_actions', 'control_mode', 'tui_command_workers'}
     section, separator, leaf = key.partition('.')
@@ -99,7 +105,7 @@ def configure_policy(context, config, key, value, callback, root):
         raise ValueError('execution.control_mode must be qpos, epos or mixed')
     validate_manifest(candidate)
     if key == 'params.model_config_path':
-        load_model_config(candidate['params']['model_config_path'], project_root=root)
+        load_config(candidate['params']['model_config_path'], project_root=root)
         candidate['params'][SNAPSHOT] = None
     effect = ('reinitialize' if key in {'params.model_config_path', 'execution.control_mode',
                                      'execution.tui_command_workers'}

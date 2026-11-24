@@ -61,6 +61,11 @@ def test_refresh_reuses_visual_features_and_actions_receive_exact_cached_tokens(
     list(backend.refresh_language())
     assert backend.language_ids == (9, 100, 101)
     assert backend.monitor()['subtask'] == 'pull cable'
+    cold = backend.monitor()
+    assert cold['subtask_prepare_ms'] > 0
+    assert cold['subtask_prefill_ms'] > 0 and cold['subtask_decode_ms'] > 0
+    assert cold['subtask_ms'] >= sum(cold[key] for key in (
+        'subtask_queue_ms', 'subtask_prepare_ms', 'subtask_prefill_ms', 'subtask_decode_ms', 'subtask_post_ms'))
     assert encoded == encoders and headers == [(), ('Subtask',)]
     torch.testing.assert_close(action_prefix[:, 1:], calls[1]['inputs_embeds'][:, 1:action_prefix.shape[1]])
     # Warm refresh uses the same processor result for both prompts and the cached closed segment for the action.
@@ -74,5 +79,7 @@ def test_refresh_reuses_visual_features_and_actions_receive_exact_cached_tokens(
     assert rows[-1][-5:] == [tokens.subtask_start, 9, 100, 101, tokens.subtask_end]
     list(backend.refresh_language())
     assert encoded == encoders * 2 and headers == [(), ('Subtask',), ('Subtask',)]
+    assert backend.monitor()['subtask_prepare_ms'] == 0
     backend.reset_context()
     assert backend.language_ids == () and backend.monitor()['subtask'] == ''
+    assert backend.monitor()['subtask_ms'] == 0
