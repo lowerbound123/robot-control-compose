@@ -10,7 +10,7 @@ QWEN = {"qwen35_single", "qwen35_twostage"}
 HISTORY = {"qwen35_history", "qwen35_history_lift2"}
 LLM = {"llm_direction", "llm_failure"}
 OPENWAM = {"openwam_maas_acone", "openwam_maas_lift2"}
-POLICIES = {"example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM | OPENWAM
+POLICIES = {"a2_optimized", "example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM | OPENWAM
 
 
 def suite(policies, interface):
@@ -27,6 +27,8 @@ def suite(policies, interface):
                      and ("pi05_lift2" in policies or not path.name.startswith("test_pi05_lift2")))
 
     add("test_example_*.py")
+    if "a2_optimized" in policies:
+        add("test_a2_optimized*.py")
     if policies & HISTORY:
         add("test_qwen35_history_*.py")
     if policies & (HISTORY | {"pi05_lift2"}):

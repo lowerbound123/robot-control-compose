@@ -119,14 +119,14 @@ class HistoryBackend:
         sample['observation.state'] = F.pad(state, (0, self.geometry.max_state_dim-len(state)))
         return self.reorder(sample)
 
-    def build_input(self, qpos, images, instruction, contexts):
+    def build_input(self, qpos, images, instruction, contexts, *, generate=None):
         import torch
         from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video import ContextSlot, ContextSource
         slots = [ContextSlot(images=(torch.from_numpy(item.image.copy()).float()/255.,),
                              source=ContextSource.HIST, frame_index=item.index) for item in contexts]
         return self.processor.build_inference(self.prepare_sample(qpos, images, instruction),
             contexts=slots, include_task=True, inference_order='action_first', view_indices=(0,),
-            language={}, generate=self.generate_language)
+            language={}, generate=self.generate_language if generate is None else generate)
 
     def load(self):
         self._monitor_update(model_stage='loading_config')
@@ -179,11 +179,8 @@ class HistoryBackend:
         self.processor._ensure_loaded()
         self._monitor_update(model_stage='loaded')
 
-    def eager_prefix(self, model_input):
+    def model_batch(self, model_input):
         import torch
-        from .graphs import _inference_autocast
-        from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video import parse_language_segment
-        self._pending_subtask = ''
         batch = {}
         for key, value in model_input.items():
             if isinstance(value, str):
@@ -191,6 +188,14 @@ class HistoryBackend:
             else:
                 tensor = torch.as_tensor(value).unsqueeze(0).to(self.device)
                 batch[key] = tensor.to(torch.bfloat16) if tensor.is_floating_point() else tensor
+        return batch
+
+    def eager_prefix(self, model_input):
+        import torch
+        from .graphs import _inference_autocast
+        from lerobot.policies.qwen3_5_context_video.tokenization_qwen3_5_context_video import parse_language_segment
+        self._pending_subtask = ''
+        batch = self.model_batch(model_input)
         with torch.no_grad(), _inference_autocast(self.model):
             _, kv, mask, _, anchor, _, subtask_ids = self.model._prefix_stage(batch, requested_order=0)
         if subtask_ids is not None and 'Subtask' in self.generate_language:
@@ -260,6 +265,9 @@ class HistoryBackend:
         self._monitor_update(model_stage='idle', subtask=self._pending_subtask)
         return result, timings
 
+    def graph_prefix_capacity(self, observed):
+        return max(observed, self.model_config.max_prompt_tokens) + 64
+
     def warmup(self):
         self._monitor_update(model_stage='warmup')
         import torch
@@ -290,7 +298,7 @@ class HistoryBackend:
             try:
                 self._monitor_update(model_stage='capturing_denoise_graph')
                 candidate = FlowSampler(self.model, num_steps=self.model_config.num_inference_steps,
-                    max_prefix_len=max(longest, self.model_config.max_prompt_tokens)+64, attn_implementation='sdpa')
+                    max_prefix_len=self.graph_prefix_capacity(longest), attn_implementation='sdpa')
                 if not candidate.load(kv, mask, anchor, state):
                     raise RuntimeError('warmup prefix exceeds graph buffers')
                 candidate.capture()

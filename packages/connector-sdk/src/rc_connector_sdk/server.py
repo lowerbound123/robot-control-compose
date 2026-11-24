@@ -29,7 +29,6 @@ class ConnectorServer:
         self._events = []
         self.journal = Path(journal) if journal else None
         self.exit_code = 0
-        self._driver_closed = False
         self._bound_paths = []
         self._shutdown_deadline = None
         self._feedback_timing = None
@@ -48,7 +47,7 @@ class ConnectorServer:
     def _observe(self, event):
         self._events.append(copy.deepcopy(event))
 
-    def _publish(self):
+    def _publish(self, read_watermarks=None):
         while True:
             item = self.commands.get()
             if item is None:
@@ -69,7 +68,8 @@ class ConnectorServer:
             published = {e['arm'] for e in self._events}
             arms = {arm: ('published' if error is None or arm in published else 'unknown' if valid else 'not_published')
                     for arm in targets if arm in ('left', 'right')} if isinstance(targets, dict) else {}
-            try: watermarks = self.driver.read_state().get('sequences', {})
+            try:
+                watermarks = read_watermarks() if read_watermarks else self.driver.read_state().get('sequences', {})
             except Exception: watermarks = {}
             response = {'id': message['id'], 'success': error is None, 'error': error, 'arms': arms,
                         'events': self._events, 'feedback_watermarks': watermarks}
@@ -234,59 +234,131 @@ class ConnectorServer:
             with self._connections_lock:
                 self.threads.discard(threading.current_thread())
 
-    def serve(self):
+    def _bind(self, suffix):
+        path = self.endpoint + suffix
+        listener = socket.socket(socket.AF_UNIX)
+        self.listeners.append(listener)
+        listener.bind(path)
+        self._bound_paths.append(path)
+        Path(path).chmod(0o600)
+        listener.settimeout(.1)
+        return listener
+
+    def _start_accepting(self, listener, handler):
+        listener.listen(4)
+        thread = threading.Thread(target=self._accept, args=(listener, handler), daemon=True)
+        with self._connections_lock:
+            self.threads.add(thread)
+        thread.start()
+
+    def _start_commands(self, listener, read_watermarks=None):
+        self.driver.set_command_observer(self._observe)
+        worker = threading.Thread(target=self._publish, args=(read_watermarks,), name='connector-publisher', daemon=True)
+        worker.start()
+        self._start_accepting(listener, self._command_connection)
+        return worker
+
+    def _drain_commands(self, worker, deadline):
+        # stop admissions before putting the sentinel behind every accepted frame.
+        with self._connections_lock:
+            for connection in self.connections:
+                try: connection.shutdown(socket.SHUT_RD)
+                except OSError: pass
+        if not self._command_lock.acquire(timeout=max(0., deadline - time.monotonic())):
+            return False
+        self._command_lock.release()
+        try: self.commands.put(None, timeout=max(0., deadline - time.monotonic()))
+        except queue.Full: return False
+        worker.join(max(0., deadline - time.monotonic()))
+        return not worker.is_alive()
+
+    def _close_io(self):
+        for listener in self.listeners: listener.close()
+        with self._connections_lock:
+            connections = tuple(self.connections)
+            self.connections.clear()
+        for connection in connections:
+            try: connection.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+            connection.close()
+        for path in self._bound_paths:
+            Path(path).unlink(missing_ok=True)
+
+    def serve_commands(self, listener, control, read_watermarks):
+        """Child process. The query server owns both socket paths and readiness."""
+        activated = threading.Event()
+
+        def watch_parent():
+            try:
+                request = receive_message(control)
+                if request == {'activate': True}:
+                    activated.set()
+                    request = receive_message(control)
+                self._shutdown_deadline = request['deadline']
+            except (EOFError, OSError, ValueError, KeyError):
+                self.exit_code = 1
+            finally:
+                self.stop.set()
+                activated.set()
+
+        threading.Thread(target=watch_parent, daemon=True).start()
+        worker = None
         try:
+            self.driver.connect(cancel_event=self.stop)
+            # ROS discovery can overlap. Admit the first command only after the
+            # query process has fresh feedback and this node has both subscribers.
+            while not activated.wait(.05) and not self.stop.is_set():
+                pass
+            if not self.stop.is_set():
+                worker = self._start_commands(listener, read_watermarks)
+                send_message(control, {'ready': True})
+                self.stop.wait()
+        finally:
+            self.stop.set()
+            deadline = self._shutdown_deadline or time.monotonic() + 5
+            if worker and not self._drain_commands(worker, deadline):
+                self.exit_code = 1
+            self._close_io()
+            self.driver.close(deadline=deadline)
+        return self.exit_code or int(self._shutdown_deadline is None)
+
+    def serve(self, command_process=None):
+        worker = None
+        try:
+            if command_process is not None:
+                command_process.start(self._bind('.command'), self.stop)
             self.driver.connect(cancel_event=self.stop)
             cameras = tuple(getattr(self.driver, 'camera_topics', ('head', 'left_wrist', 'right_wrist')))
             self.pool = ImagePool(cameras=cameras or ('head',))
             self._record_pool()
-            self.driver.set_command_observer(self._observe)
-            worker = threading.Thread(target=self._publish, name='connector-publisher', daemon=True)
-            worker.start()
-            for suffix, handler in (('.command', self._command_connection), ('.query', self._query_connection)):
-                listener = socket.socket(socket.AF_UNIX)
-                listener.bind(self.endpoint + suffix)
-                self._bound_paths.append(self.endpoint + suffix)
-                Path(self.endpoint + suffix).chmod(0o600)
-                listener.listen(4)
-                listener.settimeout(.1)
-                self.listeners.append(listener)
-                thread = threading.Thread(target=self._accept, args=(listener, handler), daemon=True)
-                with self._connections_lock:
-                    self.threads.add(thread)
-                thread.start()
-            # bind() creates a socket path before listen() can accept a peer.
-            # Publish readiness only after both channels are listening.
+            if command_process is None:
+                worker = self._start_commands(self._bind('.command'))
+            else:
+                command_process.wait_ready(self.stop)
+            self._start_accepting(self._bind('.query'), self._query_connection)
             ready = Path(self.endpoint + '.ready')
             ready.write_text(self.runtime_id)
-            ready.chmod(0o600)
             self._bound_paths.append(str(ready))
+            ready.chmod(0o600)
             self.stop.wait()
-            deadline = self._shutdown_deadline or time.monotonic() + 5
-            while self.commands.unfinished_tasks and time.monotonic() < deadline: time.sleep(.005)
-            if self.commands.unfinished_tasks: self.exit_code = 1
-            else:
-                self.commands.put(None)
-                worker.join(max(0, deadline - time.monotonic()))
-                self.driver.close()
-                self._driver_closed = True
         finally:
             self.stop.set()
-            for listener in self.listeners: listener.close()
-            with self._connections_lock:
-                connections = tuple(self.connections)
-                self.connections.clear()
-            for connection in connections:
-                try: connection.shutdown(socket.SHUT_RDWR)
-                except OSError: pass
-                connection.close()
-            for path in self._bound_paths:
-                Path(path).unlink(missing_ok=True)
-            if self.pool is not None:
-                self.pool.close()
-                if self.leases: self.exit_code = 1
-                elif self.journal: self.journal.unlink(missing_ok=True)
-            if not self._driver_closed:
-                try: self.driver.close()
-                except Exception: self.exit_code = 1
+            deadline = self._shutdown_deadline or time.monotonic() + 5
+            try:
+                if command_process is not None:
+                    if not command_process.close(deadline): self.exit_code = 1
+                elif worker and not self._drain_commands(worker, deadline):
+                    self.exit_code = 1
+            finally:
+                self._close_io()
+                try:
+                    if self.pool is not None:
+                        self.pool.close()
+                        if self.leases: self.exit_code = 1
+                        elif self.journal: self.journal.unlink(missing_ok=True)
+                finally:
+                    try:
+                        if command_process is None: self.driver.close()
+                        else: self.driver.close(deadline=deadline)
+                    except Exception: self.exit_code = 1
         return self.exit_code

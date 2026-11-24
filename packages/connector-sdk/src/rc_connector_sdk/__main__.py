@@ -1,11 +1,12 @@
 """Launch a connector source in its own interpreter; configuration is frozen JSON."""
 import argparse
-import importlib.util
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import signal
-import sys
+import tempfile
 
+from .command_process import CommandProcess, FeedbackWatermarks, load_source
 from .server import ConnectorServer
 
 
@@ -21,16 +22,21 @@ def main():
     args = parser.parse_args()
     config = json.loads(Path(args.config_file).read_text() if args.config_file else args.config_json)
     source = Path(args.source).resolve()
-    sys.path.insert(0, str(source.parent))
-    spec = importlib.util.spec_from_file_location('connector_source', source)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    driver = module.create_connector(config)
-    server = ConnectorServer(driver, args.socket, instance_id=args.instance_id, journal=args.journal,
-                             debug_timing=args.debug_timing)
-    for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, lambda *_: server.stop.set())
-    return server.serve()
+    module = load_source(source)
+    with ExitStack() as stack:
+        command = None
+        if hasattr(module, 'create_split_connector'):
+            shared = stack.enter_context(tempfile.TemporaryFile())
+            watermarks = FeedbackWatermarks(shared.fileno())
+            shared.truncate(watermarks.record.size)
+            driver = module.create_split_connector(config, role='query', watermarks=watermarks)
+            command = CommandProcess(source, config, watermarks, config.get('connect_timeout_s', 10))
+        else:
+            driver = module.create_connector(config)
+        server = ConnectorServer(driver, args.socket, instance_id=args.instance_id, journal=args.journal,
+                                 debug_timing=args.debug_timing)
+        for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, lambda *_: server.stop.set())
+        return server.serve(command)
 
 
 if __name__ == '__main__': raise SystemExit(main())

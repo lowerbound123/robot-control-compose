@@ -140,6 +140,7 @@ mcp get_policy_result {"operation_id":"<operation_id>"}
 - [Python 3.14 本地范例策略](policy/example/README.md)
 - [Qwen 策略](policy/qwen35_single/README.md)
 - [Qwen 视觉历史策略](policy/qwen35_history/README.md)
+- [A2 动作优先与后台语言刷新](policy/a2_optimized/README.md)
 - [π0.5 LIFT2 策略](policy/pi05_lift2/README.md)：独立 LeRobot checkpoint、配置及 LIFT2 四参数夹爪规则，复用 pi05 依赖镜像。
 - [InternVLA MaaS 网络策略](policy/internvla_maas/README.md)：独立 Python 3.11 轻量容器，复用 Qwen 单阶段动作处理，通过 WebSocket 获取 action chunk。
 - OpenWAM MaaS 网络策略按机型选择，默认在 32 步动作耗尽后请求下一块。[ACOne](policy/openwam_maas_acone/README.md) · [LIFT2](policy/openwam_maas_lift2/README.md)

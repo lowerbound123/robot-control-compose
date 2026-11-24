@@ -63,3 +63,7 @@ text decoding, and the closed language segment before action prefill are retaine
 Future-image and FAST generation remain unsupported in this deployment subset.
 Language requests use eager prefix execution; the action denoise graph remains available.
 The runtime uses this directory's source only and does not import the reference checkout.
+
+The optional per-observation visual feature input used by a2_optimized reuses
+the pooled current-image and history-video tensors in its two action-first
+prompts. Both paths retain the same placeholder count checks and embedding layout.

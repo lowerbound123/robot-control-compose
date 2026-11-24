@@ -87,7 +87,8 @@ def _decode_image(message, transport):
 
 
 class Lift2Robot:
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, role='both', watermarks=None):
+        self._role, self._watermarks = role, watermarks
         self.config = copy.deepcopy(dict(config or {}))
         master = self.config.get('ros_master_uri', '')
         if not isinstance(master, str): raise ValueError('ros_master_uri must be a string URI')
@@ -132,6 +133,7 @@ class Lift2Robot:
         self._initialized = threading.Event()
         self._initialize_error = None
         self._cleanup_error = None
+        self._ros_interrupted = False
         self._connected = self._connecting = self.closed = False
 
     def _timeout(self, key, default):
@@ -176,7 +178,8 @@ class Lift2Robot:
                     self._cancelled(cancel_event)
                     if time.monotonic() >= deadline: raise RuntimeError('LIFT2 connect deadline exceeded')
                     try:
-                        self._read_state_locked()
+                        if self._role != 'command':
+                            self._read_state_locked()
                         for side, publisher in self._publishers.items():
                             if publisher.get_num_connections() < 1:
                                 raise RuntimeError(f'{side} command topic has no subscriber')
@@ -201,32 +204,45 @@ class Lift2Robot:
                 binding.rospy.init_node('rc_lift2_' + uuid.uuid4().hex[:8], argv=[],
                                         disable_signals=True, disable_rosout=True)
                 self._cancelled(cancel_event)
-                for side, suffix in (('left', ''), ('right', '2')):
-                    joint_topic = self.config.get(f'feedback_{side}_topic', '/joint_information' + suffix)
-                    pose_topic = self.config.get(f'eef_{side}_topic', '/follow' + ('1' if side == 'left' else '2') + '_pos_back')
-                    command_topic = self.config.get(f'command_{side}_topic', '/joint_control' + suffix)
-                    self._subscriptions.append(binding.rospy.Subscriber(joint_topic, binding.JointInformation,
-                        lambda msg, side=side: self._on_joint(side, msg), queue_size=10, tcp_nodelay=True))
-                    self._subscriptions.append(binding.rospy.Subscriber(pose_topic, binding.PosCmd,
-                        lambda msg, side=side: self._on_eef(side, msg), queue_size=10, tcp_nodelay=True))
-                    # SDK owns the bounded FIFO. rospy's bounded async publisher
-                    # discards old commands, so use synchronous publication.
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings('ignore', message='The publisher should be created.*', category=SyntaxWarning)
-                        self._publishers[side] = binding.rospy.Publisher(command_topic, binding.JointControl,
-                            queue_size=None, latch=False, tcp_nodelay=True)
-                image_type = binding.Image if self._transport == 'raw' else binding.CompressedImage
-                for camera, topic in self.camera_topics.items():
-                    self._subscriptions.append(binding.rospy.Subscriber(topic, image_type,
-                        lambda msg, camera=camera: self._on_image(camera, msg), queue_size=1,
-                        buff_size=64 * 1024 * 1024, tcp_nodelay=True))
-                self._cancelled(cancel_event)
-                self._decoder = threading.Thread(target=self._decode_images, name='lift2-image-decode', daemon=True)
-                self._decoder.start()
+                if self._role != 'both':
+                    # A master-initiated shutdown of either ROS node ends this instance.
+                    def ros_stopped():
+                        if not self._stop.is_set():
+                            self._ros_interrupted = True
+                            self._stop.set()
+                            if cancel_event is not None: cancel_event.set()
+                    binding.rospy.on_shutdown(ros_stopped)
+                if self._role != 'query': self._register_publishers(binding)
+                if self._role != 'command': self._register_subscriptions(binding)
         except BaseException as exc:
             self._initialize_error = exc
         finally:
             self._initialized.set()
+
+    def _register_publishers(self, binding):
+        for side, suffix in (('left', ''), ('right', '2')):
+            topic = self.config.get(f'command_{side}_topic', '/joint_control' + suffix)
+            # The SDK owns the FIFO; bounded async rospy publishers discard old commands.
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='The publisher should be created.*', category=SyntaxWarning)
+                self._publishers[side] = binding.rospy.Publisher(
+                    topic, binding.JointControl, queue_size=None, latch=False, tcp_nodelay=True)
+
+    def _register_subscriptions(self, binding):
+        for side, suffix in (('left', ''), ('right', '2')):
+            joint_topic = self.config.get(f'feedback_{side}_topic', '/joint_information' + suffix)
+            pose_topic = self.config.get(f'eef_{side}_topic', '/follow' + ('1' if side == 'left' else '2') + '_pos_back')
+            self._subscriptions.append(binding.rospy.Subscriber(joint_topic, binding.JointInformation,
+                lambda msg, side=side: self._on_joint(side, msg), queue_size=10, tcp_nodelay=True))
+            self._subscriptions.append(binding.rospy.Subscriber(pose_topic, binding.PosCmd,
+                lambda msg, side=side: self._on_eef(side, msg), queue_size=10, tcp_nodelay=True))
+        image_type = binding.Image if self._transport == 'raw' else binding.CompressedImage
+        for camera, topic in self.camera_topics.items():
+            self._subscriptions.append(binding.rospy.Subscriber(topic, image_type,
+                lambda msg, camera=camera: self._on_image(camera, msg), queue_size=1,
+                buff_size=64 * 1024 * 1024, tcp_nodelay=True))
+        self._decoder = threading.Thread(target=self._decode_images, name='lift2-image-decode', daemon=True)
+        self._decoder.start()
 
     def _on_joint(self, side, message):
         self._feedback_received(side, message, 'joint')
@@ -258,6 +274,7 @@ class Lift2Robot:
             with self._condition:
                 cache.pop(side, None)
                 self._feedback_errors[key] = str(exc)
+                if self._watermarks: self._watermarks.update(self._sequences, 0.)
                 self._condition.notify_all()
             return
         with self._condition:
@@ -273,6 +290,9 @@ class Lift2Robot:
                 if not history or history[-1]['seq'] != row['seq']: history.append(row)
             if all(arm in self._feedback and arm in self._eef for arm in ARMS):
                 self._recording_state = self._cached_state_locked()
+                if self._watermarks:
+                    oldest = min(cache[arm][2] for cache in (self._feedback, self._eef) for arm in ARMS)
+                    self._watermarks.update(self._sequences, oldest + self._feedback_timeout)
             self._condition.notify_all()
 
     def _pose(self, side):
@@ -465,8 +485,13 @@ class Lift2Robot:
             with self._condition:
                 self._pending_images.clear()
                 self._images.clear()
+            if self._ros_interrupted: raise RuntimeError('LIFT2 ROS node stopped unexpectedly')
         finally:
             self._close_lock.release()
+
+
+def create_split_connector(config, *, role, watermarks):
+    return Lift2Robot(config, role=role, watermarks=watermarks)
 
 
 def create_connector(config):

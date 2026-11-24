@@ -175,7 +175,7 @@
       "file": "lerobot/policies/qwen3_5_context_video_ki/modeling_qwen3_5_context_video_ki.py",
       "source": "src/lerobot/policies/qwen3_5_context_video_ki/modeling_qwen3_5_context_video_ki.py",
       "source_sha256": "a8ac4c33b59ca77aab6f7a426e2d41430cf324f932851c0771dad9af781639ad",
-      "sha256": "931d869a0fc97c298aabe893e05cd838250376ce796753a7c399061f9d89510a",
+      "sha256": "cb72b178c037510b5d2166bf77717608cd286baa27d952673e20c0e99ad66916",
       "language_generation_source_sha256": "a8ac4c33b59ca77aab6f7a426e2d41430cf324f932851c0771dad9af781639ad"
     }
   ],

@@ -318,7 +318,7 @@ Linux / OrbStack arm64、三路 640×480、开启录制时，各测量约 30 秒
 | 改动 | 命令 | 验证范围 |
 | --- | --- | --- |
 | RC 内部、TUI、录制等改动，策略看到的契约不变；或只改 example | `python3 scripts/test_scope.py` | 运行完整 example 基线；具体模块改动另补对应 RC 单测。链只启动两个 example，其他业务策略不参与。 |
-| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、pi05_lift2、qwen35_single、qwen35_twostage、qwen35_history、qwen35_history_lift2、internvla_maas、openwam_maas_acone、openwam_maas_lift2；可同时列多个来源。 |
+| 只改某个策略的实现、manifest、镜像或依赖 | `python3 scripts/test_scope.py --policy llm_failure` | example 基线加该来源的策略套件。支持 hold、llm_direction、llm_failure、pi05、pi05_lift2、qwen35_single、qwen35_twostage、qwen35_history、qwen35_history_lift2、a2_optimized、internvla_maas、openwam_maas_acone、openwam_maas_lift2；可同时列多个来源。 |
 | 同时修改多个策略的实现或依赖 | 例如 `python3 scripts/test_scope.py --policy qwen35_single qwen35_twostage` | 单选 Qwen 测该入口、部署和 worker；两个都选时再加配置、调度、后端和 CUDA 用例。每个策略独立持有业务实现；若同时修改两个 LLM 的 provider 读取逻辑，选 llm_direction 和 llm_failure。 |
 | RC↔policy/SDK 公共契约改变 | `python3 scripts/test_scope.py --interface` | 整个 pytest 套件，含 RC、SDK、example、业务策略和跨策略对照；按所需环境追加 Docker/模型兼容性验证。 |
 

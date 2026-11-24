@@ -528,16 +528,41 @@ class Qwen3_5ContextVideoKIModel(nn.Module):  # noqa: N801
 
     # ---- prefix embedding ---------------------------------------------------
 
+    def encode_visual_features(self, pixel_values, image_grid_thw, pixel_values_videos, video_grid_thw):
+        """Pool camera and optional history-video features for one observation."""
+        flat_grid = image_grid_thw.reshape(-1, 3)
+        if pixel_values.ndim > 2:
+            pixel_values = pixel_values.reshape(-1, pixel_values.shape[-1])
+        image_embeds = self.qwen.get_image_features(
+            pixel_values=pixel_values, image_grid_thw=flat_grid, return_dict=True
+        ).pooler_output
+        if isinstance(image_embeds, (tuple, list)):
+            image_embeds = torch.cat(tuple(image_embeds), dim=0)
+        video_embeds = None
+        flat_video_grid = _flat_video_grid(video_grid_thw)
+        if flat_video_grid is not None:
+            if pixel_values_videos is None:
+                raise ValueError("video_grid_thw was provided without pixel_values_videos")
+            if pixel_values_videos.ndim > 2:
+                pixel_values_videos = pixel_values_videos.reshape(-1, pixel_values_videos.shape[-1])
+            video_embeds = self.qwen.get_video_features(
+                pixel_values_videos=pixel_values_videos, video_grid_thw=flat_video_grid, return_dict=True
+            ).pooler_output
+            if isinstance(video_embeds, (tuple, list)):
+                video_embeds = torch.cat(tuple(video_embeds), dim=0)
+        return image_embeds, video_embeds
+
     def embed_inputs(
         self,
         *,
         input_ids: Tensor,
         attention_mask: Tensor,
         state: Tensor,
-        pixel_values: Tensor,
+        pixel_values: Tensor | None,
         image_grid_thw: Tensor,
         pixel_values_videos: Tensor | None = None,
         video_grid_thw: Tensor | None = None,
+        visual_features: tuple[Tensor, Tensor | None] | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Embed all ids from Qwen's tied table, then override marker, vision and state slots.
 
@@ -568,14 +593,10 @@ class Qwen3_5ContextVideoKIModel(nn.Module):  # noqa: N801
             inputs_embeds[marker_mask] = marker_embeds.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
 
         flat_grid = image_grid_thw.reshape(-1, 3)
-        if pixel_values.ndim > 2:
-            pixel_values = pixel_values.reshape(-1, pixel_values.shape[-1])
+        if visual_features is None:
+            visual_features = self.encode_visual_features(pixel_values, flat_grid, pixel_values_videos, video_grid_thw)
+        image_embeds, video_embeds = visual_features
         image_mask = attention_mask & (safe_ids == int(self.qwen.config.image_token_id))
-        image_embeds = self.qwen.get_image_features(
-            pixel_values=pixel_values, image_grid_thw=flat_grid, return_dict=True
-        ).pooler_output
-        if isinstance(image_embeds, (tuple, list)):
-            image_embeds = torch.cat(tuple(image_embeds), dim=0)
         if int(image_mask.sum()) != image_embeds.shape[0]:
             raise ValueError(
                 "Qwen image placeholder count does not match visual embedding count: "
@@ -597,15 +618,6 @@ class Qwen3_5ContextVideoKIModel(nn.Module):  # noqa: N801
         )
         flat_video_grid = _flat_video_grid(video_grid_thw)
         if flat_video_grid is not None:
-            if pixel_values_videos is None:
-                raise ValueError("video_grid_thw was provided without pixel_values_videos")
-            if pixel_values_videos.ndim > 2:
-                pixel_values_videos = pixel_values_videos.reshape(-1, pixel_values_videos.shape[-1])
-            video_embeds = self.qwen.get_video_features(
-                pixel_values_videos=pixel_values_videos, video_grid_thw=flat_video_grid, return_dict=True
-            ).pooler_output
-            if isinstance(video_embeds, (tuple, list)):
-                video_embeds = torch.cat(tuple(video_embeds), dim=0)
             if int(video_mask.sum()) != video_embeds.shape[0]:
                 raise ValueError(
                     "Qwen video placeholder count does not match visual embedding count: "
@@ -686,7 +698,8 @@ class Qwen3_5ContextVideoKIModel(nn.Module):  # noqa: N801
             input_ids=input_ids,
             attention_mask=attention_mask,
             state=batch[OBS_STATE],
-            pixel_values=batch[f"{OBS_STR}.pixel_values"],
+            pixel_values=batch.get(f"{OBS_STR}.pixel_values"),
+            visual_features=batch.get("visual_features"),
             image_grid_thw=batch[f"{OBS_STR}.image_grid_thw"],
             pixel_values_videos=batch.get(PIXEL_VALUES_VIDEOS_KEY),
             video_grid_thw=batch.get(VIDEO_GRID_THW_KEY),

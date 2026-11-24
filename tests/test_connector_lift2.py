@@ -326,3 +326,26 @@ def test_connect_cannot_advertise_ready_before_command_transport_handshake(devic
         with pytest.raises(RuntimeError, match='subscriber|deadline'): robot.connect()
     finally:
         robot.close()
+
+
+def test_receipt_watermarks_follow_the_same_joint_and_eef_samples(device):
+    import tempfile
+    from rc_connector_sdk.command_process import FeedbackWatermarks
+
+    robot, _, _ = device
+    with tempfile.TemporaryFile() as file:
+        shared = FeedbackWatermarks(file.fileno())
+        robot._watermarks = shared
+        robot._on_joint('right', joint())
+        assert shared.read() == robot.read_state()['sequences']
+        invalid = eef()
+        invalid.x = float('nan')
+        robot._on_eef('left', invalid)
+        robot._on_joint('right', joint())
+        assert shared.read() == {}
+        robot._on_eef('left', eef())
+        assert shared.read() == robot.read_state()['sequences']
+        robot._feedback_timeout = .01
+        time.sleep(.02)
+        robot._on_joint('right', joint())
+        assert shared.read() == {}
