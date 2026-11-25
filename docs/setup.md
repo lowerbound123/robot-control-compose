@@ -35,6 +35,19 @@ setup 先合并、验证，再以原子写入更新本机文件。既有值保�
 
 显式传入 `--policies` 时，setup 只准备所选策略镜像；同时传入 `--connectors` 才额外构建指定 connector。RC 和 ipc-anchor 由部署复用，首次部署或基础镜像依赖变更时，可执行 `./scripts/compose.sh build ipc-anchor robot-control`。省略 `--policies` 时，setup 构建两个基础镜像和所有有效策略，connector 默认为 `mock`。设备参数位于 `connector/<source>/devices/`，setup 只创建缺失模板，不覆盖已有设备配置。旧 `robot.backend` 必须按 [connector 迁移说明](connectors.md) 改为实例引用。RC 本身不再包含 ROS，切换 policy 不会重启 connector。
 
+### Qwen 内核镜像增量升级
+
+六个策略共用两个镜像。`qwen35_single`、`qwen35_twostage` 使用 `robot-control-compose-qwen35:local`。两个 history 和两个 A2 来源使用 `robot-control-compose-qwen35-history:local`。各 Dockerfile 在 Torch/CUDA 基础依赖之后读取独立的 `kernels/kernels.lock`。FLA 0.6.0 和 causal-conv1d 1.7.0 使用校验过 SHA256 的 wheel；后者匹配 Linux x86_64、CPython 3.11、Torch 2.10 和 CUDA 12。
+
+已有上述本地运行镜像时，可从现有标签一次性增量升级。按需要执行对应的一行。构建会先核对底座内的基础依赖锁，跳过原 wheelhouse 和 Torch/CUDA 安装，并把产物写回该共享标签。
+
+```bash
+./scripts/build.sh qwen35_single --build-arg QWEN_RUNTIME_BASE=robot-control-compose-qwen35:local
+./scripts/build.sh a2_optimized --build-arg QWEN_RUNTIME_BASE=robot-control-compose-qwen35-history:local
+```
+
+首次构建或基础锁不匹配时，省略 `--build-arg`，由 Docker 按完整配方复用可用缓存。反复测试同一升级时，可先用 `docker tag` 为升级前的镜像保留一个固定标签，再将该标签作为 `QWEN_RUNTIME_BASE`。已加载的策略在下一次 `reload_policy <实例名>` 或策略切换时使用新镜像。
+
 ## Git 文件约定
 
 `.gitignore` 按目录用途匹配，不需要为每个新策略、connector 或 Compose 覆盖文件追加名字：

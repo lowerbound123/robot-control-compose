@@ -144,13 +144,14 @@ def test_build_finds_only_target_service(checkout, docker_log, target, service, 
     assert files(command) == [str(checkout / name) for name in expected]
 
 
-def test_build_policy_uses_own_project_and_environment(checkout, docker_log):
+@pytest.mark.parametrize('build_args', [[], ['--build-arg', 'QWEN_RUNTIME_BASE=existing:local']])
+def test_build_policy_uses_own_project_and_environment(checkout, docker_log, build_args):
     (checkout / 'policy/example/deployment.env').write_text('EXAMPLE_BUILD=value\n')
-    result = invoke(checkout, 'build', 'example')
+    result = invoke(checkout, 'build', 'example', *build_args)
     assert result.returncode == 0, result.stderr
     record = records(docker_log)[-1]
     command = record['arguments']
-    assert command[-2:] == ['build', 'policy']
+    assert command[command.index('build'):] == ['build', *build_args, 'policy']
     assert files(command) == [str(checkout / 'policy/example/compose.yaml')]
     assert command[command.index('--project-directory') + 1] == str(checkout / 'policy/example')
     assert command[command.index('--env-file') + 1] == str(checkout / 'policy/example/deployment.env')

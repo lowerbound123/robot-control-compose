@@ -2,7 +2,9 @@
 
 本策略的业务实现位于 `src/rc_qwen35_policy/`，模型源码、补丁与来源记录位于 `vendor/`，专用校验脚本位于 `scripts/`。这些文件均由本目录独立持有，不从其他 policy 或仓库级业务包导入。
 
-`qwen35_single` 与 `qwen35_twostage` 各自独占容器、host instance、模型和 context，共享同一个 `robot-control-compose-qwen35:local` Python 3.11 镜像。依赖版本和哈希在各目录 `dependencies/requirements.lock`；Dockerfile 和 build 声明各自完整。单独准备 twostage 不依赖先安装 single。
+`qwen35_single` 与 `qwen35_twostage` 各自独占容器、host instance、模型和 context，共享同一个 `robot-control-compose-qwen35:local` Python 3.11 镜像。基础依赖锁在各目录 `dependencies/requirements.lock`，FLA 和 causal-conv1d 单独锁在 `kernels/kernels.lock`。Dockerfile 和 build 声明各自完整。单独准备 twostage 不依赖先安装 single。
+
+已有镜像可按[增量升级步骤](../../docs/setup.md#qwen-内核镜像增量升级)安装这两个内核。
 
 ## 准备
 
@@ -17,7 +19,7 @@
 - `policy.yaml`：协议、execution、params、命令；model_config_path 默认 `model.json`。
 - `model.json`：模型、workflow、推理与动作配置。
 - `deployment.env`：GPU_DEVICE、MODELS_DIR、HF_CACHE_DIR、HF_HUB_OFFLINE。
-- `compose.yaml`、`Dockerfile`、`dependencies/requirements.lock`：部署和构建。
+- `compose.yaml`、`Dockerfile`、`dependencies/requirements.lock`、`kernels/kernels.lock`：部署和构建。
 
 模型和缓存路径相对策略目录，或使用宿主绝对路径。两个策略可以共用同一个外部模型/cache 目录。更换 GPU 或 mount 后重新 switch，配置会重新解析；运行切换不构建、安装或下载权重。NVIDIA 驱动和 Container Toolkit 需在目标机配置，setup 构建成功不代表 GPU 已可用。
 
@@ -118,6 +120,7 @@ tui_commands:
 ```bash
 docker build --platform linux/amd64 \
   --build-context policy-deps=./policy/qwen35_single/dependencies \
+  --build-context kernel-deps=./policy/qwen35_single/kernels \
   -f policy/qwen35_single/Dockerfile --target test \
   -t robot-control-compose-qwen35-graph-tests:local .
 docker run --rm --gpus all --platform linux/amd64 \

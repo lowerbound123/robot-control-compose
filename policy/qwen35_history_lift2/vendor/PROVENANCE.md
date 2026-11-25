@@ -47,7 +47,7 @@ No weights, tokenizer assets, camera frames or training data are included.
 
 Target: independent Python 3.11 Linux container, Torch2.10+CUDA12.8,
 torchvision0.25, Transformers5.2.0. Dependencies are pinned and hashed in the
-policy directory. Optional FLA/causal-conv kernels are not required; latency and
+policy directory. The shared runtime installs pinned FLA and causal-conv1d kernels. Latency and
 CUDA graph support require separate target-GPU validation.
 
 

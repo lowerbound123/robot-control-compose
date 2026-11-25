@@ -48,7 +48,7 @@ No weights, tokenizer assets, camera frames or training data are included.
 Target: independent Python 3.11 Linux container, Torch2.10+CUDA12.8,
 torchvision0.25, Transformers5.2.0. Dependencies are pinned and hashed in the
 policy directory. The shared history image pins FLA and includes the compiler
-needed by Triton at runtime. The separate causal-conv1d extension is optional.
+needed by Triton at runtime. The runtime also installs the pinned causal-conv1d binary wheel.
 Latency and CUDA graph support require target-GPU validation.
 
 

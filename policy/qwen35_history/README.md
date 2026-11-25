@@ -14,7 +14,7 @@
 
 `deployment.env` 指定 GPU_DEVICE、MODELS_DIR、HF_CACHE_DIR，默认 HF_HUB_OFFLINE=1。checkpoint 必须包含 `config.json`、`train_config.json`、`stats.json`、`model.safetensors`，模型类型必须是 `qwen3_5_context_video_ki`。当前来源固定预测 50 步，状态/动作宽度为 32，适配机器人为 arx_acone 的 14 维双臂关节布局。
 
-`qwen35_history`、`qwen35_history_lift2`、`a2_optimized` 和 `a2_optimized_lift2` 共用 `robot-control-compose-qwen35-history:local`。镜像锁定 FLA 0.6.0，并包含 Triton 首次运行所需的编译环境。模型在 CUDA 上会为线性注意力选择 FLA。更新已有部署时，拉取仓库后用 `./scripts/build.sh a2_optimized` 重建共享镜像一次，再用 TUI 的 `reload_policy <实例名>` 分别重建使用该镜像的已加载实例。确认就绪后按需 `resume`。
+`qwen35_history`、`qwen35_history_lift2`、`a2_optimized` 和 `a2_optimized_lift2` 共用 `robot-control-compose-qwen35-history:local`。镜像包含 FLA 0.6.0、causal-conv1d 1.7.0 和 Triton 运行时使用的 C 编译器。现有镜像可按[增量升级步骤](../../docs/setup.md#qwen-内核镜像增量升级)复用 Torch/CUDA 底座；四个来源只需构建一次。使用中的实例在 `reload_policy <实例名>` 后加载新镜像。
 
 `model.vlm_model_name_or_path` 默认 `Qwen/Qwen3.5-4B`，也可以填写容器内本地路径。模型和 processor 使用同一个地址，覆盖训练配置中原训练机的绝对路径。所有资产须提前准备在模型目录或缓存中；启动不安装依赖或下载模型。相对 checkpoint/本地基础模型路径以 model.json 所在目录解析。
 

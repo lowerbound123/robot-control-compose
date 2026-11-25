@@ -98,6 +98,7 @@ def main(arguments=None, *, root=None):
     up.add_argument('files', nargs='*', help='相对仓库根目录或绝对路径；基础 compose.yaml 自动加入')
     build = commands.add_parser('build', help='自动查找并构建指定服务、策略来源或 connector:<来源>')
     build.add_argument('target')
+    build.add_argument('--build-arg', action='append', default=[], metavar='NAME=VALUE')
     commands.add_parser('down', help='安全清理当前部署的全部容器及动态策略')
     commands.add_parser('attach', help='连接 RC 终端')
     args = parser.parse_args(arguments)
@@ -112,6 +113,8 @@ def main(arguments=None, *, root=None):
             command = compose_project.compose_command(root, [*overlays, 'up', '-d'])
         elif args.action == 'build':
             command, env = build_command(root, args.target)
+            for value in args.build_arg:
+                command[-1:-1] = ['--build-arg', value]
         else:
             command = compose_project.compose_command(root, ['attach', 'robot-control'])
         os.chdir(root)
