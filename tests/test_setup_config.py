@@ -26,13 +26,15 @@ def test_deep_merge_preserves_user_values_and_whole_lists():
     assert 'new' not in old['nested']
 
 
-def test_setup_updates_old_a2_pipeline_completion_without_changing_model(tmp_path):
+@pytest.mark.parametrize('identity', ['a2_optimized', 'a2_optimized_lift2'])
+def test_setup_updates_old_a2_pipeline_completion_without_changing_model(tmp_path, identity):
     module = helpers()
-    source = tmp_path / 'policy/a2_optimized'
+    source = tmp_path / 'policy' / identity
     source.mkdir(parents=True)
-    template = ROOT / 'policy/a2_optimized/policy.yaml.example'
+    template = ROOT / 'policy' / identity / 'policy.yaml.example'
     (source / template.name).write_bytes(template.read_bytes())
     manifest = read_config(template)
+    manifest['params']['gripper_upper_value'] = '+0.5'
     hints = manifest['config_hints']['settings']
     hints['model_config.transition.trunk_mode']['choices'] = ['tail', 'close', 'now']
     hints['model_config.execution.pipelined']['help'] = 'old help'
@@ -41,10 +43,12 @@ def test_setup_updates_old_a2_pipeline_completion_without_changing_model(tmp_pat
     (source / 'model.json').write_text(json.dumps(model))
     changes, docs = module.configuration_updates(tmp_path)
     assert {path.name for path, _ in changes} == {'policy.yaml'}
-    updated = docs['policy/a2_optimized/policy.yaml']['config_hints']['settings']
+    saved = docs[f'policy/{identity}/policy.yaml']
+    assert saved['params']['gripper_upper_value'] == '+0.5'
+    updated = saved['config_hints']['settings']
     assert updated['model_config.transition.trunk_mode']['choices'] == ['close', 'tail']
     assert '热更新' in updated['model_config.execution.pipelined']['help']
-    assert docs['policy/a2_optimized/model.json'] == model
+    assert docs[f'policy/{identity}/model.json'] == model
 
 
 def test_configuration_updates_validate_all_files_before_writes(tmp_path):

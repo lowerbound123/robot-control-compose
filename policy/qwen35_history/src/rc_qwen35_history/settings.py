@@ -57,9 +57,9 @@ def export_settings(context, config):
             'files': [{'path': name, 'data': raw}]}
 
 
-def initialize_policy(config, root, policy_class, *, load_config=load_model_config):
+def initialize_policy(config, root, policy_class, *, robot_type='arx_acone', load_config=load_model_config):
     validate_manifest(config)
-    raw, model, model_file = initial_settings(config, root, 'arx_acone', load_config)
+    raw, model, model_file = initial_settings(config, root, robot_type, load_config)
     context = policy_class(model, policy_config=config, project_root=root)
     context.model_config_snapshot = raw
     context.model_config_file = model_file

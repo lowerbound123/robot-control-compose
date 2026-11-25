@@ -12,7 +12,8 @@ import tempfile
 import uuid
 
 
-GRIPPER_SOURCES = ('qwen35_history', 'qwen35_history_lift2', 'pi05', 'pi05_lift2')
+A2_SOURCES = ('a2_optimized', 'a2_optimized_lift2')
+GRIPPER_SOURCES = (*A2_SOURCES, 'qwen35_history', 'qwen35_history_lift2', 'pi05', 'pi05_lift2')
 GRIPPER_PARAM_RENAMES = {
     'gripper_threshold': 'gripper_upper_threshold',
     'gripper_high_value': 'gripper_upper_value',
@@ -198,7 +199,8 @@ def configuration_updates(root):
             for key in ('params.task', *('params.'+name for name in GRIPPER_PARAM_RENAMES.values())):
                 if key in default.get('hot_reloadable', []) and key not in hot:
                     hot.append(key)
-        if target == root/'policy/a2_optimized/policy.yaml' and isinstance(default, dict):
+        if (target.name == 'policy.yaml' and target.parent.parent == root/'policy'
+                and target.parent.name in A2_SOURCES and isinstance(default, dict)):
             hints = value.get('config_hints')
             if isinstance(hints, dict) and isinstance(hints.get('settings'), dict):
                 template_hints = default.get('config_hints', {}).get('settings', {})

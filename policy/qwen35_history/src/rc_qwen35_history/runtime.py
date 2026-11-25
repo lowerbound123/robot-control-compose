@@ -299,8 +299,7 @@ class HistoryPolicy:
             # Freeze scalar rules before submission. Old/cached commands already
             # carry their processing and must never receive another delta.
             params = self.policy_config.get('params', {})
-            rules = {name.removeprefix('gripper_'): params.get(name, default)
-                     for name, default in GRIPPER_DEFAULTS.items()}
+            rules = {name.removeprefix('gripper_'): params[name] for name in GRIPPER_DEFAULTS if name in params}
             with (perf.span('history.model', remaining_actions=len(old)) if perf else nullcontext()):
                 self._launch(state, images, count, epoch, contexts)
                 new = self._collect()

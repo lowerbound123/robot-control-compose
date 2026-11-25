@@ -8,9 +8,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 QWEN = {"qwen35_single", "qwen35_twostage"}
 HISTORY = {"qwen35_history", "qwen35_history_lift2"}
+A2 = {"a2_optimized", "a2_optimized_lift2"}
 LLM = {"llm_direction", "llm_failure"}
 OPENWAM = {"openwam_maas_acone", "openwam_maas_lift2"}
-POLICIES = {"a2_optimized", "example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM | OPENWAM
+POLICIES = A2 | {"example", "hold", "pi05", "pi05_lift2", "internvla_maas"} | QWEN | HISTORY | LLM | OPENWAM
 
 
 def suite(policies, interface):
@@ -27,8 +28,11 @@ def suite(policies, interface):
                      and ("pi05_lift2" in policies or not path.name.startswith("test_pi05_lift2")))
 
     add("test_example_*.py")
-    if "a2_optimized" in policies:
-        add("test_a2_optimized*.py")
+    if policies & A2:
+        for source in sorted(policies & A2):
+            add(f"test_{source}.py")
+        for part in ("load", "model", "visual", "worker"):
+            add(f"test_a2_optimized_{part}.py")
     if policies & HISTORY:
         add("test_qwen35_history_*.py")
     if policies & (HISTORY | {"pi05_lift2"}):
@@ -67,6 +71,10 @@ def suite(policies, interface):
     for family in (QWEN, LLM, OPENWAM):
         if policies & family:
             excluded.update(family - policies)
+    if policies & A2 == {"a2_optimized"}:
+        excluded.add("a2_lift2_worker")
+    if policies & A2 == {"a2_optimized_lift2"}:
+        excluded.add("a2_acone_worker")
     options = ["-k", " and ".join("not " + name for name in sorted(excluded))] if excluded else []
     if "pi05" in policies and "qwen35_single" not in policies:
         options += ["--deselect=tests/test_pi05_runtime.py::test_pi05_closest_pair_and_qwen_time_alignment_keep_their_gripper_rules"]
@@ -85,6 +93,8 @@ def main():
     policy_sources = (sorted((ROOT / "policy").glob("*/src")) if args.interface else
                       [ROOT / "policy" / name / "src" for name in sorted(policies)
                        if (ROOT / "policy" / name / "src").is_dir()])
+    if policies & A2 and not args.interface and "qwen35_history" not in policies:
+        policy_sources.append(ROOT / "policy/qwen35_history/src")
     # pytest 的 pythonpath 只影响主进程；真正的 host/worker 和 ROS 仿真器也必须能导入本次源码。
     sources = [ROOT / "src", *(ROOT / "packages" / p / "src" for p in sorted(packages)),
                *policy_sources,

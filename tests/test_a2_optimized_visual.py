@@ -71,7 +71,7 @@ def test_history_frames_are_normalized_together(monkeypatch, count):
 ])
 def test_vision_batches_one_sdpa_per_distinct_length(monkeypatch, patch_module, grid, dtype):
     import torch
-    from rc_qwen35_history.graphs import PrefixGraph
+    from rc_qwen35_history.prefix import encode_vision, vision_constants
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
 
     torch.manual_seed(53)
@@ -99,11 +99,9 @@ def test_vision_batches_one_sdpa_per_distinct_length(monkeypatch, patch_module, 
         assert sorted(calls) == sorted(groups * config.depth)
         torch.testing.assert_close(result, reference)
         # The prefix-graph path invokes the visual blocks directly, bypassing visual.forward.
-        graph = PrefixGraph.__new__(PrefixGraph)
-        graph.visual, graph.ids = visual, torch.empty(0)
-        constants = graph._vision_constants(sizes)
+        constants = vision_constants(visual, sizes)
         calls.clear()
-        torch.testing.assert_close(graph._vision(pixels, constants), reference)
+        torch.testing.assert_close(encode_vision(visual, pixels, constants), reference)
         assert sorted(calls) == sorted(groups * config.depth)
 
 
@@ -112,7 +110,7 @@ def test_batched_vision_cuda_graph_replays_new_pixels(monkeypatch, patch_module)
     import torch
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         pytest.skip('requires a CUDA device with bfloat16 support')
-    from rc_qwen35_history.graphs import PrefixGraph
+    from rc_qwen35_history.prefix import encode_vision, vision_constants
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
 
     config = Qwen3_5VisionConfig(depth=1, hidden_size=32, intermediate_size=48, num_heads=4,
@@ -125,18 +123,16 @@ def test_batched_vision_cuda_graph_replays_new_pixels(monkeypatch, patch_module)
     with torch.no_grad():
         expected = [visual(pixels, sizes.cuda()).pooler_output for pixels in inputs]
         load_a2(monkeypatch, visual, SimpleNamespace())
-        prefix = PrefixGraph.__new__(PrefixGraph)
-        prefix.visual, prefix.ids = visual, torch.empty(0, device='cuda')
-        constants = prefix._vision_constants(sizes)
+        constants = vision_constants(visual, sizes)
         static = inputs[0].clone()
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
-            prefix._vision(static, constants)
+            encode_vision(visual, static, constants)
         torch.cuda.current_stream().wait_stream(stream)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            result = prefix._vision(static, constants)
+            result = encode_vision(visual, static, constants)
         for pixels, baseline in zip(inputs, expected):
             static.copy_(pixels)
             graph.replay()

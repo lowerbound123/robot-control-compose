@@ -11,9 +11,11 @@ ACOne 视觉历史策略。每次重规划都用本轮三路相机、头相机�
 
 仅新预测计数。原动作队列余量充足时直接返回。每次刷新复用本轮三路图像及可选历史视频的视觉编码结果。后续动作只复用语言 token，重新编码自身观测。
 
-A2 将选中的头相机历史帧按原顺序组成一个 uint8 视频，再整批转换为 float32 并除以 255；时间戳仍取各帧的原始索引。视觉编码器把 token 数相同的切片放入同一次 SDPA 调用，每个切片独立计算注意力，并按输入顺序拼回输出。该路径用于动作、后台语言刷新及启用的前缀 CUDA Graph。
+A2 将选中的头相机历史帧按原顺序组成一个 uint8 视频，再整批转换为 float32 并除以 255；时间戳仍取各帧的原始索引。视觉编码器把 token 数相同的切片放入同一次 SDPA 调用，每个切片独立计算注意力，并按输入顺序拼回输出。该路径用于动作、后台语言刷新及启用的前缀 CUDA Graph。逐次执行的动作前缀在 CPU 上准备提示词、占位索引和位置编码索引。当前相机组和历史视频各缓存最近一种网格的视觉位置嵌入、旋转编码和注意力切片长度。每次重规划都编码本轮像素，同轮语言刷新可复用这些视觉特征。
 
 语言预填充及后续逐 token 解码与动作共用一个模型执行线程。动作回包独立于后台刷新，后续动作请求可以在预填充或单个 token 计算结束后插入。刷新按触发顺序执行，整段完成后才替换缓存。生成失败会保留上次完整结果，并记录错误。切任务或 reset 清空缓存、待处理刷新和计数；普通 resume 保留已完成语言与计数，并丢弃未完成刷新。每个策略实例持有自己的缓存。
+
+LIFT2 设备使用独立来源 [a2_optimized_lift2](../a2_optimized_lift2/README.md)。两个来源共用 A2 推理实现，各自加载对应机型的关节统计量和夹爪配置。
 
 ## 使用
 
@@ -63,6 +65,7 @@ policy a2_optimized config save
 | --- | --- |
 | `action_ms` | 动作推理总耗时 |
 | `action_processor_ms`、`action_prefix_ms`、`action_denoise_ms`、`action_post_ms` | 动作的输入准备、前缀、去噪和模型输出转换 |
+| `action_camera_ms`、`action_history_video_ms`、`action_lm_prefill_ms` | eager 前缀中当前三路相机编码、历史视频编码、嵌入拼装与语言模型预填充。无视频时视频项为 0，前缀整图回放时三项均为 0。CUDA Event 在已有同步点后读取，CPU 准备时间计入 `action_prefix_ms` |
 | `subtask_ms`、`subtask_queue_ms` | 整轮语言刷新墙钟耗时、提交至首个切片开始 |
 | `subtask_prepare_ms`、`subtask_prefill_ms`、`subtask_decode_ms`、`subtask_post_ms` | 冷启动模板准备、预填充、逐 token 解码和文本解析 |
 

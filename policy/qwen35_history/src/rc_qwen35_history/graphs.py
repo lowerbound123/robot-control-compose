@@ -6,9 +6,10 @@ import time
 import torch
 import torch.nn.functional as F
 from lerobot.policies.qwen3_5_context_video_ki.modeling_qwen3_5_context_video_ki import (
- CTX_TOKEN_START, CTX_VIDEO_TOKEN_END, PIXEL_VALUES_VIDEOS_KEY, VIDEO_GRID_THW_KEY,
+ PIXEL_VALUES_VIDEOS_KEY, VIDEO_GRID_THW_KEY,
  _flat_video_grid, _fp32_head, _inference_autocast, create_sinusoidal_pos_embedding, make_att_2d_masks)
 from lerobot.utils.constants import OBS_STATE
+from .prefix import encode_vision, prompt_layout, semantic_prompt, vision_constants
 GRAPH_TOLERANCE = 5e-2
 
 @torch.no_grad()
@@ -264,72 +265,24 @@ class PrefixGraph:
 
     def prepare(self, model_input):
         """CPU half of one replan: the row's prefix ids, positions, anchor and placeholder slots."""
-        model = self.model
-        input_ids = torch.as_tensor(model_input["observation.input_ids"]).long()[None]
-        attention_mask = torch.as_tensor(model_input["observation.attention_mask"]).bool()[None]
-        ids = torch.tensor(model._extract_semantic_prefix(
-            input_ids, attention_mask, 0, selected_mode_token=model.special_tokens.action_image
-        ))
-        marker = (ids >= CTX_TOKEN_START) & (ids < CTX_VIDEO_TOKEN_END)
-        safe_ids = ids.masked_fill(marker, 0)
         image_grid = torch.as_tensor(model_input["observation.image_grid_thw"]).long().reshape(-1, 3)
         video_grid = _flat_video_grid(model_input.get(VIDEO_GRID_THW_KEY))
-        full_mask = torch.ones((1, len(ids)), dtype=torch.bool)
-        positions, rope_deltas = model._build_position_ids(
-            safe_ids[None], image_grid, full_mask, video_grid_thw=video_grid
-        )
-        merge = self.visual.spatial_merge_size ** 2
-        slots = {
-            "image": (safe_ids == int(model.qwen.config.image_token_id)).nonzero().flatten(),
-            "video": (safe_ids == int(model.qwen.config.video_token_id)).nonzero().flatten(),
-            "state": (safe_ids == model.special_tokens.learned_state).nonzero().flatten(),
-            "marker": marker.nonzero().flatten(),
-        }
-        expected_video = 0 if video_grid is None else int(video_grid.prod(-1).sum()) // merge
-        if (len(slots["image"]) != int(image_grid.prod(-1).sum()) // merge or len(slots["video"]) != expected_video
-                or len(slots["state"]) != 1):
-            raise ValueError("prefix placeholders do not match the vision grids / the single state token")
-        prefix_len = len(ids)
-        text_anchor = torch.full((1, 1, 1), prefix_len - 1, dtype=torch.long)
-        vision_anchor = (prefix_len - 1 + rope_deltas[:, 0]).view(1, 1, 1).expand(3, 1, 1)
+        layout = prompt_layout(self.model, semantic_prompt(self.model, model_input), image_grid, video_grid)
+        prefix_len = len(layout["ids"])
         pixels = torch.as_tensor(model_input["observation.pixel_values"])
         videos = model_input.get(PIXEL_VALUES_VIDEOS_KEY) if video_grid is not None else None
         return {
+            **layout,
             "key": (tuple(map(tuple, image_grid.tolist())),
-                    () if video_grid is None else tuple(map(tuple, video_grid.tolist())), len(slots["marker"])),
-            "prefix_len": prefix_len, "ids": safe_ids, "positions": positions, "slots": slots,
-            "marker_index": ids[marker] - CTX_TOKEN_START,
-            "anchor": torch.cat((text_anchor, vision_anchor), dim=0),
+                    () if video_grid is None else tuple(map(tuple, video_grid.tolist())), len(layout["marker_index"])),
+            "prefix_len": prefix_len,
+            "anchor": self.model._cache_tail_positions(layout["mask"], layout["deltas"]),
             "image_grid": image_grid, "video_grid": video_grid,
             "pixels": pixels.reshape(-1, pixels.shape[-1]),
             "videos": None if videos is None else torch.as_tensor(videos).reshape(-1, pixels.shape[-1]),
             # make_batch rounds the state through bf16 before the projection; so does this.
             "state": torch.as_tensor(model_input[OBS_STATE]).to(torch.bfloat16).float()[None],
         }
-
-    def _vision_constants(self, grid):
-        """What ``Qwen3_5VisionModel.forward`` derives from a fixed grid, computed once."""
-        visual = self.visual
-        device = self.ids.device
-        grid_device = grid.to(device)
-        pos_embeds = visual.fast_pos_embed_interpolate(grid_device)
-        rotary = visual.rot_pos_emb(grid_device).reshape(pos_embeds.shape[0], -1)
-        emb = torch.cat((rotary, rotary), dim=-1)
-        # The SDPA branch of Qwen3_5VisionAttention only reads per-slice lengths
-        # off cu_seqlens; a CPU copy keeps its ``.tolist()`` off the device.
-        cu_seqlens = F.pad(torch.repeat_interleave(grid[:, 1] * grid[:, 2], grid[:, 0]).cumsum(0, dtype=torch.int32),
-                           (1, 0))
-        return {"pos_embeds": pos_embeds, "position_embeddings": (emb.cos(), emb.sin()),
-                "cu_seqlens": cu_seqlens, "sdpa_slice_lengths": visual.sdpa_slice_lengths(cu_seqlens)}
-
-    def _vision(self, pixels, constants):
-        visual = self.visual
-        hidden = visual.patch_embed(pixels.type(visual.dtype)) + constants["pos_embeds"]
-        for block in visual.blocks:
-            hidden = block(hidden, cu_seqlens=constants["cu_seqlens"],
-                           sdpa_slice_lengths=constants["sdpa_slice_lengths"],
-                           position_embeddings=constants["position_embeddings"])
-        return visual.merger(hidden)
 
     def _run(self, entry):
         """Embed, fill the placeholders, prefill the language layers (the captured body)."""
@@ -339,9 +292,9 @@ class PrefixGraph:
         if "marker" in slots:
             markers = model.context_marker_embeddings(entry["marker_index"])
             embeds = embeds.index_copy(0, slots["marker"], markers.to(embeds.dtype))
-        embeds = embeds.index_copy(0, slots["image"], self._vision(entry["pixels"], entry["image"]).to(embeds.dtype))
+        embeds = embeds.index_copy(0, slots["image"], encode_vision(self.visual, entry["pixels"], entry["image"]).to(embeds.dtype))
         if "video" in slots:
-            videos = self._vision(entry["videos"], entry["video"])
+            videos = encode_vision(self.visual, entry["videos"], entry["video"])
             embeds = embeds.index_copy(0, slots["video"], videos.to(embeds.dtype))
         state = model.state_projection(self.sampler.state.to(model.state_projection.weight.dtype))
         embeds = embeds.index_copy(0, slots["state"], state.to(embeds.dtype))
@@ -401,8 +354,8 @@ class PrefixGraph:
                 "pixels": torch.zeros(prepared["pixels"].shape, dtype=vision_dtype, device=device),
                 "videos": None if "video" not in slots else torch.zeros(
                     prepared["videos"].shape, dtype=vision_dtype, device=device),
-                "image": self._vision_constants(prepared["image_grid"]),
-                "video": None if "video" not in slots else self._vision_constants(prepared["video_grid"]),
+                "image": vision_constants(self.visual, prepared["image_grid"]),
+                "video": None if "video" not in slots else vision_constants(self.visual, prepared["video_grid"]),
             }
         self.graphs[prepared["key"]] = entry
         self.load(prepared)

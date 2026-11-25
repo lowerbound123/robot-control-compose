@@ -12,9 +12,9 @@ from qwen_helpers import wait
 from rc_policy_sdk.images import ImagePool
 
 
-@pytest.fixture
-def held_language_policy(tmp_path):
-    source = ROOT / 'policy/a2_optimized'
+@pytest.fixture(params=['a2_optimized', 'a2_optimized_lift2'], ids=['a2_acone_worker', 'a2_lift2_worker'])
+def held_language_policy(tmp_path, request):
+    source = ROOT / 'policy' / request.param
     directory = tmp_path / source.name
     directory.mkdir()
     for name in ('main.py', 'runtime.py'):
@@ -55,7 +55,8 @@ def OptimizedPolicy(config, *, policy_config, project_root):
     root = Path(policy_config['params']['model_config_path']).parent
     return RealPolicy(config, backend=HeldLanguage(root), policy_config=policy_config, project_root=project_root)
 ''')
-    path = model_file(directory, x=8)
+    robot_type = 'arx_lift2' if source.name == 'a2_optimized_lift2' else 'arx_acone'
+    path = model_file(directory, x=8, robot_type=robot_type)
     value = json.loads(path.read_text())
     value['inference'] = {'generate_language': ['Subtask']}
     path.write_text(json.dumps(value))
@@ -136,11 +137,11 @@ def test_async_rc_sends_fourth_chunk_while_language_is_held(tmp_path, held_langu
         wait(lambda: 'language_end' in journal.read_text())
         worker = controller._worker
         for key, value in (('execution.pipelined', 'true'), ('transition.trunk_mode', 'close')):
-            reply = completed(controller, f'policy a2_optimized config set model_config.{key} {value}')
+            reply = completed(controller, f'policy {directory.name} config set model_config.{key} {value}')
             assert reply['status'] == 'succeeded', reply
             assert reply['result']['configuration_effect'] == 'ordinary'
         assert controller._worker is worker and controller.status()['state'] == 'running'
-        assert completed(controller, 'policy a2_optimized config save')['status'] == 'succeeded'
+        assert completed(controller, f'policy {directory.name} config save')['status'] == 'succeeded'
         saved = json.loads((directory / 'model.json').read_text())
         assert saved['execution']['pipelined'] is True and saved['transition']['trunk_mode'] == 'close'
         assert 'reset' not in journal.read_text()
