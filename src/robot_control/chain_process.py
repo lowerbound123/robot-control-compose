@@ -328,6 +328,9 @@ class ChainProcess:
                    'chain_request_id': message['request_id']}
         if cell is not None:
             runtime['cell'] = cell
+            if cell < len(self.record.members):
+                # A subsequent stage needs concrete actions to process.
+                runtime.pop('defer_action_transition', None)
         child = {**message, 'request_id': self._serial, 'config_version': worker.config_version, 'runtime': runtime}
         perf = trace(message)
         if perf:
@@ -432,7 +435,11 @@ class ChainProcess:
                 raise RuntimeError(response.get('error', 'invalid child response'))
             chunk = normalize_result(response, self.execution['control_mode'])
             previous = request.get('annotated_chunk')
-            if chunk.clipped is not None:
+            if chunk.transition is not None:
+                if not request['child']['runtime'].get('defer_action_transition'):
+                    raise ValueError('action_transition requires the final stage of an enabled request')
+                request['annotation_owner'] = None
+            elif chunk.clipped is not None:
                 request['annotation_owner'] = {'instance_id': identity, 'context_id': getattr(worker, 'context_id', None)}
             elif previous is not None and previous.clipped is not None:
                 markers = np.zeros(chunk.actions.shape, bool)
@@ -452,10 +459,9 @@ class ChainProcess:
                 self._finish('cancelled')
             elif index + 1 == len(self.config['policies']):
                 extras = {'control_requests': request['control_requests']} if request['control_requests'] else {}
-                extras.update(chunk.annotations())
                 if request.get('annotation_owner') is not None:
                     extras['action_annotation_owner'] = request['annotation_owner']
-                self._finish('result', **chunk.payload(), **extras)
+                self._finish('result', **chunk.result_fields(), **extras)
             else:
                 request['index'] += 1
                 request['child'] = None

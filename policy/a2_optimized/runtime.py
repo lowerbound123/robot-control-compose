@@ -2,6 +2,7 @@
 from collections import deque
 import logging
 
+from rc_policy_sdk.actions import ActionChunk
 from rc_qwen35_history.runtime import HistoryPolicy
 
 REFRESH_CHUNKS = 4
@@ -38,6 +39,13 @@ class OptimizedPolicy(HistoryPolicy):
         self.backend.capture_refresh = bool(self.config['inference']['generate_language']
                                            and (self._chunks + 1) % REFRESH_CHUNKS == 0)
         super()._launch(*args)
+
+    def _action_result(self, old, new, runtime):
+        if self.pipelined and len(old) and getattr(runtime, 'defer_action_transition', False):
+            self.canonical = new
+            self._record(cached_actions=len(new))
+            return ActionChunk(new, ('qpos',) * len(new), transition=self.transition)
+        return super()._action_result(old, new, runtime)
 
     def _collect(self):
         actions = super()._collect()

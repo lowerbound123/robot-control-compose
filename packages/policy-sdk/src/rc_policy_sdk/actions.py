@@ -4,6 +4,8 @@ from collections.abc import Mapping
 
 import numpy as np
 
+from .transitions import TrajectoryAddTransition
+
 CONTROL_MODES = ("qpos", "epos", "mixed")
 
 
@@ -12,9 +14,16 @@ class ActionChunk:
     actions: np.ndarray
     modes: tuple[str, ...]
     clipped: np.ndarray | None = None
+    transition: TrajectoryAddTransition | None = None
 
     def annotations(self):
         return {} if self.clipped is None else {'action_annotations': {'clipped': self.clipped.tolist()}}
+
+    def result_fields(self):
+        fields = {**self.payload(), **self.annotations()}
+        if self.transition is not None:
+            fields['action_transition'] = self.transition.settings()
+        return fields
 
     def payload(self, control_mode="mixed"):
         if control_mode not in CONTROL_MODES:
@@ -31,8 +40,9 @@ def normalize_actions(value, control_mode=None, *, allow_empty=False):
     """Validate, copy and normalize arrays or explicitly tagged mixed chunks."""
     if control_mode is not None and control_mode not in CONTROL_MODES:
         raise ValueError("control_mode must be qpos, epos or mixed")
-    clipped = value.clipped if isinstance(value, ActionChunk) else None
+    clipped = transition = None
     if isinstance(value, ActionChunk):
+        clipped, transition = value.clipped, value.transition
         value = value.payload()
     if isinstance(value, Mapping):
         if set(value) != {"actions", "modes"}:
@@ -65,7 +75,11 @@ def normalize_actions(value, control_mode=None, *, allow_empty=False):
         if clipped.dtype != np.bool_ or clipped.shape != array.shape:
             raise ValueError('clipped markers must be boolean with the action shape')
         clipped.flags.writeable = False
-    return ActionChunk(array, modes, clipped)
+    if transition is not None:
+        if (not isinstance(transition, TrajectoryAddTransition) or transition.trunk_mode not in ('close', 'tail')
+                or not len(array) or any(mode != 'qpos' for mode in modes) or clipped is not None):
+            raise ValueError('action_transition requires nonempty qpos actions without clipped markers and close or tail mode')
+    return ActionChunk(array, modes, clipped, transition)
 
 
 def normalize_result(response, control_mode=None):
@@ -73,8 +87,16 @@ def normalize_result(response, control_mode=None):
                if 'modes' in response else response['actions'])
     chunk = normalize_actions(payload, control_mode)
     annotations = response.get('action_annotations')
-    if annotations is None:
+    transition = response.get('action_transition')
+    if annotations is None and transition is None:
         return chunk
-    if not isinstance(annotations, dict) or set(annotations) != {'clipped'}:
+    if annotations is not None and (not isinstance(annotations, dict) or set(annotations) != {'clipped'}):
         raise ValueError('invalid action_annotations')
-    return normalize_actions(ActionChunk(chunk.actions, chunk.modes, annotations['clipped']), control_mode)
+    if transition is not None:
+        if (not isinstance(transition, dict) or set(transition) != set(TrajectoryAddTransition.SETTINGS)
+                or any(type(transition[key]) not in (float, int) or not np.isfinite(transition[key])
+                       for key in ('exponential_factor', 'exponential_smoothing'))):
+            raise ValueError('invalid action_transition settings')
+        transition = TrajectoryAddTransition(**transition)
+    clipped = None if annotations is None else annotations['clipped']
+    return normalize_actions(ActionChunk(chunk.actions, chunk.modes, clipped, transition), control_mode)

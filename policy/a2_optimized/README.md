@@ -33,12 +33,16 @@ resume
 
 模板继承 history 的 sync 调度默认值。模型权重、图像处理、去噪 CUDA Graph、动作融合和夹爪规则沿用 [qwen35_history](../qwen35_history/README.md)。本策略与 history 共用依赖镜像和只读模型源码，配置和执行容器各自独立。修改 `model_config.inference.generate_language` 可以选择语言字段，空列表会关闭刷新，并允许使用原有前缀 CUDA Graph。
 
+A2 从基础 Qwen 目录读取配置和 tokenizer，并直接从 A2 checkpoint 将权重装入目标设备。Monitor 的 `checkpoint_load_path=single_checkpoint` 表示启用了这条路径。`legacy` 表示使用兼容加载，例如旧 checkpoint 同时保存了输入和输出词表的独立权重。
+
 ## 动作块融合
 
 `model.json` 的 `execution.pipelined` 控制是否融合，`transition.trunk_mode` 选择接点，模板沿用 `tail`。
 
 - `close` 在旧剩余块与新块之间找全局最近点。
 - `tail` 固定旧块最后一点，在新块里找最近点。按默认的 `trunk_smoothing=true`，从接点向前对齐，用指数权重融合重叠段，然后直接接上新块后续动作。
+
+在异步调度下，独立运行的 A2 或原生链末环的 A2 会把新预测交给 RC。RC 收到回包时，用当时仍可替换的旧动作重新找接点并融合。已提交或已开始限速执行的目标保留，启用平滑时第一条可替换目标沿用旧轨迹。若旧段已无可替换动作，RC 按请求期间的执行进度裁剪新块。A2 在原生链的中间环节时，会先生成融合后的动作供后续环节处理。
 
 这两个配置项可在运行中提交，从后续策略请求生效，保留模型、视觉历史和语言缓存。正常的 RC 配置版本和代次校验仍适用。
 

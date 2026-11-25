@@ -131,6 +131,9 @@ class HistoryBackend:
             contexts=slots, include_task=True, inference_order='action_first', view_indices=(0,),
             language={}, generate=self.generate_language if generate is None else generate)
 
+    def _load_policy(self, policy_type, config):
+        return policy_type.from_pretrained(self.checkpoint, config=config, local_files_only=True)
+
     def load(self):
         self._monitor_update(model_stage='loading_config')
         from .patches import check
@@ -164,7 +167,7 @@ class HistoryBackend:
         self._monitor_update(model_stage='loading_checkpoint', model_dtype=config.dtype,
                              num_inference_steps=int(config.num_inference_steps),
                              max_prompt_tokens=int(config.max_prompt_tokens))
-        self.policy = Qwen3_5ContextVideoKIPolicy.from_pretrained(self.checkpoint, config=config, local_files_only=True)
+        self.policy = self._load_policy(Qwen3_5ContextVideoKIPolicy, config)
         self._monitor_update(model_stage='moving_model_to_device')
         self.policy.to(device=self.device).eval().requires_grad_(False)
         self.model, self.model_config = self.policy.model, config

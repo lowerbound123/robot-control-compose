@@ -113,8 +113,10 @@ def test_real_worker_callbacks_commands_and_monitor(example_worker, frame_reques
     assert all(image["readonly"] for image in images.values())
     assert [images[name]["sample"] for name in ("head", "left", "right")] == ["7", "18", "31"]
     actions = np.arange(28, dtype=np.float32).reshape(2, 14).tolist()
-    worker.submit({**frame_request, "request_id": 3, "action_chunk": actions})
-    assert wait_until(worker.poll, 5)["actions"] == actions
+    worker.submit({**frame_request, "request_id": 3, "action_chunk": actions,
+                   "runtime": {**frame_request['runtime'], 'defer_action_transition': True}})
+    reply = wait_until(worker.poll, 5)
+    assert reply["actions"] == actions and 'action_transition' not in reply
     worker.reset_context()
     worker.submit_command("reset", "example", [])
     info = command_result(worker)["result"]
@@ -146,19 +148,23 @@ def test_repeated_example_chain_preserves_actions_and_shares_only_explicit_state
     copy_templates(ROOT / "policy/example", root / "example")
     copy_templates(ROOT / "policy/example_chain", root / "example_chain")
     record = PolicyRegistry(root).get("example_chain")
+    traces = []
     worker = ChainProcess(record, process_factory=worker_factory,
                           init_timeout_s=10, inference_timeout_s=5, release_timeout_s=2,
-                          global_state=globals_service)
+                          global_state=globals_service, on_trace=traces.append)
     image_readers.append(worker)
     try:
         worker.start()
         actions = [[.125] * 14, [-.375] * 14]
-        worker.submit({**frame_request, "action_chunk": actions})
+        worker.submit({**frame_request, "action_chunk": actions,
+                       "runtime": {**frame_request['runtime'], 'defer_action_transition': True}})
         result = wait_until(worker.poll, 6)
         assert result["type"] == "result", result
         assert result["images_released"] is True
         assert result["actions"] == actions
-        assert not result.get("control_requests")
+        assert not result.get("control_requests") and 'action_transition' not in result
+        stage_requests = [event['data']['runtime'] for event in traces if event['event'] == 'policy.stage_start']
+        assert [(item['cell'], item.get('defer_action_transition', False)) for item in stage_requests] == [(1, False), (2, True)]
         assert set(worker.monitor_members()) == {"example-0", "example-1"}
         for instance in ("example-0", "example-1"):
             worker.submit_command(instance, instance + "-example", [])

@@ -1446,6 +1446,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         if response.get("generation") != request["token"].generation or response.get("config_version") != record.version:
             raise ValueError("policy 结果代次或配置版本不匹配")
         chunk = normalize_result(response, record.execution['control_mode'])
+        if chunk.transition is not None and not request.get('defer_action_transition'):
+            raise ValueError('action_transition was not enabled for this request')
         if perf: perf.mark('rc.result_normalized')
         controls = control_requests(response.get("control_requests", []), chain=record.is_chain)
         if controls:
@@ -1605,6 +1607,9 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
         token = self.buffer.begin_request()
         self._request_serial += 1
         record = self.registry.get(self._identity)
+        defer_transition = (record.execution['mode'] == 'async' and record.execution['control_mode'] == 'qpos')
+        if defer_transition:
+            runtime = {**runtime, 'defer_action_transition': True}
         request = {"request_id": self._request_serial, "generation": token.generation,
                    "config_version": record.version, "state": observation, "runtime":runtime,
                    "action_chunk": self.buffer.remaining_payload(record.execution["control_mode"]), "images": lease.descriptors}
@@ -1619,7 +1624,8 @@ class RobotController(HumanCommandSupport, PolicyConfigurationSupport, Connector
             lease.release()
             raise
         self._inflight = {"id": self._request_serial, "worker": self._worker, "token": token, "lease": lease,
-                          'performance': perf, 'observation_id':runtime['observation_id']}
+                          'performance': perf, 'observation_id':runtime['observation_id'],
+                          'defer_action_transition': defer_transition}
         self._needs_request = False
 
     def _submit_sync_prediction_after_publication(self):

@@ -156,6 +156,8 @@ RC 的发送循环在两种模式下都按配置频率工作：sync 等待策略
 
 `ActionChunk(actions, modes, clipped=...)` 可附带与动作数组形状相同的布尔矩阵，表示 policy 已对哪些目标维度执行过裁剪。SDK 复制并验证标记，通过结果的 `action_annotations` 传递；标记只用于统计，不要求 RC 改变动作或再次限幅。
 
+当 `runtime.defer_action_transition` 为真时，策略可通过 `ActionChunk(actions, modes, transition=...)` 把新预测和 `TrajectoryAddTransition` 交给 RC。支持全为 `qpos` 的动作及 `close`、`tail` 模式，此类结果不带 `clipped` 标记。RC 在异步回包安装时用仍可替换的旧动作运行融合，并保留已提交及已开始限速执行的目标。该能力每次请求单独提供，原生链与 SDK `PolicyChain` 都只将它传给最后一个环节。当能力未提供时，策略返回已经计算好的普通动作。
+
 RC 随动作一起裁掉过时标记并保留已提交目标的标记，只在完整发布确认后累计。无标记的原样返回保留相同目标的来源和标记；原生链中透传的标记保留原实例/context 归属，发生变化的前缀不继续冒用旧标记。统计通过 `runtime.action_stats` 按实例 ID 返回，包含 `context_id`、`clipped_actions` 和 `clipped_dimensions`。policy 应校验 context 绑定，缓存统计供 monitor 只读展示；普通 reset 保留，重新初始化的新 context 从零开始。
 
 ## 可选配置导出

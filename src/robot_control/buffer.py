@@ -131,24 +131,33 @@ class ActionBuffer:
             protected_end = self._submitted + int(self._pinned)
             protected = protected_end - self._cursor
             self.last_trim = self.consumed - request.consumed + protected
-            if self.last_trim >= len(value.actions):
+            start = self.last_trim
+            if value.transition is not None and protected_end < len(self._actions):
+                if any(mode != 'qpos' for mode in self._modes[protected_end:]):
+                    raise ValueError('action_transition requires a qpos buffer')
+                # The blended timeline starts at the first replaceable row.
+                # Already executed or started targets belonged to the old plan.
+                value = normalize_actions(value.transition.apply(
+                    self._actions[protected_end:], value.actions, preserve_first=True), 'qpos')
+                start = 0
+            if start >= len(value.actions):
                 return False
-            masks = (np.zeros(value.actions[self.last_trim:].shape, bool) if value.clipped is None
-                     else value.clipped[self.last_trim:].copy())
+            actions, modes = value.actions[start:], value.modes[start:]
+            masks = np.zeros(actions.shape, bool) if value.clipped is None else value.clipped[start:].copy()
             owners = [owner if value.clipped is not None else None] * len(masks)
             if value.clipped is None:
                 # An unchanged target is still the original target: preserve
                 # its marker/source instead of counting a passthrough twice.
                 for index in range(min(len(masks), len(self._actions)-protected_end)):
-                    if (self._modes[protected_end+index] != value.modes[self.last_trim+index]
-                            or not np.array_equal(self._actions[protected_end+index], value.actions[self.last_trim+index])):
+                    if (self._modes[protected_end+index] != modes[index]
+                            or not np.array_equal(self._actions[protected_end+index], actions[index])):
                         break
                     masks[index] = self._clip_masks[protected_end+index]
                     owners[index] = self._owners[protected_end+index]
             self._clip_masks = np.concatenate((self._clip_masks[self._cursor:protected_end], masks))
             self._owners = self._owners[self._cursor:protected_end] + owners
-            self._actions = np.concatenate((self._actions[self._cursor:protected_end], value.actions[self.last_trim:]))
-            self._modes = self._modes[self._cursor:protected_end] + value.modes[self.last_trim:]
+            self._actions = np.concatenate((self._actions[self._cursor:protected_end], actions))
+            self._modes = self._modes[self._cursor:protected_end] + modes
             self._submitted -= self._cursor
             self._cursor = 0
             return True

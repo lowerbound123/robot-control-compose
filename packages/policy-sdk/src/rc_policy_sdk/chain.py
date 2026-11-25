@@ -90,13 +90,23 @@ class PolicyChain:
     def policy(self, context, state, action_chunk, images, config, *, runtime=None):
         self._check_context(context)
         mode = config.get("execution", {}).get("control_mode", "qpos")
-        for index, stage in enumerate(self.stages):
-            with _stage_call(index, "policy"):
-                action_chunk = invoke(
-                    stage.policy, (context.children[index], state, action_chunk, images, config), runtime,
-                )
-                # Validate without replacing the object passed to the next stage.
-                normalize_actions(action_chunk, mode)
+        defer_transition = getattr(runtime, 'defer_action_transition', False)
+        try:
+            for index, stage in enumerate(self.stages):
+                with _stage_call(index, "policy"):
+                    final = index == len(self.stages) - 1
+                    if defer_transition:
+                        runtime.defer_action_transition = final
+                    action_chunk = invoke(
+                        stage.policy, (context.children[index], state, action_chunk, images, config), runtime,
+                    )
+                    # Validate without replacing the object passed to the next stage.
+                    chunk = normalize_actions(action_chunk, mode)
+                    if chunk.transition is not None and not (final and defer_transition):
+                        raise ValueError('action_transition requires the final stage of an enabled request')
+        finally:
+            if defer_transition:
+                runtime.defer_action_transition = defer_transition
         return action_chunk
 
     def validate_config(self, config):

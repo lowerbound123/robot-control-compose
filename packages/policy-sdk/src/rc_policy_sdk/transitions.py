@@ -113,6 +113,8 @@ class TrajectoryAddTransition(TemporalTransition):
 
     mode = "async-add"
     _TRUNK_MODES = frozenset({"tail", "close", "now"})
+    SETTINGS = ('trunk_mode', 'trunk_smoothing', 'max_smoothing_steps',
+                'exponential_factor', 'exponential_smoothing')
 
     def __init__(
         self,
@@ -150,7 +152,10 @@ class TrajectoryAddTransition(TemporalTransition):
             )
         self.max_smoothing_steps = max_smoothing_steps
 
-    def apply(self, old_actions: np.ndarray, new_actions: np.ndarray) -> np.ndarray:
+    def settings(self):
+        return {name: getattr(self, name) for name in self.SETTINGS}
+
+    def apply(self, old_actions: np.ndarray, new_actions: np.ndarray, *, preserve_first=False) -> np.ndarray:
         old = np.asarray(old_actions, dtype=np.float32)
         new = np.asarray(new_actions, dtype=np.float32)
         if (
@@ -193,6 +198,10 @@ class TrajectoryAddTransition(TemporalTransition):
         blend_steps = min(old_keypoint + 1, keypoint + 1)
         if self.max_smoothing_steps != -1:
             blend_steps = min(blend_steps, self.max_smoothing_steps)
+        if preserve_first and old_keypoint == 0 and not np.array_equal(old[0], new[keypoint]):
+            # There is no earlier old command in this window. Keep the first
+            # unsent target as the start of the handoff even with one overlap.
+            return np.concatenate((old[:1], new[keypoint:]), axis=0)
         old_prefix = old[: old_keypoint + 1 - blend_steps]
         old_tail = old[old_keypoint + 1 - blend_steps : old_keypoint + 1]
         new_tail = new[keypoint + 1 - blend_steps : keypoint + 1]

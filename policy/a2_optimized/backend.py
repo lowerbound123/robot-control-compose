@@ -37,6 +37,15 @@ class OptimizedBackend(HistoryBackend):
         self._cold_observation = self._refresh = None
         self._monitor_update(**EMPTY_SUBTASK_TIMINGS)
 
+    def _load_policy(self, policy_type, config):
+        from .checkpoint import load_single_checkpoint
+        loaded = load_single_checkpoint(self.checkpoint, policy_type, config, self.device)
+        if loaded is not None:
+            self._monitor_update(checkpoint_load_path='single_checkpoint')
+            return loaded
+        self._monitor_update(checkpoint_load_path='legacy')
+        return super()._load_policy(policy_type, config)
+
     def load(self):
         super().load()
         self.processor.batch_uint8_history = True

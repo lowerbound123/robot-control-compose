@@ -199,6 +199,7 @@ class PolicyRuntime:
         self.control_epoch = metadata.get('control_epoch', message.get('generation', 0))
         self.config_version = message.get('config_version', 1)
         self.action_stats = metadata.get('action_stats', {})
+        self.defer_action_transition = metadata.get('defer_action_transition') is True
         self.context_id = message.get('context_id', getattr(channel, 'context_id', None))
         self._globals = getattr(channel, 'global_proxy', None)
         self._inference_thread = None

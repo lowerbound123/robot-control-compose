@@ -332,7 +332,9 @@ def run_session(connection, policy_dir, namespace):
                                 output,
                                 config.get("execution", {}).get("control_mode", "qpos"),
                             )
-                        result = {"type": "result", **_identity(message), **actions.payload(), **actions.annotations()}
+                        if actions.transition is not None and not runtime.defer_action_transition:
+                            raise ValueError('action_transition was not enabled for this request')
+                        result = {"type": "result", **_identity(message), **actions.result_fields()}
                         if runtime._control_requests:
                             result["control_requests"] = runtime._control_requests
                         del actions, output

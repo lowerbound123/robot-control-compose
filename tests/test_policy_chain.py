@@ -134,6 +134,25 @@ def test_single_stage_and_nested_chains_keep_independent_contexts():
         outer.release(context)
 
 
+def test_only_final_nested_stage_can_defer_trajectory_fusion():
+    runtime = SimpleNamespace(defer_action_transition=True)
+    seen = []
+
+    def policy(context, state, action_chunk, images, config, *, runtime):
+        seen.append(runtime.defer_action_transition)
+        return np.ones((1, 14))
+
+    inner = chain([stage(policy=policy), stage(policy=policy)])
+    outer = chain([inner, inner])
+    context = outer.initialize({})
+    try:
+        outer.policy(context, {}, [], {}, {}, runtime=runtime)
+        assert seen == [False, False, False, True]
+        assert runtime.defer_action_transition
+    finally:
+        outer.release(context)
+
+
 @pytest.mark.parametrize("bad_output", [[], [[0] * 13], [[float("nan")] * 14], [[float("inf")] * 14]])
 def test_invalid_intermediate_actions_stop_before_next_stage(bad_output):
     called = []

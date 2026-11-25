@@ -32,6 +32,13 @@ class HeldLanguage(Model):
         actions, timings = super().predict(*args)
         actions[:, 0] = self.calls / 8
         actions[:, 1] = np.arange(len(actions)) / 128
+        if self.calls == 2 and (self.root / 'hold-second').exists():
+            self.event('second_prediction_waiting')
+            deadline = time.monotonic() + 4
+            while not (self.root / 'continue').exists():
+                if time.monotonic() > deadline:
+                    raise TimeoutError('test did not release second prediction')
+                time.sleep(.01)
         return actions, timings
 
     def refresh_language(self):
@@ -137,6 +144,61 @@ def test_async_rc_sends_fourth_chunk_while_language_is_held(tmp_path, held_langu
         saved = json.loads((directory / 'model.json').read_text())
         assert saved['execution']['pipelined'] is True and saved['transition']['trunk_mode'] == 'close'
         assert 'reset' not in journal.read_text()
+    finally:
+        (directory / 'continue').touch()
+        controller.submit('exit')
+        assert controller.done.wait(15), controller.read_events()
+
+
+@pytest.mark.parametrize('mode,as_chain', [('close', False), ('tail', True)])
+def test_async_a2_fuses_at_rc_after_old_actions_were_sent(tmp_path, held_language_policy, monkeypatch, mode, as_chain):
+    from robot_control.controller import RobotController
+    from test_chain_config import add_chain
+    from test_qwen35_worker import ThreeCameraRobot, completed
+
+    directory, _ = held_language_policy
+    path = directory / 'model.json'
+    model = json.loads(path.read_text())
+    model['execution'].update(pipelined=True, replan_every_actions=25)
+    model['inference']['generate_language'] = []
+    model['transition'] = {'trunk_mode': mode}
+    path.write_text(json.dumps(model))
+    (directory / 'hold-second').touch()
+    rc = read_config(ROOT / 'configs/rc.mock.yaml.example')
+    rc['safety']['enabled'] = False
+    rc.update(policy_directory=str(directory.parent), startup_policy=directory.name,
+              outputs_directory=str(tmp_path / 'outputs'), frequency_hz=30)
+    if as_chain:
+        add_chain(directory.parent, [directory.name])
+        rc['startup_policy'] = 'default_chain'
+    config = tmp_path / 'rc.yaml'
+    config.write_text(json.dumps(rc))
+    controller = RobotController(config, robot=ThreeCameraRobot(), process_factory=LocalPolicyProcess)
+    accept = controller.buffer.accept
+    splices = []
+
+    def capture(request, chunk, **kwargs):
+        before = controller.buffer.current()
+        accepted = accept(request, chunk, **kwargs)
+        if chunk.transition is not None:
+            splices.append((before, controller.buffer.current(), controller.buffer.last_trim, chunk, accepted))
+        return accepted
+
+    monkeypatch.setattr(controller.buffer, 'accept', capture)
+    controller.start()
+    try:
+        wait(lambda: controller.status()['state'] == 'paused' and controller._worker is not None)
+        assert completed(controller, 'resume')['status'] == 'succeeded'
+        journal = directory / 'events.jsonl'
+        wait(lambda: journal.exists() and 'second_prediction_waiting' in journal.read_text())
+        consumed = controller.status()['consumed']
+        wait(lambda: controller.status()['consumed'] >= consumed + 3)
+        (directory / 'continue').touch()
+        wait(lambda: bool(splices), timeout=3)
+        before, after, trim, chunk, accepted = splices[0]
+        assert accepted and trim >= 3 and chunk.transition.trunk_mode == mode
+        assert (chunk.actions[:, 0] == .25).all() and before[0] == .125
+        np.testing.assert_array_equal(after, before)
     finally:
         (directory / 'continue').touch()
         controller.submit('exit')

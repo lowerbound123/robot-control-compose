@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from rc_policy_sdk.actions import ActionChunk, normalize_actions, normalize_result
+from rc_policy_sdk.transitions import TrajectoryAddTransition
 from robot_control.buffer import ActionBuffer
 
 
@@ -68,3 +69,53 @@ def test_action_annotations_roundtrip_is_owned_and_old_results_remain_valid():
     response['action_annotations']['clipped'][0][0] = False
     assert restored.clipped.all() and not restored.clipped.flags.writeable
     assert normalize_result(chunk.payload(), 'qpos').clipped is None
+
+
+@pytest.mark.parametrize('mode,resolved', [('close', [13, 13.1, 16.5]), ('tail', [13, 0, 16.5])])
+def test_transition_starts_after_confirmed_reserved_and_pinned_actions(mode, resolved):
+    old = np.repeat(np.arange(10, 16, dtype=np.float32)[:, None], 14, axis=1)
+    new = np.repeat(np.array([9., 13.1, 16.5], dtype=np.float32)[:, None], 14, axis=1)
+    buffer = ActionBuffer()
+    buffer.install(old)
+    request = buffer.begin_request()
+    assert buffer.confirm(buffer.reserve())
+    reserved = buffer.reserve()
+    buffer.pin_current()
+    transition = TrajectoryAddTransition(trunk_mode=mode, exponential_factor=5.0)
+    response = ActionChunk(new, ('qpos',) * len(new), transition=transition).result_fields()
+    assert buffer.accept(request, normalize_result(response, 'qpos'))
+    assert buffer.last_trim == 3
+    assert buffer.confirm(reserved)
+    np.testing.assert_array_equal(buffer.current(), old[2])
+    assert buffer.confirm(buffer.reserve())
+    np.testing.assert_array_equal(buffer.current(), old[3])
+    if mode == 'tail':
+        alpha = (1 - np.exp(-1.25 / 2)) / (1 - np.exp(-1.25))
+        resolved[1] = 14 + alpha * (13.1 - 14)
+    np.testing.assert_allclose(buffer.remaining()[:, 0], resolved)
+
+
+@pytest.mark.parametrize('mode', ['close', 'tail'])
+def test_one_replaceable_action_starts_on_old_target(mode):
+    old = np.full((2, 14), 0.5, np.float32)
+    new = np.full((3, 14), 0.25, np.float32)
+    buffer = ActionBuffer()
+    buffer.install(old)
+    request = buffer.begin_request()
+    buffer.consume()
+    transition = TrajectoryAddTransition(trunk_mode=mode, exponential_factor=5.0)
+    assert buffer.accept(request, ActionChunk(new, ('qpos',) * len(new), transition=transition))
+    np.testing.assert_array_equal(buffer.remaining(), np.concatenate((old[1:], new)))
+
+
+def test_exhausted_old_trajectory_trims_new_actions_in_request_time():
+    old = np.full((2, 14), 0.5, np.float32)
+    new = np.repeat(np.arange(5, dtype=np.float32)[:, None], 14, axis=1)
+    buffer = ActionBuffer()
+    buffer.install(old)
+    request = buffer.begin_request()
+    buffer.consume()
+    buffer.confirm(buffer.reserve())
+    transition = TrajectoryAddTransition(trunk_mode='tail', exponential_factor=5.0)
+    assert buffer.accept(request, ActionChunk(new, ('qpos',) * len(new), transition=transition))
+    np.testing.assert_array_equal(buffer.remaining(), new[2:])

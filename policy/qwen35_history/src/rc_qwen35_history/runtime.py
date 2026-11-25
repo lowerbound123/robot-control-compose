@@ -257,6 +257,11 @@ class HistoryPolicy:
             with (perf.span('history.observe_update') if perf else nullcontext()):
                 self._observe_history(images, runtime)
 
+    def _action_result(self, old, new, runtime):
+        self.canonical = self.transition.apply(old, new) if self.pipelined else new
+        self._record(cached_actions=len(self.canonical))
+        return self.canonical.copy()
+
     def step(self, state, action_chunk, images, *, runtime):
         if self._closed:
             raise RuntimeError('policy is closed')
@@ -300,9 +305,7 @@ class HistoryPolicy:
                 self._launch(state, images, count, epoch, contexts)
                 new = self._collect()
             new = self._process(new, **rules)
-            self.canonical = self.transition.apply(old, new) if self.pipelined else new
-            self._record(cached_actions=len(self.canonical))
-            return self.canonical.copy()
+            return self._action_result(old, new, runtime)
         except Exception as exc:
             self._failure = exc
             self._record(context_state='failed', last_error=f'{type(exc).__name__}: {exc}'[:512])
